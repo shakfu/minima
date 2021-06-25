@@ -13,8 +13,8 @@ os.environ['LDFLAGS'] = " ".join([
 ])
 
 extensions = [
-    Extension("mini", 
-        sources=["mini.pyx", "miniaudio/miniaudio.c"],
+    Extension("minima", 
+        sources=["minima.pyx", "miniaudio/miniaudio.c"],
         define_macros = [
             # ('MINIAUDIO_IMPLEMENTATION', 1),
         ],
@@ -34,7 +34,7 @@ extensions = [
 
 
 setup(
-    name="miniaudio in cython",
+    name="minima",
     ext_modules=cythonize(extensions, 
         compiler_directives={
             'language_level' : '3',
