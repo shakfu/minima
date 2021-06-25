@@ -5,7 +5,7 @@ A basic cython wrapper of miniaudio's coreaudio engine.
 
 ## Objective
 
-- wrap the only the coreaudio part of miniaudio and nothing else in cython.
+- initially wrap only the coreaudio part of miniaudio in cython.
 
 
 ## Compile
