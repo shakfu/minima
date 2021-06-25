@@ -4,21 +4,7 @@ A basic cython wrapper of miniaudio's coreaudio engine.
 
 
 
-## To generate ab abbreviated header
+## Objective
 
-Create a `dummy.h` file with the following contents:
+- wrap the only the coreaudio part of miniaudio and nothing else in cython.
 
-```c
-#define MA_NO_RUNTIME_LINKING
-#define MA_ENABLE_ONLY_SPECIFIC_BACKENDS
-#define MA_ENABLE_COREAUDIO
-#define MINIAUDIO_IMPLEMENTATION
-#include "miniaudio.h"
-```
-
-Then 
-
-```bash
-gcc -E dummy.h > abrev.c
-
-```
