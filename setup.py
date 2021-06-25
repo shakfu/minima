@@ -14,7 +14,7 @@ os.environ['LDFLAGS'] = " ".join([
 
 extensions = [
     Extension("minima", 
-        sources=["minima.pyx", "miniaudio/miniaudio.c"],
+        sources=["minima.pyx"],
         define_macros = [
             # ('MINIAUDIO_IMPLEMENTATION', 1),
         ],
@@ -27,8 +27,8 @@ extensions = [
             'pthread',
         ],
         library_dirs=[],
-        extra_objects=[],
-        extra_compile_args = ["-isystem miniaudio"],
+        extra_objects=["miniaudio/libminiaudio.a"],
+        # extra_compile_args = ["-isystem miniaudio"],
     ),
 ]
 

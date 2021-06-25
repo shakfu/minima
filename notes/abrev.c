@@ -1,48 +1,4 @@
 
-typedef signed char __int8_t;
-
-typedef unsigned char __uint8_t;
-typedef short __int16_t;
-typedef unsigned short __uint16_t;
-typedef int __int32_t;
-typedef unsigned int __uint32_t;
-typedef long long __int64_t;
-typedef unsigned long long __uint64_t;
-
-
-
-extern int sched_yield(void);
-extern int sched_get_priority_min(int);
-extern int sched_get_priority_max(int);
-
-typedef signed char int8_t;
-
-typedef short int16_t;
-
-typedef int int32_t;
-
-typedef long long int64_t;
-
-typedef unsigned char u_int8_t;
-
-typedef unsigned short u_int16_t;
-
-typedef unsigned int u_int32_t;
-
-typedef unsigned long long u_int64_t;
-
-typedef int64_t register_t;
-
-
-
-typedef long int ptrdiff_t;
-
-typedef long unsigned int rsize_t;
-
-typedef int wchar_t;
-
-typedef long double max_align_t;
-
 typedef signed char ma_int8;
 typedef unsigned char ma_uint8;
 typedef signed short ma_int16;
@@ -50,13 +6,11 @@ typedef unsigned short ma_uint16;
 typedef signed int ma_int32;
 typedef unsigned int ma_uint32;
 
-
 typedef signed long long ma_int64;
 typedef unsigned long long ma_uint64;
 
 
 typedef ma_uint64 ma_uintptr;
-
 typedef ma_uint8 ma_bool8;
 typedef ma_uint32 ma_bool32;
 
