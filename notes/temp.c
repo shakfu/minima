@@ -1,52 +1,6 @@
 
 
 
-struct ma_context_config {
-    ma_log_proc logCallback
-    ma_thread_priority threadPriority
-    size_t threadStackSize
-    void *pUserData
-    ma_allocation_callbacks allocationCallbacks
-    struct {
-        ma_bool32 useVerboseDeviceEnumeration
-    } alsa
-    struct {
-        const char *pApplicationName
-        const char *pServerName
-        ma_bool32 tryAutoSpawn
-    } pulse
-    struct {
-        ma_ios_session_category sessionCategory
-        ma_uint32 sessionCategoryOptions
-        ma_bool32 noAudioSessionActivate
-        ma_bool32 noAudioSessionDeactivate
-    } coreaudio
-    struct {
-        const char *pClientName
-        ma_bool32 tryStartServer
-    } jack
-    ma_backend_callbacks custom
-}
-
-ctypedef struct {
-    int code
-    ma_event *pEvent
-    union {
-        struct {
-            int _unused
-        } quit
-        struct {
-            ma_device_type deviceType
-            void *pAudioClient
-            void **ppAudioClientService
-            ma_result *pResult
-        } createAudioClient
-        struct {
-            ma_device *pDevice
-            ma_device_type deviceType
-        } releaseAudioClient
-    } data
-} ma_context_command__wasapi
 
 struct ma_context {
     ma_backend_callbacks callbacks

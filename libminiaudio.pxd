@@ -1067,8 +1067,6 @@ cdef extern from "miniaudio.h":
 
     ctypedef struct ma_context_config
 
-
-
     cdef struct ma_device_info__nativeDataFormats:
         ma_format format
         ma_uint32 channels
@@ -1102,7 +1100,7 @@ cdef extern from "miniaudio.h":
         int quality
 
     cdef struct ma_device_config__resampling:
-        # ma_resample_algorithm algorithm
+        ma_resample_algorithm algorithm
         ma_device_config__resampling__linear linear
         ma_device_config__resampling__speex speex
 
@@ -1215,8 +1213,57 @@ cdef extern from "miniaudio.h":
         ma_result (*onDeviceDataLoopWakeup)(ma_device *pDevice)
 
 
+    cdef struct ma_context_config__alsa:
+        ma_bool32 useVerboseDeviceEnumeration
+
+    cdef struct ma_context_config__pulse:
+        char *pApplicationName
+        char *pServerName
+        ma_bool32 tryAutoSpawn
+
+    cdef struct ma_context_config__coreaudio:
+        ma_ios_session_category sessionCategory
+        ma_uint32 sessionCategoryOptions
+        ma_bool32 noAudioSessionActivate
+        ma_bool32 noAudioSessionDeactivate
+
+    cdef struct ma_context_config__jack:
+        const char *pClientName
+        ma_bool32 tryStartServer
+
+    ctypedef struct ma_context_config:
+        ma_log_proc logCallback
+        ma_thread_priority threadPriority
+        size_t threadStackSize
+        void *pUserData
+        ma_allocation_callbacks allocationCallbacks
+        ma_context_config__alsa alsa
+        ma_context_config__pulse pulse
+        ma_context_config__coreaudio coreaudio
+        ma_context_config__jack jack
+        ma_backend_callbacks custom
 
 
+    cdef struct ma_context_command__wasapi__data__quit:
+        int _unused
 
+    cdef struct ma_context_command__wasapi__data__createAudioClient:
+        ma_device_type deviceType
+        void *pAudioClient
+        void **ppAudioClientService
+        ma_result *pResult
 
+    cdef struct ma_context_command__wasapi__data__releaseAudioClient:
+        ma_device *pDevice
+        ma_device_type deviceType
+
+    cdef union ma_context_command__wasapi__data:
+        ma_context_command__wasapi__data__quit quit
+        ma_context_command__wasapi__data__createAudioClient createAudioClient
+        ma_context_command__wasapi__data__releaseAudioClient releaseAudioClient
+
+    ctypedef struct ma_context_command__wasapi:
+        int code
+        ma_event *pEvent
+        ma_context_command__wasapi__data data
 
