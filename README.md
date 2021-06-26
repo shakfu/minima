@@ -1,11 +1,12 @@
-# minima: a cython wrapper of miniaudio.coreaudio
+# minima: a cython wrapper of miniaudio
 
-A basic cython wrapper of miniaudio's coreaudio engine.
+A basic cython wrapper of miniaudio
 
 
-## Objective
+## Status
 
-- initially wrap only the coreaudio part of miniaudio in cython.
+- the miniaudio header is converted to a cython pxd
+- minimal test of sinewave playback working
 
 
 ## Compile
