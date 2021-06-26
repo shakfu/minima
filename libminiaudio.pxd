@@ -24,7 +24,10 @@ cdef extern from "miniaudio.h":
     #define MINIAUDIO_IMPLEMENTATION
     """
 
+    # DEF MA_SUCCESS = 0
+
     DEF MA_MAX_CHANNELS = 32
+    
 
     ctypedef   signed char      ma_int8
     ctypedef unsigned char      ma_uint8
@@ -922,8 +925,8 @@ cdef extern from "miniaudio.h":
                              ma_uint32 channels)
 
     ma_uint32 ma_get_bytes_per_sample(ma_format format)
-# 
-    inline ma_uint32 ma_get_bytes_per_frame(ma_format format, ma_uint32 channels)
+
+    ma_uint32 ma_get_bytes_per_frame(ma_format format, ma_uint32 channels)
 
     char *ma_log_level_to_string(ma_uint32 logLevel)
 
@@ -1568,7 +1571,7 @@ cdef extern from "miniaudio.h":
 
     void ma_silence_pcm_frames(void *p, ma_uint64 frameCount,
                                       ma_format format, ma_uint32 channels)
-    inline void ma_zero_pcm_frames(void *p, ma_uint64 frameCount, ma_format format,
+    void ma_zero_pcm_frames(void *p, ma_uint64 frameCount, ma_format format,
                        ma_uint32 channels)
 
     void *ma_offset_pcm_frames_ptr(void *p, ma_uint64 offsetInFrames,
@@ -1579,15 +1582,15 @@ cdef extern from "miniaudio.h":
                                                       ma_format format,
                                                       ma_uint32 channels)
 
-    inline float * ma_offset_pcm_frames_ptr_f32(float *p, ma_uint64 offsetInFrames,
+    float * ma_offset_pcm_frames_ptr_f32(float *p, ma_uint64 offsetInFrames,
                                  ma_uint32 channels)
 
-    inline float * ma_offset_pcm_frames_const_ptr_f32(const float *p, ma_uint64 offsetInFrames,
+    float * ma_offset_pcm_frames_const_ptr_f32(const float *p, ma_uint64 offsetInFrames,
                                        ma_uint32 channels)
 
     void ma_clip_samples_f32(float *p, ma_uint64 sampleCount)
 
-    inline void ma_clip_pcm_frames_f32(float *p, ma_uint64 frameCount, ma_uint32 channels)
+    void ma_clip_pcm_frames_f32(float *p, ma_uint64 frameCount, ma_uint32 channels)
 
     void ma_copy_and_apply_volume_factor_u8(ma_uint8 *pSamplesOut,
                                                    const ma_uint8 *pSamplesIn,
@@ -2228,7 +2231,7 @@ cdef extern from "miniaudio.h":
 
     ma_uint64 ma_waveform_read_pcm_frames(ma_waveform *pWaveform,
                                                  void *pFramesOut,
-                                                 ma_uint64 frameCount)
+                                                 ma_uint64 frameCount) nogil
     
     ma_result ma_waveform_seek_to_pcm_frame(ma_waveform *pWaveform,
                                                    ma_uint64 frameIndex)
