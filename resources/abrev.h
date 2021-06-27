@@ -1,4 +1,5 @@
 
+
 typedef signed char ma_int8;
 typedef unsigned char ma_uint8;
 typedef signed short ma_int16;
@@ -6,11 +7,18 @@ typedef unsigned short ma_uint16;
 typedef signed int ma_int32;
 typedef unsigned int ma_uint32;
 
+
+
+
+
+
 typedef signed long long ma_int64;
 typedef unsigned long long ma_uint64;
 
 
+
 typedef ma_uint64 ma_uintptr;
+
 typedef ma_uint8 ma_bool8;
 typedef ma_uint32 ma_bool32;
 
@@ -1440,7 +1448,7 @@ struct ma_device {
     };
 };
 
-#pragma GCC diagnostic pop
+
 
 extern ma_context_config ma_context_config_init(void);
 

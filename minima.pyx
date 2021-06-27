@@ -1,5 +1,5 @@
 cimport libminiaudio as lib
-
+from enum import Enum
 
 DEF MA_SUCCESS = 0
 
