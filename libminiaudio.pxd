@@ -2113,7 +2113,7 @@ cdef extern from "miniaudio.h":
 
     ma_uint64 ma_decoder_read_pcm_frames(ma_decoder *pDecoder,
                                                 void *pFramesOut,
-                                                ma_uint64 frameCount)
+                                                ma_uint64 frameCount) nogil
 
     ma_result ma_decoder_seek_to_pcm_frame(ma_decoder *pDecoder,
                                                   ma_uint64 frameIndex)
