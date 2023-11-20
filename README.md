@@ -2,11 +2,13 @@
 
 A basic cython wrapper of miniaudio
 
+For a more complete cffi-based wrapper see Irmen de Jong's [pyminiaudio](https://github.com/irmen/pyminiaudio)
+
 
 ## Status
 
 - the miniaudio header is converted to a cython pxd
-- minimal test of sinewave playback working
+- minimal test of sinewave and wave file playback working
 
 
 ## Compile
