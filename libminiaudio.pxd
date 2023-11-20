@@ -2111,9 +2111,10 @@ cdef extern from "miniaudio.h":
 
     ma_uint64 ma_decoder_get_length_in_pcm_frames(ma_decoder *pDecoder)
 
-    ma_uint64 ma_decoder_read_pcm_frames(ma_decoder *pDecoder,
-                                                void *pFramesOut,
-                                                ma_uint64 frameCount) nogil
+    ma_result ma_decoder_read_pcm_frames(ma_decoder* pDecoder, 
+                                         void* pFramesOut, 
+                                         ma_uint64 frameCount, 
+                                         ma_uint64* pFramesRead) nogil
 
     ma_result ma_decoder_seek_to_pcm_frame(ma_decoder *pDecoder,
                                                   ma_uint64 frameIndex)
@@ -2229,9 +2230,10 @@ cdef extern from "miniaudio.h":
     ma_result ma_waveform_init(const ma_waveform_config *pConfig,
                                       ma_waveform *pWaveform)
 
-    ma_uint64 ma_waveform_read_pcm_frames(ma_waveform *pWaveform,
-                                                 void *pFramesOut,
-                                                 ma_uint64 frameCount) nogil
+    ma_result ma_waveform_read_pcm_frames(ma_waveform* pWaveform, 
+                                          void* pFramesOut,
+                                          ma_uint64 frameCount,
+                                          ma_uint64* pFramesRead) nogil
     
     ma_result ma_waveform_seek_to_pcm_frame(ma_waveform *pWaveform,
                                                    ma_uint64 frameIndex)

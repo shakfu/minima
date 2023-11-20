@@ -24,7 +24,7 @@ cdef void sine_data_callback(lib.ma_device* device,
     sinewave = <lib.ma_waveform*>device.pUserData
     #MA_ASSERT(sinewave != NULL)
 
-    lib.ma_waveform_read_pcm_frames(sinewave, output, frame_count)
+    lib.ma_waveform_read_pcm_frames(sinewave, output, frame_count, NULL)
 
 
 def play_sine(double amp=0.2, double freq=220):
@@ -74,7 +74,7 @@ cdef void file_data_callback(lib.ma_device* device,
     if (decoder == NULL):
         return
 
-    lib.ma_decoder_read_pcm_frames(decoder, output, frame_count)
+    lib.ma_decoder_read_pcm_frames(decoder, output, frame_count, NULL)
 
 
 def play_file(str path):
