@@ -14,7 +14,7 @@ minima: miniaudio/libminiaudio.a
 .PHONY: test clean reset
 
 test:
-	@python3 ./tests/test_minima.py
+	python3 test_minima.py
 
 clean:
 	@rm -f *.so
