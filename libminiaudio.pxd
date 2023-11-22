@@ -26,12 +26,6 @@ cdef extern from "miniaudio.h":
     DEF MA_MAX_CHANNELS = 32
 
 
-    ctypedef enum ma_log_level:
-        MA_LOG_LEVEL_DEBUG = 4
-        MA_LOG_LEVEL_INFO = 3
-        MA_LOG_LEVEL_WARNING = 2
-        MA_LOG_LEVEL_ERROR = 1
-    
     ctypedef   signed char      ma_int8
     ctypedef unsigned char      ma_uint8
     ctypedef   signed short     ma_int16
@@ -50,11 +44,19 @@ cdef extern from "miniaudio.h":
     ctypedef void *ma_ptr
     ctypedef void (*ma_proc)()
 
+# --------------------------------------------------------
+# header starts here
+
+    ctypedef enum ma_log_level:
+        MA_LOG_LEVEL_DEBUG = 4
+        MA_LOG_LEVEL_INFO = 3
+        MA_LOG_LEVEL_WARNING = 2
+        MA_LOG_LEVEL_ERROR = 1
+    
     ctypedef struct ma_context
     ctypedef struct ma_device
 
     ctypedef ma_uint8 ma_channel
-    # ctypedef int ma_result
 
     ctypedef enum ma_result:
         MA_SUCCESS = 0
@@ -190,7 +192,6 @@ cdef extern from "miniaudio.h":
     ctypedef enum ma_performance_profile:
         ma_performance_profile_low_latency = 0
         ma_performance_profile_conservative
-
 
     ctypedef struct ma_allocation_callbacks:
         void *pUserData
@@ -538,10 +539,290 @@ cdef extern from "miniaudio.h":
     ctypedef struct ma_hishelf2:
         ma_biquad bq
 
-    ma_result ma_hishelf2_init(const ma_hishelf2_config *pConfig, ma_hishelf2 *pFilter)
-    ma_result ma_hishelf2_reinit(const ma_hishelf2_config *pConfig, ma_hishelf2 *pFilter)
-    ma_result ma_hishelf2_process_pcm_frames(ma_hishelf2 *pFilter, void *pFramesOut, const void *pFramesIn, ma_uint64 frameCount)
-    ma_uint32 ma_hishelf2_get_latency(const ma_hishelf2 *pFilter)
+    ma_result ma_hishelf2_get_heap_size(const ma_hishelf2_config* pConfig, size_t* pHeapSizeInBytes)
+    ma_result ma_hishelf2_init_preallocated(const ma_hishelf2_config* pConfig, void* pHeap, ma_hishelf2* pFilter)
+    ma_result ma_hishelf2_init(const ma_hishelf2_config* pConfig, const ma_allocation_callbacks* pAllocationCallbacks, ma_hishelf2* pFilter)
+    void ma_hishelf2_uninit(ma_hishelf2* pFilter, const ma_allocation_callbacks* pAllocationCallbacks)
+    ma_result ma_hishelf2_reinit(const ma_hishelf2_config* pConfig, ma_hishelf2* pFilter)
+    ma_result ma_hishelf2_process_pcm_frames(ma_hishelf2* pFilter, void* pFramesOut, const void* pFramesIn, ma_uint64 frameCount)
+    ma_uint32 ma_hishelf2_get_latency(const ma_hishelf2* pFilter)
+
+
+    ctypedef struct ma_delay_config:
+        ma_uint32 channels
+        ma_uint32 sampleRate
+        ma_uint32 delayInFrames
+        ma_bool32 delayStart
+        float wet
+        float dry
+        float decay
+
+    ma_delay_config ma_delay_config_init(ma_uint32 channels, ma_uint32 sampleRate, ma_uint32 delayInFrames, float decay)
+
+
+    ctypedef struct ma_delay:
+        ma_delay_config config
+        ma_uint32 cursor
+        ma_uint32 bufferSizeInFrames
+        float* pBuffer
+
+
+    ma_result ma_delay_init(const ma_delay_config* pConfig, const ma_allocation_callbacks* pAllocationCallbacks, ma_delay* pDelay)
+    void ma_delay_uninit(ma_delay* pDelay, const ma_allocation_callbacks* pAllocationCallbacks)
+    ma_result ma_delay_process_pcm_frames(ma_delay* pDelay, void* pFramesOut, const void* pFramesIn, ma_uint32 frameCount)
+    void ma_delay_set_wet(ma_delay* pDelay, float value)
+    float ma_delay_get_wet(const ma_delay* pDelay)
+    void ma_delay_set_dry(ma_delay* pDelay, float value)
+    float ma_delay_get_dry(const ma_delay* pDelay)
+    void ma_delay_set_decay(ma_delay* pDelay, float value)
+    float ma_delay_get_decay(const ma_delay* pDelay)
+
+
+    ctypedef struct  ma_gainer_config:
+        ma_uint32 channels
+        ma_uint32 smoothTimeInFrames
+
+    ma_gainer_config ma_gainer_config_init(ma_uint32 channels, ma_uint32 smoothTimeInFrames)
+
+
+    ctypedef struct ma_gainer:
+        ma_gainer_config config
+        ma_uint32 t
+        float masterVolume
+        float* pOldGains
+        float* pNewGains
+
+
+        void* _pHeap
+        ma_bool32 _ownsHeap
+
+
+    ma_result ma_gainer_get_heap_size(const ma_gainer_config* pConfig, size_t* pHeapSizeInBytes)
+    ma_result ma_gainer_init_preallocated(const ma_gainer_config* pConfig, void* pHeap, ma_gainer* pGainer)
+    ma_result ma_gainer_init(const ma_gainer_config* pConfig, const ma_allocation_callbacks* pAllocationCallbacks, ma_gainer* pGainer)
+    void ma_gainer_uninit(ma_gainer* pGainer, const ma_allocation_callbacks* pAllocationCallbacks)
+    ma_result ma_gainer_process_pcm_frames(ma_gainer* pGainer, void* pFramesOut, const void* pFramesIn, ma_uint64 frameCount)
+    ma_result ma_gainer_set_gain(ma_gainer* pGainer, float newGain)
+    ma_result ma_gainer_set_gains(ma_gainer* pGainer, float* pNewGains)
+    ma_result ma_gainer_set_master_volume(ma_gainer* pGainer, float volume)
+    ma_result ma_gainer_get_master_volume(const ma_gainer* pGainer, float* pVolume)
+
+    ctypedef enum ma_pan_mode :
+        ma_pan_mode_balance = 0
+        ma_pan_mode_pan
+
+    ctypedef struct ma_panner_config:
+
+        ma_format format
+        ma_uint32 channels
+        ma_pan_mode mode
+        float pan
+     
+
+    ma_panner_config ma_panner_config_init(ma_format format, ma_uint32 channels)
+
+
+    ctypedef struct ma_panner:
+        ma_format format
+        ma_uint32 channels
+        ma_pan_mode mode
+        float pan
+
+    ma_result ma_panner_init(const ma_panner_config* pConfig, ma_panner* pPanner)
+    ma_result ma_panner_process_pcm_frames(ma_panner* pPanner, void* pFramesOut, const void* pFramesIn, ma_uint64 frameCount)
+    void ma_panner_set_mode(ma_panner* pPanner, ma_pan_mode mode)
+    ma_pan_mode ma_panner_get_mode(const ma_panner* pPanner)
+    void ma_panner_set_pan(ma_panner* pPanner, float pan)
+    float ma_panner_get_pan(const ma_panner* pPanner)
+
+    ctypedef struct ma_fader_config:
+        ma_format format
+        ma_uint32 channels
+        ma_uint32 sampleRate
+
+    ma_fader_config ma_fader_config_init(ma_format format, ma_uint32 channels, ma_uint32 sampleRate)
+
+    ctypedef struct ma_fader:
+        ma_fader_config config
+        float volumeBeg
+        float volumeEnd
+        ma_uint64 lengthInFrames
+        ma_int64 cursorInFrames
+
+    ma_result ma_fader_init(const ma_fader_config* pConfig, ma_fader* pFader)
+    ma_result ma_fader_process_pcm_frames(ma_fader* pFader, void* pFramesOut, const void* pFramesIn, ma_uint64 frameCount)
+    void ma_fader_get_data_format(const ma_fader* pFader, ma_format* pFormat, ma_uint32* pChannels, ma_uint32* pSampleRate)
+    void ma_fader_set_fade(ma_fader* pFader, float volumeBeg, float volumeEnd, ma_uint64 lengthInFrames)
+    void ma_fader_set_fade_ex(ma_fader* pFader, float volumeBeg, float volumeEnd, ma_uint64 lengthInFrames, ma_int64 startOffsetInFrames)
+    float ma_fader_get_current_volume(const ma_fader* pFader)
+
+
+    ctypedef struct ma_vec3f:
+        float x
+        float y
+        float z
+     
+
+    ctypedef struct ma_atomic_vec3f:
+
+        ma_vec3f v
+        ma_spinlock lock
+
+    ctypedef enum ma_attenuation_model:
+
+        ma_attenuation_model_none
+        ma_attenuation_model_inverse
+        ma_attenuation_model_linear
+        ma_attenuation_model_exponential
+
+
+    ctypedef enum ma_positioning:
+        ma_positioning_absolute
+        ma_positioning_relative
+
+    ctypedef enum ma_handedness:
+        ma_handedness_right
+        ma_handedness_left
+     
+
+
+
+
+    ctypedef struct ma_spatializer_listener_config:
+
+        ma_uint32 channelsOut
+        ma_channel* pChannelMapOut
+        ma_handedness handedness
+        float coneInnerAngleInRadians
+        float coneOuterAngleInRadians
+        float coneOuterGain
+        float speedOfSound
+        ma_vec3f worldUp
+
+    ma_spatializer_listener_config ma_spatializer_listener_config_init(ma_uint32 channelsOut)
+
+
+    ctypedef struct ma_spatializer_listener:
+        ma_spatializer_listener_config config
+        ma_atomic_vec3f position
+        ma_atomic_vec3f direction
+        ma_atomic_vec3f velocity
+        ma_bool32 isEnabled
+
+        ma_bool32 _ownsHeap
+        void* _pHeap
+
+    ma_result ma_spatializer_listener_get_heap_size(const ma_spatializer_listener_config* pConfig, size_t* pHeapSizeInBytes)
+    ma_result ma_spatializer_listener_init_preallocated(const ma_spatializer_listener_config* pConfig, void* pHeap, ma_spatializer_listener* pListener)
+    ma_result ma_spatializer_listener_init(const ma_spatializer_listener_config* pConfig, const ma_allocation_callbacks* pAllocationCallbacks, ma_spatializer_listener* pListener)
+    void ma_spatializer_listener_uninit(ma_spatializer_listener* pListener, const ma_allocation_callbacks* pAllocationCallbacks)
+    ma_channel* ma_spatializer_listener_get_channel_map(ma_spatializer_listener* pListener)
+    void ma_spatializer_listener_set_cone(ma_spatializer_listener* pListener, float innerAngleInRadians, float outerAngleInRadians, float outerGain)
+    void ma_spatializer_listener_get_cone(const ma_spatializer_listener* pListener, float* pInnerAngleInRadians, float* pOuterAngleInRadians, float* pOuterGain)
+    void ma_spatializer_listener_set_position(ma_spatializer_listener* pListener, float x, float y, float z)
+    ma_vec3f ma_spatializer_listener_get_position(const ma_spatializer_listener* pListener)
+    void ma_spatializer_listener_set_direction(ma_spatializer_listener* pListener, float x, float y, float z)
+    ma_vec3f ma_spatializer_listener_get_direction(const ma_spatializer_listener* pListener)
+    void ma_spatializer_listener_set_velocity(ma_spatializer_listener* pListener, float x, float y, float z)
+    ma_vec3f ma_spatializer_listener_get_velocity(const ma_spatializer_listener* pListener)
+    void ma_spatializer_listener_set_speed_of_sound(ma_spatializer_listener* pListener, float speedOfSound)
+    float ma_spatializer_listener_get_speed_of_sound(const ma_spatializer_listener* pListener)
+    void ma_spatializer_listener_set_world_up(ma_spatializer_listener* pListener, float x, float y, float z)
+    ma_vec3f ma_spatializer_listener_get_world_up(const ma_spatializer_listener* pListener)
+    void ma_spatializer_listener_set_enabled(ma_spatializer_listener* pListener, ma_bool32 isEnabled)
+    ma_bool32 ma_spatializer_listener_is_enabled(const ma_spatializer_listener* pListener)
+
+
+    ctypedef struct ma_spatializer_config:
+        ma_uint32 channelsIn
+        ma_uint32 channelsOut
+        ma_channel* pChannelMapIn
+        ma_attenuation_model attenuationModel
+        ma_positioning positioning
+        ma_handedness handedness
+        float minGain
+        float maxGain
+        float minDistance
+        float maxDistance
+        float rolloff
+        float coneInnerAngleInRadians
+        float coneOuterAngleInRadians
+        float coneOuterGain
+        float dopplerFactor
+        float directionalAttenuationFactor
+        float minSpatializationChannelGain
+        ma_uint32 gainSmoothTimeInFrames
+
+
+    ma_spatializer_config ma_spatializer_config_init(ma_uint32 channelsIn, ma_uint32 channelsOut)
+
+
+    ctypedef struct ma_spatializer:
+        ma_uint32 channelsIn
+        ma_uint32 channelsOut
+        ma_channel* pChannelMapIn
+        ma_attenuation_model attenuationModel
+        ma_positioning positioning
+        ma_handedness handedness
+        float minGain
+        float maxGain
+        float minDistance
+        float maxDistance
+        float rolloff
+        float coneInnerAngleInRadians
+        float coneOuterAngleInRadians
+        float coneOuterGain
+        float dopplerFactor
+        float directionalAttenuationFactor
+        ma_uint32 gainSmoothTimeInFrames
+        ma_atomic_vec3f position
+        ma_atomic_vec3f direction
+        ma_atomic_vec3f velocity
+        float dopplerPitch
+        float minSpatializationChannelGain
+        ma_gainer gainer
+        float* pNewChannelGainsOut
+
+        void* _pHeap
+        ma_bool32 _ownsHeap
+
+    ma_result ma_spatializer_get_heap_size(const ma_spatializer_config* pConfig, size_t* pHeapSizeInBytes)
+    ma_result ma_spatializer_init_preallocated(const ma_spatializer_config* pConfig, void* pHeap, ma_spatializer* pSpatializer)
+    ma_result ma_spatializer_init(const ma_spatializer_config* pConfig, const ma_allocation_callbacks* pAllocationCallbacks, ma_spatializer* pSpatializer)
+    void ma_spatializer_uninit(ma_spatializer* pSpatializer, const ma_allocation_callbacks* pAllocationCallbacks)
+    ma_result ma_spatializer_process_pcm_frames(ma_spatializer* pSpatializer, ma_spatializer_listener* pListener, void* pFramesOut, const void* pFramesIn, ma_uint64 frameCount)
+    ma_result ma_spatializer_set_master_volume(ma_spatializer* pSpatializer, float volume)
+    ma_result ma_spatializer_get_master_volume(const ma_spatializer* pSpatializer, float* pVolume)
+    ma_uint32 ma_spatializer_get_input_channels(const ma_spatializer* pSpatializer)
+    ma_uint32 ma_spatializer_get_output_channels(const ma_spatializer* pSpatializer)
+    void ma_spatializer_set_attenuation_model(ma_spatializer* pSpatializer, ma_attenuation_model attenuationModel)
+    ma_attenuation_model ma_spatializer_get_attenuation_model(const ma_spatializer* pSpatializer)
+    void ma_spatializer_set_positioning(ma_spatializer* pSpatializer, ma_positioning positioning)
+    ma_positioning ma_spatializer_get_positioning(const ma_spatializer* pSpatializer)
+    void ma_spatializer_set_rolloff(ma_spatializer* pSpatializer, float rolloff)
+    float ma_spatializer_get_rolloff(const ma_spatializer* pSpatializer)
+    void ma_spatializer_set_min_gain(ma_spatializer* pSpatializer, float minGain)
+    float ma_spatializer_get_min_gain(const ma_spatializer* pSpatializer)
+    void ma_spatializer_set_max_gain(ma_spatializer* pSpatializer, float maxGain)
+    float ma_spatializer_get_max_gain(const ma_spatializer* pSpatializer)
+    void ma_spatializer_set_min_distance(ma_spatializer* pSpatializer, float minDistance)
+    float ma_spatializer_get_min_distance(const ma_spatializer* pSpatializer)
+    void ma_spatializer_set_max_distance(ma_spatializer* pSpatializer, float maxDistance)
+    float ma_spatializer_get_max_distance(const ma_spatializer* pSpatializer)
+    void ma_spatializer_set_cone(ma_spatializer* pSpatializer, float innerAngleInRadians, float outerAngleInRadians, float outerGain)
+    void ma_spatializer_get_cone(const ma_spatializer* pSpatializer, float* pInnerAngleInRadians, float* pOuterAngleInRadians, float* pOuterGain)
+    void ma_spatializer_set_doppler_factor(ma_spatializer* pSpatializer, float dopplerFactor)
+    float ma_spatializer_get_doppler_factor(const ma_spatializer* pSpatializer)
+    void ma_spatializer_set_directional_attenuation_factor(ma_spatializer* pSpatializer, float directionalAttenuationFactor)
+    float ma_spatializer_get_directional_attenuation_factor(const ma_spatializer* pSpatializer)
+    void ma_spatializer_set_position(ma_spatializer* pSpatializer, float x, float y, float z)
+    ma_vec3f ma_spatializer_get_position(const ma_spatializer* pSpatializer)
+    void ma_spatializer_set_direction(ma_spatializer* pSpatializer, float x, float y, float z)
+    ma_vec3f ma_spatializer_get_direction(const ma_spatializer* pSpatializer)
+    void ma_spatializer_set_velocity(ma_spatializer* pSpatializer, float x, float y, float z)
+    ma_vec3f ma_spatializer_get_velocity(const ma_spatializer* pSpatializer)
+    void ma_spatializer_get_relative_position_and_direction(const ma_spatializer* pSpatializer, const ma_spatializer_listener* pListener, ma_vec3f* pRelativePos, ma_vec3f* pRelativeDir)
+
 
     ctypedef struct ma_linear_resampler_config:
         ma_format format
@@ -558,12 +839,12 @@ cdef extern from "miniaudio.h":
 
 
     cdef union ma_linear_resampler__x0:
-        float f32[32]
-        ma_int16 s16[32]
+        float *f32
+        ma_int16 *s16
 
     cdef union ma_linear_resampler__x1:
-        float f32[32]
-        ma_int16 s16[32]
+        float *f32
+        ma_int16 *s16
 
     ctypedef struct ma_linear_resampler:
         ma_linear_resampler_config config
@@ -575,26 +856,42 @@ cdef extern from "miniaudio.h":
         ma_linear_resampler__x1 x1
         ma_lpf lpf
 
-    ma_result ma_linear_resampler_init(const ma_linear_resampler_config *pConfig, ma_linear_resampler *pResampler)
-    void ma_linear_resampler_uninit(ma_linear_resampler *pResampler)
-    ma_result ma_linear_resampler_process_pcm_frames(ma_linear_resampler *pResampler, const void *pFramesIn, ma_uint64 *pFrameCountIn, void *pFramesOut, ma_uint64 *pFrameCountOut)
-    ma_result ma_linear_resampler_set_rate(ma_linear_resampler *pResampler, ma_uint32 sampleRateIn, ma_uint32 sampleRateOut)
-    ma_result ma_linear_resampler_set_rate_ratio(ma_linear_resampler *pResampler, float ratioInOut)
-    ma_uint64 ma_linear_resampler_get_required_input_frame_count(const ma_linear_resampler *pResampler, ma_uint64 outputFrameCount)
-    ma_uint64 ma_linear_resampler_get_expected_output_frame_count(const ma_linear_resampler *pResampler, ma_uint64 inputFrameCount)
-    ma_uint64 ma_linear_resampler_get_input_latency(const ma_linear_resampler *pResampler)
-    ma_uint64 ma_linear_resampler_get_output_latency(const ma_linear_resampler *pResampler)
+    ma_result ma_linear_resampler_get_heap_size(const ma_linear_resampler_config* pConfig, size_t* pHeapSizeInBytes)
+    ma_result ma_linear_resampler_init_preallocated(const ma_linear_resampler_config* pConfig, void* pHeap, ma_linear_resampler* pResampler)
+    ma_result ma_linear_resampler_init(const ma_linear_resampler_config* pConfig, const ma_allocation_callbacks* pAllocationCallbacks, ma_linear_resampler* pResampler)
+    void ma_linear_resampler_uninit(ma_linear_resampler* pResampler, const ma_allocation_callbacks* pAllocationCallbacks)
+    ma_result ma_linear_resampler_process_pcm_frames(ma_linear_resampler* pResampler, const void* pFramesIn, ma_uint64* pFrameCountIn, void* pFramesOut, ma_uint64* pFrameCountOut)
+    ma_result ma_linear_resampler_set_rate(ma_linear_resampler* pResampler, ma_uint32 sampleRateIn, ma_uint32 sampleRateOut)
+    ma_result ma_linear_resampler_set_rate_ratio(ma_linear_resampler* pResampler, float ratioInOut)
+    ma_uint64 ma_linear_resampler_get_input_latency(const ma_linear_resampler* pResampler)
+    ma_uint64 ma_linear_resampler_get_output_latency(const ma_linear_resampler* pResampler)
+    ma_result ma_linear_resampler_get_required_input_frame_count(const ma_linear_resampler* pResampler, ma_uint64 outputFrameCount, ma_uint64* pInputFrameCount)
+    ma_result ma_linear_resampler_get_expected_output_frame_count(const ma_linear_resampler* pResampler, ma_uint64 inputFrameCount, ma_uint64* pOutputFrameCount)
+    ma_result ma_linear_resampler_reset(ma_linear_resampler* pResampler)
+
+
+    ctypedef struct ma_resampler_config
+    ctypedef void ma_resampling_backend 
+
+    ctypedef struct ma_resampling_backend_vtable:
+        ma_result (* onGetHeapSize )(void* pUserData, const ma_resampler_config* pConfig, size_t* pHeapSizeInBytes)
+        ma_result (* onInit )(void* pUserData, const ma_resampler_config* pConfig, void* pHeap, ma_resampling_backend** ppBackend)
+        void (* onUninit )(void* pUserData, ma_resampling_backend* pBackend, const ma_allocation_callbacks* pAllocationCallbacks)
+        ma_result (* onProcess )(void* pUserData, ma_resampling_backend* pBackend, const void* pFramesIn, ma_uint64* pFrameCountIn, void* pFramesOut, ma_uint64* pFrameCountOut)
+        ma_result (* onSetRate )(void* pUserData, ma_resampling_backend* pBackend, ma_uint32 sampleRateIn, ma_uint32 sampleRateOut)
+        ma_uint64 (* onGetInputLatency )(void* pUserData, const ma_resampling_backend* pBackend)
+        ma_uint64 (* onGetOutputLatency )(void* pUserData, const ma_resampling_backend* pBackend)
+        ma_result (* onGetRequiredInputFrameCount )(void* pUserData, const ma_resampling_backend* pBackend, ma_uint64 outputFrameCount, ma_uint64* pInputFrameCount)
+        ma_result (* onGetExpectedOutputFrameCount)(void* pUserData, const ma_resampling_backend* pBackend, ma_uint64 inputFrameCount, ma_uint64* pOutputFrameCount)
+        ma_result (* onReset )(void* pUserData, ma_resampling_backend* pBackend)
+
 
     ctypedef enum ma_resample_algorithm:
         ma_resample_algorithm_linear = 0
-        ma_resample_algorithm_speex
+        ma_resample_algorithm_custom
 
     cdef struct ma_resampler_config__linear:
         ma_uint32 lpfOrder
-        double lpfNyquistFactor
-
-    cdef struct ma_resampler_config__speex:
-        int quality
 
     ctypedef struct ma_resampler_config:
         ma_format format
@@ -602,80 +899,105 @@ cdef extern from "miniaudio.h":
         ma_uint32 sampleRateIn
         ma_uint32 sampleRateOut
         ma_resample_algorithm algorithm
+        ma_resampling_backend_vtable* pBackendVTable
+        void* pBackendUserData
         ma_resampler_config__linear linear
-        ma_resampler_config__speex speex
 
     ma_resampler_config ma_resampler_config_init(ma_format format, ma_uint32 channels, ma_uint32 sampleRateIn, ma_uint32 sampleRateOut, ma_resample_algorithm algorithm)
 
-    cdef struct ma_resampler__state__speex:
-        void *pSpeexResamplerState
-
     cdef union ma_resampler__state:
         ma_linear_resampler linear
-        ma_resampler__state__speex speex
 
     ctypedef struct ma_resampler:
-        ma_resampler_config config
+        ma_resampling_backend* pBackend
+        ma_resampling_backend_vtable* pBackendVTable
+        void* pBackendUserData
+        ma_format format
+        ma_uint32 channels
+        ma_uint32 sampleRateIn
+        ma_uint32 sampleRateOut
         ma_resampler__state state
 
 
-    ma_result ma_resampler_init(const ma_resampler_config *pConfig, ma_resampler *pResampler)
-    void ma_resampler_uninit(ma_resampler *pResampler)
-    ma_result ma_resampler_process_pcm_frames(ma_resampler *pResampler, const void *pFramesIn, ma_uint64 *pFrameCountIn, void *pFramesOut, ma_uint64 *pFrameCountOut)
-    ma_result ma_resampler_set_rate(ma_resampler *pResampler, ma_uint32 sampleRateIn, ma_uint32 sampleRateOut)
-    ma_result ma_resampler_set_rate_ratio(ma_resampler *pResampler, float ratio)
-    ma_uint64 ma_resampler_get_required_input_frame_count(const ma_resampler *pResampler, ma_uint64 outputFrameCount)
-    ma_uint64 ma_resampler_get_expected_output_frame_count(const ma_resampler *pResampler, ma_uint64 inputFrameCount)
-    ma_uint64 ma_resampler_get_input_latency(const ma_resampler *pResampler)
-    ma_uint64 ma_resampler_get_output_latency(const ma_resampler *pResampler)
+    ma_result ma_resampler_get_heap_size(const ma_resampler_config* pConfig, size_t* pHeapSizeInBytes)
+    ma_result ma_resampler_init_preallocated(const ma_resampler_config* pConfig, void* pHeap, ma_resampler* pResampler)
+    ma_result ma_resampler_init(const ma_resampler_config* pConfig, const ma_allocation_callbacks* pAllocationCallbacks, ma_resampler* pResampler)
+    void ma_resampler_uninit(ma_resampler* pResampler, const ma_allocation_callbacks* pAllocationCallbacks)
+    ma_result ma_resampler_process_pcm_frames(ma_resampler* pResampler, const void* pFramesIn, ma_uint64* pFrameCountIn, void* pFramesOut, ma_uint64* pFrameCountOut)
+    ma_result ma_resampler_set_rate(ma_resampler* pResampler, ma_uint32 sampleRateIn, ma_uint32 sampleRateOut)
+    ma_result ma_resampler_set_rate_ratio(ma_resampler* pResampler, float ratio)
+    ma_uint64 ma_resampler_get_input_latency(const ma_resampler* pResampler)
+    ma_uint64 ma_resampler_get_output_latency(const ma_resampler* pResampler)
+    ma_result ma_resampler_get_required_input_frame_count(const ma_resampler* pResampler, ma_uint64 outputFrameCount, ma_uint64* pInputFrameCount)
+    ma_result ma_resampler_get_expected_output_frame_count(const ma_resampler* pResampler, ma_uint64 inputFrameCount, ma_uint64* pOutputFrameCount)
+    ma_result ma_resampler_reset(ma_resampler* pResampler)
+
+
+    ctypedef enum ma_channel_conversion_path:
+        ma_channel_conversion_path_unknown
+        ma_channel_conversion_path_passthrough
+        ma_channel_conversion_path_mono_out
+        ma_channel_conversion_path_mono_in
+        ma_channel_conversion_path_shuffle
+        ma_channel_conversion_path_weights
+
+    ctypedef enum ma_mono_expansion_mode:
+        ma_mono_expansion_mode_duplicate = 0
+        ma_mono_expansion_mode_average
+        ma_mono_expansion_mode_stereo_only
+        ma_mono_expansion_mode_default = ma_mono_expansion_mode_duplicate
 
     ctypedef struct ma_channel_converter_config:
         ma_format format
         ma_uint32 channelsIn
         ma_uint32 channelsOut
-        ma_channel channelMapIn[32]
-        ma_channel channelMapOut[32]
+        const ma_channel* pChannelMapIn
+        const ma_channel* pChannelMapOut
         ma_channel_mix_mode mixingMode
-        float weights[32][32]
+        ma_bool32 calculateLFEFromSpatialChannels
+        float** ppWeights
 
     ma_channel_converter_config ma_channel_converter_config_init(ma_format format, ma_uint32 channelsIn, const ma_channel *pChannelMapIn,ma_uint32 channelsOut, const ma_channel *pChannelMapOut,ma_channel_mix_mode mixingMode)
 
     cdef union ma_channel_converter__weights:
-        float f32[32][32]
-        ma_int32 s16[32][32]
+        float** f32
+        ma_int32** s16
 
     ctypedef struct ma_channel_converter:
         ma_format format
         ma_uint32 channelsIn
         ma_uint32 channelsOut
-        ma_channel channelMapIn[32]
-        ma_channel channelMapOut[32]
         ma_channel_mix_mode mixingMode
+        ma_channel_conversion_path conversionPath
+        ma_channel* pChannelMapIn
+        ma_channel* pChannelMapOut
+        ma_uint8* pShuffleTable
         ma_channel_converter__weights weights
-        ma_bool8 isPassthrough
-        ma_bool8 isSimpleShuffle
-        ma_bool8 isSimpleMonoExpansion
-        ma_bool8 isStereoToMono
-        ma_uint8 shuffleTable[32]
 
 
-    ma_result ma_channel_converter_init(const ma_channel_converter_config *pConfig, ma_channel_converter *pConverter)
-    void ma_channel_converter_uninit(ma_channel_converter *pConverter)
-    ma_result ma_channel_converter_process_pcm_frames(ma_channel_converter *pConverter, void *pFramesOut, const void *pFramesIn, ma_uint64 frameCount)
+    ma_result ma_channel_converter_get_heap_size(const ma_channel_converter_config* pConfig, size_t* pHeapSizeInBytes)
+    ma_result ma_channel_converter_init_preallocated(const ma_channel_converter_config* pConfig, void* pHeap, ma_channel_converter* pConverter)
+    ma_result ma_channel_converter_init(const ma_channel_converter_config* pConfig, const ma_allocation_callbacks* pAllocationCallbacks, ma_channel_converter* pConverter)
+    void ma_channel_converter_uninit(ma_channel_converter* pConverter, const ma_allocation_callbacks* pAllocationCallbacks)
+    ma_result ma_channel_converter_process_pcm_frames(ma_channel_converter* pConverter, void* pFramesOut, const void* pFramesIn, ma_uint64 frameCount)
+    ma_result ma_channel_converter_get_input_channel_map(const ma_channel_converter* pConverter, ma_channel* pChannelMap, size_t channelMapCap)
+    ma_result ma_channel_converter_get_output_channel_map(const ma_channel_converter* pConverter, ma_channel* pChannelMap, size_t channelMapCap)
 
 
-    cdef struct ma_data_converter_config__resampling__linear:
-        ma_uint32 lpfOrder
-        double lpfNyquistFactor
 
-    cdef struct ma_data_converter_config__resampling__speex:
-        int quality
 
-    cdef struct ma_data_converter_config__resampling:
-        ma_resample_algorithm algorithm
-        ma_bool32 allowDynamicSampleRate
-        ma_data_converter_config__resampling__linear linear
-        ma_data_converter_config__resampling__speex speex
+    # cdef struct ma_data_converter_config__resampling__linear:
+    #     ma_uint32 lpfOrder
+    #     double lpfNyquistFactor
+
+    # cdef struct ma_data_converter_config__resampling__speex:
+    #     int quality
+
+    # cdef struct ma_data_converter_config__resampling:
+    #     ma_resample_algorithm algorithm
+    #     ma_bool32 allowDynamicSampleRate
+    #     ma_data_converter_config__resampling__linear linear
+    #     ma_data_converter_config__resampling__speex speex
 
     ctypedef struct ma_data_converter_config:
         ma_format formatIn
@@ -684,18 +1006,36 @@ cdef extern from "miniaudio.h":
         ma_uint32 channelsOut
         ma_uint32 sampleRateIn
         ma_uint32 sampleRateOut
-        ma_channel channelMapIn[32]
-        ma_channel channelMapOut[32]
+        ma_channel* pChannelMapIn
+        ma_channel* pChannelMapOut
         ma_dither_mode ditherMode
         ma_channel_mix_mode channelMixMode
-        float channelWeights[32][32]
-        ma_data_converter_config__resampling resampling
+        ma_bool32 calculateLFEFromSpatialChannels
+        float** ppChannelWeights
+        ma_bool32 allowDynamicSampleRate
+        ma_resampler_config resampling
 
     ma_data_converter_config ma_data_converter_config_init_default()
     ma_data_converter_config ma_data_converter_config_init(ma_format formatIn, ma_format formatOut, ma_uint32 channelsIn, ma_uint32 channelsOut, ma_uint32 sampleRateIn, ma_uint32 sampleRateOut)
 
+
+    ctypedef enum ma_data_converter_execution_path:
+        ma_data_converter_execution_path_passthrough
+        ma_data_converter_execution_path_format_only
+        ma_data_converter_execution_path_channels_only
+        ma_data_converter_execution_path_resample_only
+        ma_data_converter_execution_path_resample_first
+        ma_data_converter_execution_path_channels_first
+
     ctypedef struct ma_data_converter:
-        ma_data_converter_config config
+        ma_format formatIn
+        ma_format formatOut
+        ma_uint32 channelsIn
+        ma_uint32 channelsOut
+        ma_uint32 sampleRateIn
+        ma_uint32 sampleRateOut
+        ma_dither_mode ditherMode
+        ma_data_converter_execution_path executionPath
         ma_channel_converter channelConverter
         ma_resampler resampler
         ma_bool8 hasPreFormatConversion
@@ -704,15 +1044,21 @@ cdef extern from "miniaudio.h":
         ma_bool8 hasResampler
         ma_bool8 isPassthrough
 
-    ma_result ma_data_converter_init(const ma_data_converter_config *pConfig, ma_data_converter *pConverter)
-    void ma_data_converter_uninit(ma_data_converter *pConverter)
-    ma_result ma_data_converter_process_pcm_frames( ma_data_converter *pConverter, const void *pFramesIn, ma_uint64 *pFrameCountIn, void *pFramesOut, ma_uint64 *pFrameCountOut)
-    ma_result ma_data_converter_set_rate(ma_data_converter *pConverter, ma_uint32 sampleRateIn, ma_uint32 sampleRateOut)
-    ma_result ma_data_converter_set_rate_ratio(ma_data_converter *pConverter, float ratioInOut)
-    ma_uint64 ma_data_converter_get_required_input_frame_count( const ma_data_converter *pConverter, ma_uint64 outputFrameCount)
-    ma_uint64 ma_data_converter_get_expected_output_frame_count( const ma_data_converter *pConverter, ma_uint64 inputFrameCount)
-    ma_uint64 ma_data_converter_get_input_latency(const ma_data_converter *pConverter)
-    ma_uint64 ma_data_converter_get_output_latency(const ma_data_converter *pConverter)
+    ma_result ma_data_converter_get_heap_size(const ma_data_converter_config* pConfig, size_t* pHeapSizeInBytes)
+    ma_result ma_data_converter_init_preallocated(const ma_data_converter_config* pConfig, void* pHeap, ma_data_converter* pConverter)
+    ma_result ma_data_converter_init(const ma_data_converter_config* pConfig, const ma_allocation_callbacks* pAllocationCallbacks, ma_data_converter* pConverter)
+    void ma_data_converter_uninit(ma_data_converter* pConverter, const ma_allocation_callbacks* pAllocationCallbacks)
+    ma_result ma_data_converter_process_pcm_frames(ma_data_converter* pConverter, const void* pFramesIn, ma_uint64* pFrameCountIn, void* pFramesOut, ma_uint64* pFrameCountOut)
+    ma_result ma_data_converter_set_rate(ma_data_converter* pConverter, ma_uint32 sampleRateIn, ma_uint32 sampleRateOut)
+    ma_result ma_data_converter_set_rate_ratio(ma_data_converter* pConverter, float ratioInOut)
+    ma_uint64 ma_data_converter_get_input_latency(const ma_data_converter* pConverter)
+    ma_uint64 ma_data_converter_get_output_latency(const ma_data_converter* pConverter)
+    ma_result ma_data_converter_get_required_input_frame_count(const ma_data_converter* pConverter, ma_uint64 outputFrameCount, ma_uint64* pInputFrameCount)
+    ma_result ma_data_converter_get_expected_output_frame_count(const ma_data_converter* pConverter, ma_uint64 inputFrameCount, ma_uint64* pOutputFrameCount)
+    ma_result ma_data_converter_get_input_channel_map(const ma_data_converter* pConverter, ma_channel* pChannelMap, size_t channelMapCap)
+    ma_result ma_data_converter_get_output_channel_map(const ma_data_converter* pConverter, ma_channel* pChannelMap, size_t channelMapCap)
+    ma_result ma_data_converter_reset(ma_data_converter* pConverter)
+
 
     void ma_pcm_u8_to_s16(void *pOut, const void *pIn, ma_uint64 count, ma_dither_mode ditherMode)
     void ma_pcm_u8_to_s24(void *pOut, const void *pIn, ma_uint64 count, ma_dither_mode ditherMode)

@@ -391,11 +391,6 @@ ma_result ma_biquad_process_pcm_frames(ma_biquad* pBQ, void* pFramesOut, const v
 ma_uint32 ma_biquad_get_latency(const ma_biquad* pBQ)
 
 
-
-
-
-
-
 typedef struct
 {
     ma_format format
@@ -478,10 +473,6 @@ ma_result ma_lpf_reinit(const ma_lpf_config* pConfig, ma_lpf* pLPF)
 ma_result ma_lpf_clear_cache(ma_lpf* pLPF)
 ma_result ma_lpf_process_pcm_frames(ma_lpf* pLPF, void* pFramesOut, const void* pFramesIn, ma_uint64 frameCount)
 ma_uint32 ma_lpf_get_latency(const ma_lpf* pLPF)
-
-
-
-
 
 
 
@@ -683,12 +674,6 @@ ma_result ma_peak2_reinit(const ma_peak2_config* pConfig, ma_peak2* pFilter)
 ma_result ma_peak2_process_pcm_frames(ma_peak2* pFilter, void* pFramesOut, const void* pFramesIn, ma_uint64 frameCount)
 ma_uint32 ma_peak2_get_latency(const ma_peak2* pFilter)
 
-
-
-
-
-
-
 typedef struct
 {
     ma_format format
@@ -713,11 +698,6 @@ void ma_loshelf2_uninit(ma_loshelf2* pFilter, const ma_allocation_callbacks* pAl
 ma_result ma_loshelf2_reinit(const ma_loshelf2_config* pConfig, ma_loshelf2* pFilter)
 ma_result ma_loshelf2_process_pcm_frames(ma_loshelf2* pFilter, void* pFramesOut, const void* pFramesIn, ma_uint64 frameCount)
 ma_uint32 ma_loshelf2_get_latency(const ma_loshelf2* pFilter)
-
-
-
-
-
 
 
 typedef struct
@@ -1095,6 +1075,7 @@ typedef struct
     ma_bool32 _ownsHeap
 } ma_linear_resampler
 
+
 ma_result ma_linear_resampler_get_heap_size(const ma_linear_resampler_config* pConfig, size_t* pHeapSizeInBytes)
 ma_result ma_linear_resampler_init_preallocated(const ma_linear_resampler_config* pConfig, void* pHeap, ma_linear_resampler* pResampler)
 ma_result ma_linear_resampler_init(const ma_linear_resampler_config* pConfig, const ma_allocation_callbacks* pAllocationCallbacks, ma_linear_resampler* pResampler)
@@ -1170,59 +1151,16 @@ typedef struct
 
 ma_result ma_resampler_get_heap_size(const ma_resampler_config* pConfig, size_t* pHeapSizeInBytes)
 ma_result ma_resampler_init_preallocated(const ma_resampler_config* pConfig, void* pHeap, ma_resampler* pResampler)
-
-
-
-
 ma_result ma_resampler_init(const ma_resampler_config* pConfig, const ma_allocation_callbacks* pAllocationCallbacks, ma_resampler* pResampler)
-
-
-
-
 void ma_resampler_uninit(ma_resampler* pResampler, const ma_allocation_callbacks* pAllocationCallbacks)
-
 ma_result ma_resampler_process_pcm_frames(ma_resampler* pResampler, const void* pFramesIn, ma_uint64* pFrameCountIn, void* pFramesOut, ma_uint64* pFrameCountOut)
-
-
-
-
-
 ma_result ma_resampler_set_rate(ma_resampler* pResampler, ma_uint32 sampleRateIn, ma_uint32 sampleRateOut)
-
-
-
-
-
-
 ma_result ma_resampler_set_rate_ratio(ma_resampler* pResampler, float ratio)
-
-
-
-
 ma_uint64 ma_resampler_get_input_latency(const ma_resampler* pResampler)
-
-
-
-
 ma_uint64 ma_resampler_get_output_latency(const ma_resampler* pResampler)
-
 ma_result ma_resampler_get_required_input_frame_count(const ma_resampler* pResampler, ma_uint64 outputFrameCount, ma_uint64* pInputFrameCount)
-
-
-
-
-
 ma_result ma_resampler_get_expected_output_frame_count(const ma_resampler* pResampler, ma_uint64 inputFrameCount, ma_uint64* pOutputFrameCount)
-
-
-
-
 ma_result ma_resampler_reset(ma_resampler* pResampler)
-
-
-
-
-
 
 
 typedef enum
