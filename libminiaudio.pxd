@@ -2,10 +2,8 @@
 from libc.stddef cimport wchar_t
 
 
-
 cdef extern from "<pthread.h>" nogil:
     # see: https://github.com/python-llfuse/python-llfuse/blob/master/Include/pthread.pxd
-
     ctypedef unsigned long int pthread_t
 
     ctypedef union pthread_mutex_t:
@@ -13,7 +11,6 @@ cdef extern from "<pthread.h>" nogil:
 
     ctypedef union pthread_cond_t:
         pass
-
 
 
 cdef extern from "miniaudio.h":
@@ -27,8 +24,14 @@ cdef extern from "miniaudio.h":
     # DEF MA_SUCCESS = 0
 
     DEF MA_MAX_CHANNELS = 32
-    
 
+
+    ctypedef enum ma_log_level:
+        MA_LOG_LEVEL_DEBUG = 4
+        MA_LOG_LEVEL_INFO = 3
+        MA_LOG_LEVEL_WARNING = 2
+        MA_LOG_LEVEL_ERROR = 1
+    
     ctypedef   signed char      ma_int8
     ctypedef unsigned char      ma_uint8
     ctypedef   signed short     ma_int16
@@ -42,6 +45,7 @@ cdef extern from "miniaudio.h":
     ctypedef ma_uint8  ma_bool8
     ctypedef ma_uint32 ma_bool32
 
+    # TODO: check these
     ctypedef void *ma_handle
     ctypedef void *ma_ptr
     ctypedef void (*ma_proc)()
@@ -50,7 +54,81 @@ cdef extern from "miniaudio.h":
     ctypedef struct ma_device
 
     ctypedef ma_uint8 ma_channel
-    ctypedef int ma_result
+    # ctypedef int ma_result
+
+    ctypedef enum ma_result:
+        MA_SUCCESS = 0
+        MA_ERROR = -1
+        MA_INVALID_ARGS = -2
+        MA_INVALID_OPERATION = -3
+        MA_OUT_OF_MEMORY = -4
+        MA_OUT_OF_RANGE = -5
+        MA_ACCESS_DENIED = -6
+        MA_DOES_NOT_EXIST = -7
+        MA_ALREADY_EXISTS = -8
+        MA_TOO_MANY_OPEN_FILES = -9
+        MA_INVALID_FILE = -10
+        MA_TOO_BIG = -11
+        MA_PATH_TOO_LONG = -12
+        MA_NAME_TOO_LONG = -13
+        MA_NOT_DIRECTORY = -14
+        MA_IS_DIRECTORY = -15
+        MA_DIRECTORY_NOT_EMPTY = -16
+        MA_AT_END = -17
+        MA_NO_SPACE = -18
+        MA_BUSY = -19
+        MA_IO_ERROR = -20
+        MA_INTERRUPT = -21
+        MA_UNAVAILABLE = -22
+        MA_ALREADY_IN_USE = -23
+        MA_BAD_ADDRESS = -24
+        MA_BAD_SEEK = -25
+        MA_BAD_PIPE = -26
+        MA_DEADLOCK = -27
+        MA_TOO_MANY_LINKS = -28
+        MA_NOT_IMPLEMENTED = -29
+        MA_NO_MESSAGE = -30
+        MA_BAD_MESSAGE = -31
+        MA_NO_DATA_AVAILABLE = -32
+        MA_INVALID_DATA = -33
+        MA_TIMEOUT = -34
+        MA_NO_NETWORK = -35
+        MA_NOT_UNIQUE = -36
+        MA_NOT_SOCKET = -37
+        MA_NO_ADDRESS = -38
+        MA_BAD_PROTOCOL = -39
+        MA_PROTOCOL_UNAVAILABLE = -40
+        MA_PROTOCOL_NOT_SUPPORTED = -41
+        MA_PROTOCOL_FAMILY_NOT_SUPPORTED = -42
+        MA_ADDRESS_FAMILY_NOT_SUPPORTED = -43
+        MA_SOCKET_NOT_SUPPORTED = -44
+        MA_CONNECTION_RESET = -45
+        MA_ALREADY_CONNECTED = -46
+        MA_NOT_CONNECTED = -47
+        MA_CONNECTION_REFUSED = -48
+        MA_NO_HOST = -49
+        MA_IN_PROGRESS = -50
+        MA_CANCELLED = -51
+        MA_MEMORY_ALREADY_MAPPED = -52
+        MA_CRC_MISMATCH = -100
+        MA_FORMAT_NOT_SUPPORTED = -200
+        MA_DEVICE_TYPE_NOT_SUPPORTED = -201
+        MA_SHARE_MODE_NOT_SUPPORTED = -202
+        MA_NO_BACKEND = -203
+        MA_NO_DEVICE = -204
+        MA_API_NOT_FOUND = -205
+        MA_INVALID_DEVICE_CONFIG = -206
+        MA_LOOP = -207
+        MA_BACKEND_NOT_ENABLED = -208
+        MA_DEVICE_NOT_INITIALIZED = -300
+        MA_DEVICE_ALREADY_INITIALIZED = -301
+        MA_DEVICE_NOT_STARTED = -302
+        MA_DEVICE_NOT_STOPPED = -303
+        MA_FAILED_TO_INIT_BACKEND = -400
+        MA_FAILED_TO_OPEN_BACKEND_DEVICE = -401
+        MA_FAILED_TO_START_BACKEND_DEVICE = -402
+        MA_FAILED_TO_STOP_BACKEND_DEVICE = -403
+
 
     ctypedef enum ma_stream_format:
         ma_stream_format_pcm = 0
@@ -96,8 +174,7 @@ cdef extern from "miniaudio.h":
         ma_channel_mix_mode_rectangular = 0
         ma_channel_mix_mode_simple
         ma_channel_mix_mode_custom_weights
-        ma_channel_mix_mode_planar_blend = ma_channel_mix_mode_rectangular
-        ma_channel_mix_mode_default = ma_channel_mix_mode_planar_blend
+        ma_channel_mix_mode_default = ma_channel_mix_mode_rectangular
 
     ctypedef enum ma_standard_channel_map:
         ma_standard_channel_map_microsoft
@@ -153,6 +230,30 @@ cdef extern from "miniaudio.h":
     void ma_version(ma_uint32* pMajor, ma_uint32* pMinor, ma_uint32* pRevision)
     char* ma_version_string()
 
+
+    ctypedef void (* ma_log_callback_proc)(void* pUserData, ma_uint32 level, const char* pMessage)
+
+    ctypedef struct ma_log_callback:
+        ma_log_callback_proc onLog
+        void* pUserData
+
+    ma_log_callback ma_log_callback_init(ma_log_callback_proc onLog, void* pUserData)
+
+    ctypedef struct ma_log:
+        ma_log_callback callbacks[4]
+        ma_uint32 callbackCount
+        ma_allocation_callbacks allocationCallbacks
+        ma_mutex lock
+
+    ma_result ma_log_init(const ma_allocation_callbacks* pAllocationCallbacks, ma_log* pLog)
+    void ma_log_uninit(ma_log* pLog)
+    ma_result ma_log_register_callback(ma_log* pLog, ma_log_callback callback)
+    ma_result ma_log_unregister_callback(ma_log* pLog, ma_log_callback callback)
+    ma_result ma_log_post(ma_log* pLog, ma_uint32 level, const char* pMessage)
+    # ma_result ma_log_postv(ma_log* pLog, ma_uint32 level, const char* pFormat, va_list args)
+    # ma_result ma_log_postf(ma_log* pLog, ma_uint32 level, const char* pFormat, ...) __attribute__((format(printf, 3, 4)))
+
+
     ctypedef union ma_biquad_coefficient:
         float f32
         ma_int32 s32
@@ -168,11 +269,7 @@ cdef extern from "miniaudio.h":
         double a2
 
     # API
-    ma_biquad_config ma_biquad_config_init(
-        ma_format format,
-        ma_uint32 channels, double b0,
-        double b1, double b2, double a0,
-        double a1, double a2)
+    ma_biquad_config ma_biquad_config_init(ma_format format, ma_uint32 channels, double b0, double b1, double b2, double a0, double a1, double a2)
 
     ctypedef struct ma_biquad:
         ma_format format
@@ -182,16 +279,18 @@ cdef extern from "miniaudio.h":
         ma_biquad_coefficient b2
         ma_biquad_coefficient a1
         ma_biquad_coefficient a2
-        ma_biquad_coefficient r1[32]
-        ma_biquad_coefficient r2[32]
+        ma_biquad_coefficient* pR1
+        ma_biquad_coefficient* pR2
 
     # API
-    ma_result ma_biquad_init(const ma_biquad_config *pConfig, ma_biquad *pBQ)
-    ma_result ma_biquad_reinit(const ma_biquad_config *pConfig, ma_biquad *pBQ)
-    ma_result ma_biquad_process_pcm_frames(ma_biquad *pBQ, void *pFramesOut,
-                                           const void *pFramesIn, ma_uint64 frameCount)
-    ma_uint32 ma_biquad_get_latency(const ma_biquad *pBQ)
-
+    ma_result ma_biquad_get_heap_size(const ma_biquad_config* pConfig, size_t* pHeapSizeInBytes)
+    ma_result ma_biquad_init_preallocated(const ma_biquad_config* pConfig, void* pHeap, ma_biquad* pBQ)
+    ma_result ma_biquad_init(const ma_biquad_config* pConfig, const ma_allocation_callbacks* pAllocationCallbacks, ma_biquad* pBQ)
+    void ma_biquad_uninit(ma_biquad* pBQ, const ma_allocation_callbacks* pAllocationCallbacks)
+    ma_result ma_biquad_reinit(const ma_biquad_config* pConfig, ma_biquad* pBQ)
+    ma_result ma_biquad_clear_cache(ma_biquad* pBQ)
+    ma_result ma_biquad_process_pcm_frames(ma_biquad* pBQ, void* pFramesOut, const void* pFramesIn, ma_uint64 frameCount)
+    ma_uint32 ma_biquad_get_latency(const ma_biquad* pBQ)
 
     ctypedef struct ma_lpf1_config:
         ma_format format
@@ -203,26 +302,19 @@ cdef extern from "miniaudio.h":
     ctypedef ma_lpf1_config ma_lpf2_config
 
 
-    ma_lpf1_config ma_lpf1_config_init(ma_format format, ma_uint32 channels,
-                                              ma_uint32 sampleRate,
-                                              double cutoffFrequency)
-    ma_lpf2_config ma_lpf2_config_init(ma_format format, ma_uint32 channels,
-                                              ma_uint32 sampleRate,
-                                              double cutoffFrequency, double q)
+    ma_lpf1_config ma_lpf1_config_init(ma_format format, ma_uint32 channels, ma_uint32 sampleRate, double cutoffFrequency)
+    ma_lpf2_config ma_lpf2_config_init(ma_format format, ma_uint32 channels, ma_uint32 sampleRate, double cutoffFrequency, double q)
 
 
     ctypedef struct ma_lpf1:
         ma_format format
         ma_uint32 channels
         ma_biquad_coefficient a
-        ma_biquad_coefficient r1[32]
-    
+        ma_biquad_coefficient* pR1
 
     ma_result ma_lpf1_init(const ma_lpf1_config *pConfig, ma_lpf1 *pLPF)
     ma_result ma_lpf1_reinit(const ma_lpf1_config *pConfig, ma_lpf1 *pLPF)
-    ma_result ma_lpf1_process_pcm_frames(ma_lpf1 *pLPF, void *pFramesOut,
-                                                const void *pFramesIn,
-                                                ma_uint64 frameCount)
+    ma_result ma_lpf1_process_pcm_frames(ma_lpf1 *pLPF, void *pFramesOut, const void *pFramesIn, ma_uint64 frameCount)
     ma_uint32 ma_lpf1_get_latency(const ma_lpf1 *pLPF)
 
     ctypedef struct ma_lpf2:
@@ -230,9 +322,7 @@ cdef extern from "miniaudio.h":
 
     ma_result ma_lpf2_init(const ma_lpf2_config *pConfig, ma_lpf2 *pLPF)
     ma_result ma_lpf2_reinit(const ma_lpf2_config *pConfig, ma_lpf2 *pLPF)
-    ma_result ma_lpf2_process_pcm_frames(ma_lpf2 *pLPF, void *pFramesOut,
-                                                const void *pFramesIn,
-                                                ma_uint64 frameCount)
+    ma_result ma_lpf2_process_pcm_frames(ma_lpf2 *pLPF, void *pFramesOut, const void *pFramesIn, ma_uint64 frameCount)
     ma_uint32 ma_lpf2_get_latency(const ma_lpf2 *pLPF)
 
     ctypedef struct ma_lpf_config:
@@ -243,11 +333,7 @@ cdef extern from "miniaudio.h":
         ma_uint32 order
 
 
-
-    ma_lpf_config ma_lpf_config_init(ma_format format, ma_uint32 channels,
-                                            ma_uint32 sampleRate,
-                                            double cutoffFrequency,
-                                            ma_uint32 order)
+    ma_lpf_config ma_lpf_config_init(ma_format format, ma_uint32 channels, ma_uint32 sampleRate, double cutoffFrequency, ma_uint32 order)
 
     ctypedef struct ma_lpf:
         ma_format format
@@ -255,16 +341,18 @@ cdef extern from "miniaudio.h":
         ma_uint32 sampleRate
         ma_uint32 lpf1Count
         ma_uint32 lpf2Count
-        ma_lpf1 lpf1[1]
-        ma_lpf2 lpf2[4] # was lfp2[8 / 2]
+        ma_lpf1* pLPF1
+        ma_lpf2* pLPF2
 
+    ma_result ma_lpf_get_heap_size(const ma_lpf_config* pConfig, size_t* pHeapSizeInBytes)
+    ma_result ma_lpf_init_preallocated(const ma_lpf_config* pConfig, void* pHeap, ma_lpf* pLPF)
+    ma_result ma_lpf_init(const ma_lpf_config* pConfig, const ma_allocation_callbacks* pAllocationCallbacks, ma_lpf* pLPF)
+    void ma_lpf_uninit(ma_lpf* pLPF, const ma_allocation_callbacks* pAllocationCallbacks)
+    ma_result ma_lpf_reinit(const ma_lpf_config* pConfig, ma_lpf* pLPF)
+    ma_result ma_lpf_clear_cache(ma_lpf* pLPF)
+    ma_result ma_lpf_process_pcm_frames(ma_lpf* pLPF, void* pFramesOut, const void* pFramesIn, ma_uint64 frameCount)
+    ma_uint32 ma_lpf_get_latency(const ma_lpf* pLPF)
 
-    ma_result ma_lpf_init(const ma_lpf_config *pConfig, ma_lpf *pLPF)
-    ma_result ma_lpf_reinit(const ma_lpf_config *pConfig, ma_lpf *pLPF)
-    ma_result ma_lpf_process_pcm_frames(ma_lpf *pLPF, void *pFramesOut,
-                                               const void *pFramesIn,
-                                               ma_uint64 frameCount)
-    ma_uint32 ma_lpf_get_latency(const ma_lpf *pLPF)
 
     ctypedef struct ma_hpf1_config:
         ma_format format
@@ -275,38 +363,33 @@ cdef extern from "miniaudio.h":
 
     ctypedef ma_hpf1_config ma_hpf2_config
 
-    ma_hpf1_config ma_hpf1_config_init(ma_format format, ma_uint32 channels,
-                                              ma_uint32 sampleRate,
-                                              double cutoffFrequency)
-    ma_hpf2_config ma_hpf2_config_init(ma_format format, ma_uint32 channels,
-                                              ma_uint32 sampleRate,
-                                              double cutoffFrequency, double q)
+    ma_hpf1_config ma_hpf1_config_init(ma_format format, ma_uint32 channels, ma_uint32 sampleRate, double cutoffFrequency)
+    ma_hpf2_config ma_hpf2_config_init(ma_format format, ma_uint32 channels, ma_uint32 sampleRate, double cutoffFrequency, double q)
 
     ctypedef struct ma_hpf1:
         ma_format format
         ma_uint32 channels
         ma_biquad_coefficient a
-        ma_biquad_coefficient r1[32]
+        ma_biquad_coefficient* pR1
 
-
-
-    ma_result ma_hpf1_init(const ma_hpf1_config *pConfig, ma_hpf1 *pHPF)
-    ma_result ma_hpf1_reinit(const ma_hpf1_config *pConfig, ma_hpf1 *pHPF)
-    ma_result ma_hpf1_process_pcm_frames(ma_hpf1 *pHPF, void *pFramesOut,
-                                                const void *pFramesIn,
-                                                ma_uint64 frameCount)
-    ma_uint32 ma_hpf1_get_latency(const ma_hpf1 *pHPF)
+    ma_result ma_hpf1_get_heap_size(const ma_hpf1_config* pConfig, size_t* pHeapSizeInBytes)
+    ma_result ma_hpf1_init_preallocated(const ma_hpf1_config* pConfig, void* pHeap, ma_hpf1* pLPF)
+    ma_result ma_hpf1_init(const ma_hpf1_config* pConfig, const ma_allocation_callbacks* pAllocationCallbacks, ma_hpf1* pHPF)
+    void ma_hpf1_uninit(ma_hpf1* pHPF, const ma_allocation_callbacks* pAllocationCallbacks)
+    ma_result ma_hpf1_reinit(const ma_hpf1_config* pConfig, ma_hpf1* pHPF)
+    ma_result ma_hpf1_process_pcm_frames(ma_hpf1* pHPF, void* pFramesOut, const void* pFramesIn, ma_uint64 frameCount)
+    ma_uint32 ma_hpf1_get_latency(const ma_hpf1* pHPF)
 
     ctypedef struct ma_hpf2:
         ma_biquad bq
 
-
-    ma_result ma_hpf2_init(const ma_hpf2_config *pConfig, ma_hpf2 *pHPF)
-    ma_result ma_hpf2_reinit(const ma_hpf2_config *pConfig, ma_hpf2 *pHPF)
-    ma_result ma_hpf2_process_pcm_frames(ma_hpf2 *pHPF, void *pFramesOut,
-                                                const void *pFramesIn,
-                                                ma_uint64 frameCount)
-    ma_uint32 ma_hpf2_get_latency(const ma_hpf2 *pHPF)
+    ma_result ma_hpf2_get_heap_size(const ma_hpf2_config* pConfig, size_t* pHeapSizeInBytes)
+    ma_result ma_hpf2_init_preallocated(const ma_hpf2_config* pConfig, void* pHeap, ma_hpf2* pHPF)
+    ma_result ma_hpf2_init(const ma_hpf2_config* pConfig, const ma_allocation_callbacks* pAllocationCallbacks, ma_hpf2* pHPF)
+    void ma_hpf2_uninit(ma_hpf2* pHPF, const ma_allocation_callbacks* pAllocationCallbacks)
+    ma_result ma_hpf2_reinit(const ma_hpf2_config* pConfig, ma_hpf2* pHPF)
+    ma_result ma_hpf2_process_pcm_frames(ma_hpf2* pHPF, void* pFramesOut, const void* pFramesIn, ma_uint64 frameCount)
+    ma_uint32 ma_hpf2_get_latency(const ma_hpf2* pHPF)
 
     ctypedef struct ma_hpf_config:
         ma_format format
@@ -315,10 +398,7 @@ cdef extern from "miniaudio.h":
         double cutoffFrequency
         ma_uint32 order
 
-    ma_hpf_config ma_hpf_config_init(ma_format format, ma_uint32 channels,
-                                            ma_uint32 sampleRate,
-                                            double cutoffFrequency,
-                                            ma_uint32 order)
+    ma_hpf_config ma_hpf_config_init(ma_format format, ma_uint32 channels, ma_uint32 sampleRate, double cutoffFrequency, ma_uint32 order)
 
     ctypedef struct ma_hpf:
         ma_format format
@@ -326,18 +406,16 @@ cdef extern from "miniaudio.h":
         ma_uint32 sampleRate
         ma_uint32 hpf1Count
         ma_uint32 hpf2Count
-        ma_hpf1 hpf1[1]
-        ma_hpf2 hpf2[4] # was hpf2[8 / 2]
+        ma_hpf1* pHPF1
+        ma_hpf2* pHPF2
 
-
-
-
-    ma_result ma_hpf_init(const ma_hpf_config *pConfig, ma_hpf *pHPF)
-    ma_result ma_hpf_reinit(const ma_hpf_config *pConfig, ma_hpf *pHPF)
-    ma_result ma_hpf_process_pcm_frames(ma_hpf *pHPF, void *pFramesOut,
-                                               const void *pFramesIn,
-                                               ma_uint64 frameCount)
-    ma_uint32 ma_hpf_get_latency(const ma_hpf *pHPF)
+    ma_result ma_hpf_get_heap_size(const ma_hpf_config* pConfig, size_t* pHeapSizeInBytes)
+    ma_result ma_hpf_init_preallocated(const ma_hpf_config* pConfig, void* pHeap, ma_hpf* pLPF)
+    ma_result ma_hpf_init(const ma_hpf_config* pConfig, const ma_allocation_callbacks* pAllocationCallbacks, ma_hpf* pHPF)
+    void ma_hpf_uninit(ma_hpf* pHPF, const ma_allocation_callbacks* pAllocationCallbacks)
+    ma_result ma_hpf_reinit(const ma_hpf_config* pConfig, ma_hpf* pHPF)
+    ma_result ma_hpf_process_pcm_frames(ma_hpf* pHPF, void* pFramesOut, const void* pFramesIn, ma_uint64 frameCount)
+    ma_uint32 ma_hpf_get_latency(const ma_hpf* pHPF)
 
     ctypedef struct ma_bpf2_config:
         ma_format format
@@ -347,19 +425,18 @@ cdef extern from "miniaudio.h":
         double q
 
 
-    ma_bpf2_config ma_bpf2_config_init(ma_format format, ma_uint32 channels,
-                                              ma_uint32 sampleRate,
-                                              double cutoffFrequency, double q)
+    ma_bpf2_config ma_bpf2_config_init(ma_format format, ma_uint32 channels, ma_uint32 sampleRate, double cutoffFrequency, double q)
 
     ctypedef struct ma_bpf2:
         ma_biquad bq
 
-    ma_result ma_bpf2_init(const ma_bpf2_config *pConfig, ma_bpf2 *pBPF)
-    ma_result ma_bpf2_reinit(const ma_bpf2_config *pConfig, ma_bpf2 *pBPF)
-    ma_result ma_bpf2_process_pcm_frames(ma_bpf2 *pBPF, void *pFramesOut,
-                                                const void *pFramesIn,
-                                                ma_uint64 frameCount)
-    ma_uint32 ma_bpf2_get_latency(const ma_bpf2 *pBPF)
+    ma_result ma_bpf2_get_heap_size(const ma_bpf2_config* pConfig, size_t* pHeapSizeInBytes)
+    ma_result ma_bpf2_init_preallocated(const ma_bpf2_config* pConfig, void* pHeap, ma_bpf2* pBPF)
+    ma_result ma_bpf2_init(const ma_bpf2_config* pConfig, const ma_allocation_callbacks* pAllocationCallbacks, ma_bpf2* pBPF)
+    void ma_bpf2_uninit(ma_bpf2* pBPF, const ma_allocation_callbacks* pAllocationCallbacks)
+    ma_result ma_bpf2_reinit(const ma_bpf2_config* pConfig, ma_bpf2* pBPF)
+    ma_result ma_bpf2_process_pcm_frames(ma_bpf2* pBPF, void* pFramesOut, const void* pFramesIn, ma_uint64 frameCount)
+    ma_uint32 ma_bpf2_get_latency(const ma_bpf2* pBPF)
 
     ctypedef struct ma_bpf_config:
         ma_format format
@@ -368,23 +445,21 @@ cdef extern from "miniaudio.h":
         double cutoffFrequency
         ma_uint32 order
 
-    ma_bpf_config ma_bpf_config_init(ma_format format, ma_uint32 channels,
-                                            ma_uint32 sampleRate,
-                                            double cutoffFrequency,
-                                            ma_uint32 order)
+    ma_bpf_config ma_bpf_config_init(ma_format format, ma_uint32 channels, ma_uint32 sampleRate, double cutoffFrequency, ma_uint32 order)
 
     ctypedef struct ma_bpf:
         ma_format format
         ma_uint32 channels
         ma_uint32 bpf2Count
-        ma_bpf2 bpf2[4] # was bpf2[8 / 2]
+        ma_bpf2* pBPF2
 
-    ma_result ma_bpf_init(const ma_bpf_config *pConfig, ma_bpf *pBPF)
-    ma_result ma_bpf_reinit(const ma_bpf_config *pConfig, ma_bpf *pBPF)
-    ma_result ma_bpf_process_pcm_frames(ma_bpf *pBPF, void *pFramesOut,
-                                               const void *pFramesIn,
-                                               ma_uint64 frameCount)
-    ma_uint32 ma_bpf_get_latency(const ma_bpf *pBPF)
+    ma_result ma_bpf_get_heap_size(const ma_bpf_config* pConfig, size_t* pHeapSizeInBytes)
+    ma_result ma_bpf_init_preallocated(const ma_bpf_config* pConfig, void* pHeap, ma_bpf* pBPF)
+    ma_result ma_bpf_init(const ma_bpf_config* pConfig, const ma_allocation_callbacks* pAllocationCallbacks, ma_bpf* pBPF)
+    void ma_bpf_uninit(ma_bpf* pBPF, const ma_allocation_callbacks* pAllocationCallbacks)
+    ma_result ma_bpf_reinit(const ma_bpf_config* pConfig, ma_bpf* pBPF)
+    ma_result ma_bpf_process_pcm_frames(ma_bpf* pBPF, void* pFramesOut, const void* pFramesIn, ma_uint64 frameCount)
+    ma_uint32 ma_bpf_get_latency(const ma_bpf* pBPF)
 
     ctypedef struct ma_notch2_config:
         ma_format format
@@ -393,26 +468,18 @@ cdef extern from "miniaudio.h":
         double q
         double frequency
 
-    ma_notch2_config ma_notch2_config_init(ma_format format,
-                                                  ma_uint32 channels,
-                                                  ma_uint32 sampleRate, double q,
-                                                  double frequency)
+    ma_notch2_config ma_notch2_config_init(ma_format format, ma_uint32 channels, ma_uint32 sampleRate, double q, double frequency)
 
     ctypedef struct ma_notch2:
         ma_biquad bq
 
-    ma_result ma_notch2_init(const ma_notch2_config *pConfig,
-                                    ma_notch2 *pFilter)
-    ma_result ma_notch2_reinit(const ma_notch2_config *pConfig,
-                                      ma_notch2 *pFilter)
-    ma_result ma_notch2_process_pcm_frames(ma_notch2 *pFilter,
-                                                  void *pFramesOut,
-                                                  const void *pFramesIn,
-                                                  ma_uint64 frameCount)
-    ma_uint32 ma_notch2_get_latency(const ma_notch2 *pFilter)
-
-
-
+    ma_result ma_notch2_get_heap_size(const ma_notch2_config* pConfig, size_t* pHeapSizeInBytes)
+    ma_result ma_notch2_init_preallocated(const ma_notch2_config* pConfig, void* pHeap, ma_notch2* pFilter)
+    ma_result ma_notch2_init(const ma_notch2_config* pConfig, const ma_allocation_callbacks* pAllocationCallbacks, ma_notch2* pFilter)
+    void ma_notch2_uninit(ma_notch2* pFilter, const ma_allocation_callbacks* pAllocationCallbacks)
+    ma_result ma_notch2_reinit(const ma_notch2_config* pConfig, ma_notch2* pFilter)
+    ma_result ma_notch2_process_pcm_frames(ma_notch2* pFilter, void* pFramesOut, const void* pFramesIn, ma_uint64 frameCount)
+    ma_uint32 ma_notch2_get_latency(const ma_notch2* pFilter)
 
     ctypedef struct ma_peak2_config:
         ma_format format
@@ -422,24 +489,19 @@ cdef extern from "miniaudio.h":
         double q
         double frequency
 
-    ma_peak2_config ma_peak2_config_init(ma_format format,
-                                                ma_uint32 channels,
-                                                ma_uint32 sampleRate, double gainDB,
-                                                double q, double frequency)
+    ma_peak2_config ma_peak2_config_init(ma_format format, ma_uint32 channels, ma_uint32 sampleRate, double gainDB, double q, double frequency)
 
     ctypedef struct ma_peak2:
         ma_biquad bq
 
 
-    ma_result ma_peak2_init(const ma_peak2_config *pConfig,
-                                   ma_peak2 *pFilter)
-    ma_result ma_peak2_reinit(const ma_peak2_config *pConfig,
-                                     ma_peak2 *pFilter)
-    ma_result ma_peak2_process_pcm_frames(ma_peak2 *pFilter,
-                                                 void *pFramesOut,
-                                                 const void *pFramesIn,
-                                                 ma_uint64 frameCount)
-    ma_uint32 ma_peak2_get_latency(const ma_peak2 *pFilter)
+    ma_result ma_peak2_get_heap_size(const ma_peak2_config* pConfig, size_t* pHeapSizeInBytes)
+    ma_result ma_peak2_init_preallocated(const ma_peak2_config* pConfig, void* pHeap, ma_peak2* pFilter)
+    ma_result ma_peak2_init(const ma_peak2_config* pConfig, const ma_allocation_callbacks* pAllocationCallbacks, ma_peak2* pFilter)
+    void ma_peak2_uninit(ma_peak2* pFilter, const ma_allocation_callbacks* pAllocationCallbacks)
+    ma_result ma_peak2_reinit(const ma_peak2_config* pConfig, ma_peak2* pFilter)
+    ma_result ma_peak2_process_pcm_frames(ma_peak2* pFilter, void* pFramesOut, const void* pFramesIn, ma_uint64 frameCount)
+    ma_uint32 ma_peak2_get_latency(const ma_peak2* pFilter)
 
     ctypedef struct ma_loshelf2_config:
         ma_format format
@@ -450,23 +512,18 @@ cdef extern from "miniaudio.h":
         double frequency
 
 
-    ma_loshelf2_config ma_loshelf2_config_init(ma_format format, ma_uint32 channels,
-                            ma_uint32 sampleRate, double gainDB, double shelfSlope,
-                            double frequency)
+    ma_loshelf2_config ma_loshelf2_config_init(ma_format format, ma_uint32 channels, ma_uint32 sampleRate, double gainDB, double shelfSlope, double frequency)
 
     ctypedef struct ma_loshelf2:
         ma_biquad bq
 
-
-    ma_result ma_loshelf2_init(const ma_loshelf2_config *pConfig,
-                                      ma_loshelf2 *pFilter)
-    ma_result ma_loshelf2_reinit(const ma_loshelf2_config *pConfig,
-                                        ma_loshelf2 *pFilter)
-    ma_result ma_loshelf2_process_pcm_frames(ma_loshelf2 *pFilter,
-                                                    void *pFramesOut,
-                                                    const void *pFramesIn,
-                                                    ma_uint64 frameCount)
-    ma_uint32 ma_loshelf2_get_latency(const ma_loshelf2 *pFilter)
+    ma_result ma_loshelf2_get_heap_size(const ma_loshelf2_config* pConfig, size_t* pHeapSizeInBytes)
+    ma_result ma_loshelf2_init_preallocated(const ma_loshelf2_config* pConfig, void* pHeap, ma_loshelf2* pFilter)
+    ma_result ma_loshelf2_init(const ma_loshelf2_config* pConfig, const ma_allocation_callbacks* pAllocationCallbacks, ma_loshelf2* pFilter)
+    void ma_loshelf2_uninit(ma_loshelf2* pFilter, const ma_allocation_callbacks* pAllocationCallbacks)
+    ma_result ma_loshelf2_reinit(const ma_loshelf2_config* pConfig, ma_loshelf2* pFilter)
+    ma_result ma_loshelf2_process_pcm_frames(ma_loshelf2* pFilter, void* pFramesOut, const void* pFramesIn, ma_uint64 frameCount)
+    ma_uint32 ma_loshelf2_get_latency(const ma_loshelf2* pFilter)
 
     ctypedef struct ma_hishelf2_config:
         ma_format format
@@ -476,22 +533,14 @@ cdef extern from "miniaudio.h":
         double shelfSlope
         double frequency
 
-    ma_hishelf2_config ma_hishelf2_config_init(ma_format format, ma_uint32 channels,
-                            ma_uint32 sampleRate, double gainDB, double shelfSlope,
-                            double frequency)
+    ma_hishelf2_config ma_hishelf2_config_init(ma_format format, ma_uint32 channels, ma_uint32 sampleRate, double gainDB, double shelfSlope, double frequency)
 
     ctypedef struct ma_hishelf2:
         ma_biquad bq
 
-
-    ma_result ma_hishelf2_init(const ma_hishelf2_config *pConfig,
-                                      ma_hishelf2 *pFilter)
-    ma_result ma_hishelf2_reinit(const ma_hishelf2_config *pConfig,
-                                        ma_hishelf2 *pFilter)
-    ma_result ma_hishelf2_process_pcm_frames(ma_hishelf2 *pFilter,
-                                                    void *pFramesOut,
-                                                    const void *pFramesIn,
-                                                    ma_uint64 frameCount)
+    ma_result ma_hishelf2_init(const ma_hishelf2_config *pConfig, ma_hishelf2 *pFilter)
+    ma_result ma_hishelf2_reinit(const ma_hishelf2_config *pConfig, ma_hishelf2 *pFilter)
+    ma_result ma_hishelf2_process_pcm_frames(ma_hishelf2 *pFilter, void *pFramesOut, const void *pFramesIn, ma_uint64 frameCount)
     ma_uint32 ma_hishelf2_get_latency(const ma_hishelf2 *pFilter)
 
     ctypedef struct ma_linear_resampler_config:
@@ -511,9 +560,11 @@ cdef extern from "miniaudio.h":
     cdef union ma_linear_resampler__x0:
         float f32[32]
         ma_int16 s16[32]
+
     cdef union ma_linear_resampler__x1:
         float f32[32]
         ma_int16 s16[32]
+
     ctypedef struct ma_linear_resampler:
         ma_linear_resampler_config config
         ma_uint32 inAdvanceInt
@@ -524,21 +575,13 @@ cdef extern from "miniaudio.h":
         ma_linear_resampler__x1 x1
         ma_lpf lpf
 
-    ma_result ma_linear_resampler_init(const ma_linear_resampler_config *pConfig,
-                             ma_linear_resampler *pResampler)
+    ma_result ma_linear_resampler_init(const ma_linear_resampler_config *pConfig, ma_linear_resampler *pResampler)
     void ma_linear_resampler_uninit(ma_linear_resampler *pResampler)
-    ma_result ma_linear_resampler_process_pcm_frames(
-        ma_linear_resampler *pResampler, const void *pFramesIn,
-        ma_uint64 *pFrameCountIn, void *pFramesOut, ma_uint64 *pFrameCountOut)
-    ma_result ma_linear_resampler_set_rate(ma_linear_resampler *pResampler,
-                                                  ma_uint32 sampleRateIn,
-                                                  ma_uint32 sampleRateOut)
-    ma_result ma_linear_resampler_set_rate_ratio(ma_linear_resampler *pResampler,
-                                       float ratioInOut)
-    ma_uint64 ma_linear_resampler_get_required_input_frame_count(
-        const ma_linear_resampler *pResampler, ma_uint64 outputFrameCount)
-    ma_uint64 ma_linear_resampler_get_expected_output_frame_count(
-        const ma_linear_resampler *pResampler, ma_uint64 inputFrameCount)
+    ma_result ma_linear_resampler_process_pcm_frames(ma_linear_resampler *pResampler, const void *pFramesIn, ma_uint64 *pFrameCountIn, void *pFramesOut, ma_uint64 *pFrameCountOut)
+    ma_result ma_linear_resampler_set_rate(ma_linear_resampler *pResampler, ma_uint32 sampleRateIn, ma_uint32 sampleRateOut)
+    ma_result ma_linear_resampler_set_rate_ratio(ma_linear_resampler *pResampler, float ratioInOut)
+    ma_uint64 ma_linear_resampler_get_required_input_frame_count(const ma_linear_resampler *pResampler, ma_uint64 outputFrameCount)
+    ma_uint64 ma_linear_resampler_get_expected_output_frame_count(const ma_linear_resampler *pResampler, ma_uint64 inputFrameCount)
     ma_uint64 ma_linear_resampler_get_input_latency(const ma_linear_resampler *pResampler)
     ma_uint64 ma_linear_resampler_get_output_latency(const ma_linear_resampler *pResampler)
 
@@ -546,12 +589,13 @@ cdef extern from "miniaudio.h":
         ma_resample_algorithm_linear = 0
         ma_resample_algorithm_speex
 
-
     cdef struct ma_resampler_config__linear:
         ma_uint32 lpfOrder
         double lpfNyquistFactor
+
     cdef struct ma_resampler_config__speex:
         int quality
+
     ctypedef struct ma_resampler_config:
         ma_format format
         ma_uint32 channels
@@ -561,12 +605,7 @@ cdef extern from "miniaudio.h":
         ma_resampler_config__linear linear
         ma_resampler_config__speex speex
 
-
-    ma_resampler_config ma_resampler_config_init(ma_format format, ma_uint32 channels,
-                             ma_uint32 sampleRateIn, ma_uint32 sampleRateOut,
-                             ma_resample_algorithm algorithm)
-
-
+    ma_resampler_config ma_resampler_config_init(ma_format format, ma_uint32 channels, ma_uint32 sampleRateIn, ma_uint32 sampleRateOut, ma_resample_algorithm algorithm)
 
     cdef struct ma_resampler__state__speex:
         void *pSpeexResamplerState
@@ -580,34 +619,15 @@ cdef extern from "miniaudio.h":
         ma_resampler__state state
 
 
-    ma_result ma_resampler_init(const ma_resampler_config *pConfig,
-                                       ma_resampler *pResampler)
-
+    ma_result ma_resampler_init(const ma_resampler_config *pConfig, ma_resampler *pResampler)
     void ma_resampler_uninit(ma_resampler *pResampler)
-
-    ma_result ma_resampler_process_pcm_frames(ma_resampler *pResampler,
-                                                     const void *pFramesIn,
-                                                     ma_uint64 *pFrameCountIn,
-                                                     void *pFramesOut,
-                                                     ma_uint64 *pFrameCountOut)
-
-    ma_result ma_resampler_set_rate(ma_resampler *pResampler,
-                                           ma_uint32 sampleRateIn,
-                                           ma_uint32 sampleRateOut)
-
-    ma_result ma_resampler_set_rate_ratio(ma_resampler *pResampler,
-                                                 float ratio)
-
-    ma_uint64 ma_resampler_get_required_input_frame_count(const ma_resampler *pResampler,
-                                                ma_uint64 outputFrameCount)
-
-    ma_uint64 ma_resampler_get_expected_output_frame_count(const ma_resampler *pResampler,
-                                                 ma_uint64 inputFrameCount)
-
+    ma_result ma_resampler_process_pcm_frames(ma_resampler *pResampler, const void *pFramesIn, ma_uint64 *pFrameCountIn, void *pFramesOut, ma_uint64 *pFrameCountOut)
+    ma_result ma_resampler_set_rate(ma_resampler *pResampler, ma_uint32 sampleRateIn, ma_uint32 sampleRateOut)
+    ma_result ma_resampler_set_rate_ratio(ma_resampler *pResampler, float ratio)
+    ma_uint64 ma_resampler_get_required_input_frame_count(const ma_resampler *pResampler, ma_uint64 outputFrameCount)
+    ma_uint64 ma_resampler_get_expected_output_frame_count(const ma_resampler *pResampler, ma_uint64 inputFrameCount)
     ma_uint64 ma_resampler_get_input_latency(const ma_resampler *pResampler)
-
     ma_uint64 ma_resampler_get_output_latency(const ma_resampler *pResampler)
-
 
     ctypedef struct ma_channel_converter_config:
         ma_format format
@@ -618,12 +638,7 @@ cdef extern from "miniaudio.h":
         ma_channel_mix_mode mixingMode
         float weights[32][32]
 
-
-    ma_channel_converter_config ma_channel_converter_config_init(
-        ma_format format, ma_uint32 channelsIn, const ma_channel *pChannelMapIn,
-        ma_uint32 channelsOut, const ma_channel *pChannelMapOut,
-        ma_channel_mix_mode mixingMode)
-
+    ma_channel_converter_config ma_channel_converter_config_init(ma_format format, ma_uint32 channelsIn, const ma_channel *pChannelMapIn,ma_uint32 channelsOut, const ma_channel *pChannelMapOut,ma_channel_mix_mode mixingMode)
 
     cdef union ma_channel_converter__weights:
         float f32[32][32]
@@ -644,12 +659,9 @@ cdef extern from "miniaudio.h":
         ma_uint8 shuffleTable[32]
 
 
-    ma_result ma_channel_converter_init(const ma_channel_converter_config *pConfig,
-                              ma_channel_converter *pConverter)
+    ma_result ma_channel_converter_init(const ma_channel_converter_config *pConfig, ma_channel_converter *pConverter)
     void ma_channel_converter_uninit(ma_channel_converter *pConverter)
-    ma_result ma_channel_converter_process_pcm_frames(ma_channel_converter *pConverter,
-                                            void *pFramesOut, const void *pFramesIn,
-                                            ma_uint64 frameCount)
+    ma_result ma_channel_converter_process_pcm_frames(ma_channel_converter *pConverter, void *pFramesOut, const void *pFramesIn, ma_uint64 frameCount)
 
 
     cdef struct ma_data_converter_config__resampling__linear:
@@ -680,9 +692,7 @@ cdef extern from "miniaudio.h":
         ma_data_converter_config__resampling resampling
 
     ma_data_converter_config ma_data_converter_config_init_default()
-    ma_data_converter_config ma_data_converter_config_init(ma_format formatIn, ma_format formatOut,
-                                  ma_uint32 channelsIn, ma_uint32 channelsOut,
-                                  ma_uint32 sampleRateIn, ma_uint32 sampleRateOut)
+    ma_data_converter_config ma_data_converter_config_init(ma_format formatIn, ma_format formatOut, ma_uint32 channelsIn, ma_uint32 channelsOut, ma_uint32 sampleRateIn, ma_uint32 sampleRateOut)
 
     ctypedef struct ma_data_converter:
         ma_data_converter_config config
@@ -694,121 +704,50 @@ cdef extern from "miniaudio.h":
         ma_bool8 hasResampler
         ma_bool8 isPassthrough
 
-    ma_result ma_data_converter_init(const ma_data_converter_config *pConfig,
-                                            ma_data_converter *pConverter)
+    ma_result ma_data_converter_init(const ma_data_converter_config *pConfig, ma_data_converter *pConverter)
     void ma_data_converter_uninit(ma_data_converter *pConverter)
-    ma_result ma_data_converter_process_pcm_frames(
-        ma_data_converter *pConverter, const void *pFramesIn,
-        ma_uint64 *pFrameCountIn, void *pFramesOut, ma_uint64 *pFrameCountOut)
-    ma_result ma_data_converter_set_rate(ma_data_converter *pConverter,
-                                                ma_uint32 sampleRateIn,
-                                                ma_uint32 sampleRateOut)
-    ma_result ma_data_converter_set_rate_ratio(ma_data_converter *pConverter,
-                                                      float ratioInOut)
-    ma_uint64 ma_data_converter_get_required_input_frame_count(
-        const ma_data_converter *pConverter, ma_uint64 outputFrameCount)
-    ma_uint64 ma_data_converter_get_expected_output_frame_count(
-        const ma_data_converter *pConverter, ma_uint64 inputFrameCount)
+    ma_result ma_data_converter_process_pcm_frames( ma_data_converter *pConverter, const void *pFramesIn, ma_uint64 *pFrameCountIn, void *pFramesOut, ma_uint64 *pFrameCountOut)
+    ma_result ma_data_converter_set_rate(ma_data_converter *pConverter, ma_uint32 sampleRateIn, ma_uint32 sampleRateOut)
+    ma_result ma_data_converter_set_rate_ratio(ma_data_converter *pConverter, float ratioInOut)
+    ma_uint64 ma_data_converter_get_required_input_frame_count( const ma_data_converter *pConverter, ma_uint64 outputFrameCount)
+    ma_uint64 ma_data_converter_get_expected_output_frame_count( const ma_data_converter *pConverter, ma_uint64 inputFrameCount)
     ma_uint64 ma_data_converter_get_input_latency(const ma_data_converter *pConverter)
     ma_uint64 ma_data_converter_get_output_latency(const ma_data_converter *pConverter)
 
-    void ma_pcm_u8_to_s16(void *pOut, const void *pIn, ma_uint64 count,
-                                 ma_dither_mode ditherMode)
-    void ma_pcm_u8_to_s24(void *pOut, const void *pIn, ma_uint64 count,
-                                 ma_dither_mode ditherMode)
-    void ma_pcm_u8_to_s32(void *pOut, const void *pIn, ma_uint64 count,
-                                 ma_dither_mode ditherMode)
-    void ma_pcm_u8_to_f32(void *pOut, const void *pIn, ma_uint64 count,
-                                 ma_dither_mode ditherMode)
-    void ma_pcm_s16_to_u8(void *pOut, const void *pIn, ma_uint64 count,
-                                 ma_dither_mode ditherMode)
-    void ma_pcm_s16_to_s24(void *pOut, const void *pIn, ma_uint64 count,
-                                  ma_dither_mode ditherMode)
-    void ma_pcm_s16_to_s32(void *pOut, const void *pIn, ma_uint64 count,
-                                  ma_dither_mode ditherMode)
-    void ma_pcm_s16_to_f32(void *pOut, const void *pIn, ma_uint64 count,
-                                  ma_dither_mode ditherMode)
-    void ma_pcm_s24_to_u8(void *pOut, const void *pIn, ma_uint64 count,
-                                 ma_dither_mode ditherMode)
-    void ma_pcm_s24_to_s16(void *pOut, const void *pIn, ma_uint64 count,
-                                  ma_dither_mode ditherMode)
-    void ma_pcm_s24_to_s32(void *pOut, const void *pIn, ma_uint64 count,
-                                  ma_dither_mode ditherMode)
-    void ma_pcm_s24_to_f32(void *pOut, const void *pIn, ma_uint64 count,
-                                  ma_dither_mode ditherMode)
-    void ma_pcm_s32_to_u8(void *pOut, const void *pIn, ma_uint64 count,
-                                 ma_dither_mode ditherMode)
-    void ma_pcm_s32_to_s16(void *pOut, const void *pIn, ma_uint64 count,
-                                  ma_dither_mode ditherMode)
-    void ma_pcm_s32_to_s24(void *pOut, const void *pIn, ma_uint64 count,
-                                  ma_dither_mode ditherMode)
-    void ma_pcm_s32_to_f32(void *pOut, const void *pIn, ma_uint64 count,
-                                  ma_dither_mode ditherMode)
-    void ma_pcm_f32_to_u8(void *pOut, const void *pIn, ma_uint64 count,
-                                 ma_dither_mode ditherMode)
-    void ma_pcm_f32_to_s16(void *pOut, const void *pIn, ma_uint64 count,
-                                  ma_dither_mode ditherMode)
-    void ma_pcm_f32_to_s24(void *pOut, const void *pIn, ma_uint64 count,
-                                  ma_dither_mode ditherMode)
-    void ma_pcm_f32_to_s32(void *pOut, const void *pIn, ma_uint64 count,
-                                  ma_dither_mode ditherMode)
-    void ma_pcm_convert(void *pOut, ma_format formatOut, const void *pIn,
-                               ma_format formatIn, ma_uint64 sampleCount,
-                               ma_dither_mode ditherMode)
-    void ma_convert_pcm_frames_format(void *pOut, ma_format formatOut,
-                                             const void *pIn, ma_format formatIn,
-                                             ma_uint64 frameCount,
-                                             ma_uint32 channels,
-                                             ma_dither_mode ditherMode)
-
-    void ma_deinterleave_pcm_frames(ma_format format, ma_uint32 channels,
-                                           ma_uint64 frameCount,
-                                           const void *pInterleavedPCMFrames,
-                                           void **ppDeinterleavedPCMFrames)
-
-    void ma_interleave_pcm_frames(ma_format format, ma_uint32 channels,
-                                         ma_uint64 frameCount,
-                                         const void **ppDeinterleavedPCMFrames,
-                                         void *pInterleavedPCMFrames)
-
-    void ma_channel_map_init_blank(ma_uint32 channels,
-                                          ma_channel *pChannelMap)
-
-    void ma_get_standard_channel_map(ma_standard_channel_map standardChannelMap,
-                                ma_uint32 channels, ma_channel *pChannelMap)
-
-    void ma_channel_map_copy(ma_channel *pOut, const ma_channel *pIn,
-                                    ma_uint32 channels)
-
-    void ma_channel_map_copy_or_default(ma_channel *pOut,
-                                               const ma_channel *pIn,
-                                               ma_uint32 channels)
-
-    ma_bool32 ma_channel_map_valid(ma_uint32 channels,
-                                          const ma_channel *pChannelMap)
-
-    ma_bool32 ma_channel_map_equal(ma_uint32 channels,
-                                          const ma_channel *pChannelMapA,
-                                          const ma_channel *pChannelMapB)
-
-    ma_bool32 ma_channel_map_blank(ma_uint32 channels,
-                                          const ma_channel *pChannelMap)
-
-    ma_bool32 ma_channel_map_contains_channel_position(ma_uint32 channels,
-                                             const ma_channel *pChannelMap,
-                                             ma_channel channelPosition)
-
-    ma_uint64 ma_convert_frames(void *pOut, ma_uint64 frameCountOut,
-                                       ma_format formatOut, ma_uint32 channelsOut,
-                                       ma_uint32 sampleRateOut, const void *pIn,
-                                       ma_uint64 frameCountIn, ma_format formatIn,
-                                       ma_uint32 channelsIn,
-                                       ma_uint32 sampleRateIn)
-    ma_uint64 ma_convert_frames_ex(void *pOut, ma_uint64 frameCountOut,
-                                          const void *pIn, ma_uint64 frameCountIn,
-                                          const ma_data_converter_config *pConfig)
-
-
+    void ma_pcm_u8_to_s16(void *pOut, const void *pIn, ma_uint64 count, ma_dither_mode ditherMode)
+    void ma_pcm_u8_to_s24(void *pOut, const void *pIn, ma_uint64 count, ma_dither_mode ditherMode)
+    void ma_pcm_u8_to_s32(void *pOut, const void *pIn, ma_uint64 count, ma_dither_mode ditherMode)
+    void ma_pcm_u8_to_f32(void *pOut, const void *pIn, ma_uint64 count, ma_dither_mode ditherMode)
+    void ma_pcm_s16_to_u8(void *pOut, const void *pIn, ma_uint64 count, ma_dither_mode ditherMode)
+    void ma_pcm_s16_to_s24(void *pOut, const void *pIn, ma_uint64 count, ma_dither_mode ditherMode)
+    void ma_pcm_s16_to_s32(void *pOut, const void *pIn, ma_uint64 count, ma_dither_mode ditherMode)
+    void ma_pcm_s16_to_f32(void *pOut, const void *pIn, ma_uint64 count, ma_dither_mode ditherMode)
+    void ma_pcm_s24_to_u8(void *pOut, const void *pIn, ma_uint64 count, ma_dither_mode ditherMode)
+    void ma_pcm_s24_to_s16(void *pOut, const void *pIn, ma_uint64 count, ma_dither_mode ditherMode)
+    void ma_pcm_s24_to_s32(void *pOut, const void *pIn, ma_uint64 count, ma_dither_mode ditherMode)
+    void ma_pcm_s24_to_f32(void *pOut, const void *pIn, ma_uint64 count, ma_dither_mode ditherMode)
+    void ma_pcm_s32_to_u8(void *pOut, const void *pIn, ma_uint64 count, ma_dither_mode ditherMode)
+    void ma_pcm_s32_to_s16(void *pOut, const void *pIn, ma_uint64 count, ma_dither_mode ditherMode)
+    void ma_pcm_s32_to_s24(void *pOut, const void *pIn, ma_uint64 count, ma_dither_mode ditherMode)
+    void ma_pcm_s32_to_f32(void *pOut, const void *pIn, ma_uint64 count, ma_dither_mode ditherMode)
+    void ma_pcm_f32_to_u8(void *pOut, const void *pIn, ma_uint64 count, ma_dither_mode ditherMode)
+    void ma_pcm_f32_to_s16(void *pOut, const void *pIn, ma_uint64 count, ma_dither_mode ditherMode)
+    void ma_pcm_f32_to_s24(void *pOut, const void *pIn, ma_uint64 count, ma_dither_mode ditherMode)
+    void ma_pcm_f32_to_s32(void *pOut, const void *pIn, ma_uint64 count, ma_dither_mode ditherMode)
+    void ma_pcm_convert(void *pOut, ma_format formatOut, const void *pIn, ma_format formatIn, ma_uint64 sampleCount, ma_dither_mode ditherMode)
+    void ma_convert_pcm_frames_format(void *pOut, ma_format formatOut, const void *pIn, ma_format formatIn, ma_uint64 frameCount, ma_uint32 channels, ma_dither_mode ditherMode)
+    void ma_deinterleave_pcm_frames(ma_format format, ma_uint32 channels, ma_uint64 frameCount, const void *pInterleavedPCMFrames, void **ppDeinterleavedPCMFrames)
+    void ma_interleave_pcm_frames(ma_format format, ma_uint32 channels, ma_uint64 frameCount, const void **ppDeinterleavedPCMFrames, void *pInterleavedPCMFrames)
+    void ma_channel_map_init_blank(ma_uint32 channels, ma_channel *pChannelMap)
+    void ma_get_standard_channel_map(ma_standard_channel_map standardChannelMap, ma_uint32 channels, ma_channel *pChannelMap)
+    void ma_channel_map_copy(ma_channel *pOut, const ma_channel *pIn, ma_uint32 channels)
+    void ma_channel_map_copy_or_default(ma_channel *pOut, const ma_channel *pIn, ma_uint32 channels)
+    ma_bool32 ma_channel_map_valid(ma_uint32 channels, const ma_channel *pChannelMap)
+    ma_bool32 ma_channel_map_equal(ma_uint32 channels, const ma_channel *pChannelMapA, const ma_channel *pChannelMapB)
+    ma_bool32 ma_channel_map_blank(ma_uint32 channels, const ma_channel *pChannelMap)
+    ma_bool32 ma_channel_map_contains_channel_position(ma_uint32 channels, const ma_channel *pChannelMap, ma_channel channelPosition)
+    ma_uint64 ma_convert_frames(void *pOut, ma_uint64 frameCountOut, ma_format formatOut, ma_uint32 channelsOut, ma_uint32 sampleRateOut, const void *pIn, ma_uint64 frameCountIn, ma_format formatIn, ma_uint32 channelsIn, ma_uint32 sampleRateIn)
+    ma_uint64 ma_convert_frames_ex(void *pOut, ma_uint64 frameCountOut, const void *pIn, ma_uint64 frameCountIn, const ma_data_converter_config *pConfig)
 
     ctypedef struct ma_rb:
         void *pBuffer
@@ -822,23 +761,14 @@ cdef extern from "miniaudio.h":
         ma_allocation_callbacks allocationCallbacks
 
 
-    ma_result ma_rb_init_ex(size_t subbufferSizeInBytes, size_t subbufferCount,
-                  size_t subbufferStrideInBytes, void *pOptionalPreallocatedBuffer,
-                  const ma_allocation_callbacks *pAllocationCallbacks, ma_rb *pRB)
-    ma_result ma_rb_init(size_t bufferSizeInBytes,
-                                void *pOptionalPreallocatedBuffer,
-                                const ma_allocation_callbacks *pAllocationCallbacks,
-                                ma_rb *pRB)
+    ma_result ma_rb_init_ex(size_t subbufferSizeInBytes, size_t subbufferCount, size_t subbufferStrideInBytes, void *pOptionalPreallocatedBuffer, const ma_allocation_callbacks *pAllocationCallbacks, ma_rb *pRB)
+    ma_result ma_rb_init(size_t bufferSizeInBytes, void *pOptionalPreallocatedBuffer, const ma_allocation_callbacks *pAllocationCallbacks, ma_rb *pRB)
     void ma_rb_uninit(ma_rb *pRB)
     void ma_rb_reset(ma_rb *pRB)
-    ma_result ma_rb_acquire_read(ma_rb *pRB, size_t *pSizeInBytes,
-                                        void **ppBufferOut)
-    ma_result ma_rb_commit_read(ma_rb *pRB, size_t sizeInBytes,
-                                       void *pBufferOut)
-    ma_result ma_rb_acquire_write(ma_rb *pRB, size_t *pSizeInBytes,
-                                         void **ppBufferOut)
-    ma_result ma_rb_commit_write(ma_rb *pRB, size_t sizeInBytes,
-                                        void *pBufferOut)
+    ma_result ma_rb_acquire_read(ma_rb *pRB, size_t *pSizeInBytes, void **ppBufferOut)
+    ma_result ma_rb_commit_read(ma_rb *pRB, size_t sizeInBytes, void *pBufferOut)
+    ma_result ma_rb_acquire_write(ma_rb *pRB, size_t *pSizeInBytes, void **ppBufferOut)
+    ma_result ma_rb_commit_write(ma_rb *pRB, size_t sizeInBytes, void *pBufferOut)
     ma_result ma_rb_seek_read(ma_rb *pRB, size_t offsetInBytes)
     ma_result ma_rb_seek_write(ma_rb *pRB, size_t offsetInBytes)
     ma_int32 ma_rb_pointer_distance(ma_rb *pRB)
@@ -847,8 +777,7 @@ cdef extern from "miniaudio.h":
     size_t ma_rb_get_subbuffer_size(ma_rb *pRB)
     size_t ma_rb_get_subbuffer_stride(ma_rb *pRB)
     size_t ma_rb_get_subbuffer_offset(ma_rb *pRB, size_t subbufferIndex)
-    void *ma_rb_get_subbuffer_ptr(ma_rb *pRB, size_t subbufferIndex,
-                                         void *pBuffer)
+    void *ma_rb_get_subbuffer_ptr(ma_rb *pRB, size_t subbufferIndex, void *pBuffer)
 
 
     ctypedef struct ma_pcm_rb:
@@ -856,29 +785,14 @@ cdef extern from "miniaudio.h":
         ma_format format
         ma_uint32 channels
 
-    ma_result ma_pcm_rb_init_ex(
-        ma_format format, ma_uint32 channels, ma_uint32 subbufferSizeInFrames,
-        ma_uint32 subbufferCount, ma_uint32 subbufferStrideInFrames,
-        void *pOptionalPreallocatedBuffer,
-        const ma_allocation_callbacks *pAllocationCallbacks, ma_pcm_rb *pRB)
-    
-    ma_result ma_pcm_rb_init(ma_format format, ma_uint32 channels,
-                   ma_uint32 bufferSizeInFrames, void *pOptionalPreallocatedBuffer,
-                   const ma_allocation_callbacks *pAllocationCallbacks,
-                   ma_pcm_rb *pRB)
-
+    ma_result ma_pcm_rb_init_ex(ma_format format, ma_uint32 channels, ma_uint32 subbufferSizeInFrames, ma_uint32 subbufferCount, ma_uint32 subbufferStrideInFrames, void *pOptionalPreallocatedBuffer, const ma_allocation_callbacks *pAllocationCallbacks, ma_pcm_rb *pRB)
+    ma_result ma_pcm_rb_init(ma_format format, ma_uint32 channels, ma_uint32 bufferSizeInFrames, void *pOptionalPreallocatedBuffer, const ma_allocation_callbacks *pAllocationCallbacks, ma_pcm_rb *pRB)
     void ma_pcm_rb_uninit(ma_pcm_rb *pRB)
     void ma_pcm_rb_reset(ma_pcm_rb *pRB)
-    ma_result ma_pcm_rb_acquire_read(ma_pcm_rb *pRB,
-                                            ma_uint32 *pSizeInFrames,
-                                            void **ppBufferOut)
-    ma_result ma_pcm_rb_commit_read(ma_pcm_rb *pRB, ma_uint32 sizeInFrames,
-                                           void *pBufferOut)
-    ma_result ma_pcm_rb_acquire_write(ma_pcm_rb *pRB,
-                                             ma_uint32 *pSizeInFrames,
-                                             void **ppBufferOut)
-    ma_result ma_pcm_rb_commit_write(ma_pcm_rb *pRB, ma_uint32 sizeInFrames,
-                                            void *pBufferOut)
+    ma_result ma_pcm_rb_acquire_read(ma_pcm_rb *pRB, ma_uint32 *pSizeInFrames, void **ppBufferOut)
+    ma_result ma_pcm_rb_commit_read(ma_pcm_rb *pRB, ma_uint32 sizeInFrames, void *pBufferOut)
+    ma_result ma_pcm_rb_acquire_write(ma_pcm_rb *pRB, ma_uint32 *pSizeInFrames, void **ppBufferOut)
+    ma_result ma_pcm_rb_commit_write(ma_pcm_rb *pRB, ma_uint32 sizeInFrames, void *pBufferOut)
     ma_result ma_pcm_rb_seek_read(ma_pcm_rb *pRB, ma_uint32 offsetInFrames)
     ma_result ma_pcm_rb_seek_write(ma_pcm_rb *pRB, ma_uint32 offsetInFrames)
     ma_int32 ma_pcm_rb_pointer_distance(ma_pcm_rb *pRB)
@@ -886,48 +800,25 @@ cdef extern from "miniaudio.h":
     ma_uint32 ma_pcm_rb_available_write(ma_pcm_rb *pRB)
     ma_uint32 ma_pcm_rb_get_subbuffer_size(ma_pcm_rb *pRB)
     ma_uint32 ma_pcm_rb_get_subbuffer_stride(ma_pcm_rb *pRB)
-    ma_uint32 ma_pcm_rb_get_subbuffer_offset(ma_pcm_rb *pRB,
-                                                    ma_uint32 subbufferIndex)
-    void *ma_pcm_rb_get_subbuffer_ptr(ma_pcm_rb *pRB,
-                                             ma_uint32 subbufferIndex,
-                                             void *pBuffer)
+    ma_uint32 ma_pcm_rb_get_subbuffer_offset(ma_pcm_rb *pRB, ma_uint32 subbufferIndex)
+    void *ma_pcm_rb_get_subbuffer_ptr(ma_pcm_rb *pRB, ma_uint32 subbufferIndex, void *pBuffer)
+
 
     ctypedef struct ma_duplex_rb:
         ma_pcm_rb rb
 
-
-
-    ma_result ma_duplex_rb_init(ma_format captureFormat, ma_uint32 captureChannels,
-                      ma_uint32 sampleRate, ma_uint32 captureInternalSampleRate,
-                      ma_uint32 captureInternalPeriodSizeInFrames,
-                      const ma_allocation_callbacks *pAllocationCallbacks,
-                      ma_duplex_rb *pRB)
+    ma_result ma_duplex_rb_init(ma_format captureFormat, ma_uint32 captureChannels, ma_uint32 sampleRate, ma_uint32 captureInternalSampleRate, ma_uint32 captureInternalPeriodSizeInFrames, const ma_allocation_callbacks *pAllocationCallbacks, ma_duplex_rb *pRB)
     ma_result ma_duplex_rb_uninit(ma_duplex_rb *pRB)
-
     char *ma_result_description(ma_result result)
-
     void *ma_malloc(size_t sz, const ma_allocation_callbacks *pAllocationCallbacks)
-
-    void *ma_realloc(void *p, size_t sz,
-                            const ma_allocation_callbacks *pAllocationCallbacks)
-
-    void ma_free(void *p,
-                        const ma_allocation_callbacks *pAllocationCallbacks)
-
-    void * ma_aligned_malloc(size_t sz, size_t alignment,
-                      const ma_allocation_callbacks *pAllocationCallbacks)
-
+    void *ma_realloc(void *p, size_t sz, const ma_allocation_callbacks *pAllocationCallbacks)
+    void ma_free(void *p, const ma_allocation_callbacks *pAllocationCallbacks)
+    void * ma_aligned_malloc(size_t sz, size_t alignment, const ma_allocation_callbacks *pAllocationCallbacks)
     void ma_aligned_free(void *p, const ma_allocation_callbacks *pAllocationCallbacks)
-
     char *ma_get_format_name(ma_format format)
-
-    void ma_blend_f32(float *pOut, float *pInA, float *pInB, float factor,
-                             ma_uint32 channels)
-
+    void ma_blend_f32(float *pOut, float *pInA, float *pInB, float factor, ma_uint32 channels)
     ma_uint32 ma_get_bytes_per_sample(ma_format format)
-
     ma_uint32 ma_get_bytes_per_frame(ma_format format, ma_uint32 channels)
-
     char *ma_log_level_to_string(ma_uint32 logLevel)
 
 
@@ -949,14 +840,9 @@ cdef extern from "miniaudio.h":
         ma_backend_null
 
 
-    ctypedef void (*ma_device_callback_proc)(ma_device *pDevice, void *pOutput,
-                                            const void *pInput,
-                                            ma_uint32 frameCount)
-
+    ctypedef void (*ma_device_callback_proc)(ma_device *pDevice, void *pOutput, const void *pInput, ma_uint32 frameCount)
     ctypedef void (*ma_stop_proc)(ma_device *pDevice)
-
-    ctypedef void (*ma_log_proc)(ma_context *pContext, ma_device *pDevice,
-                                ma_uint32 logLevel, const char *message)
+    ctypedef void (*ma_log_proc)(ma_context *pContext, ma_device *pDevice, ma_uint32 logLevel, const char *message)
 
     ctypedef enum ma_device_type:
         ma_device_type_playback = 1
@@ -986,8 +872,6 @@ cdef extern from "miniaudio.h":
         ma_ios_session_category_option_interrupt_spoken_audio_and_mix_with_others = 0x11
         ma_ios_session_category_option_allow_bluetooth_a2dp = 0x20
         ma_ios_session_category_option_allow_air_play = 0x40
-
-
 
     ctypedef enum ma_opensl_stream_type:
         ma_opensl_stream_type_default = 0
@@ -1025,7 +909,6 @@ cdef extern from "miniaudio.h":
         ma_aaudio_usage_voice_communication
         ma_aaudio_usage_voice_communication_signalling
 
-
     ctypedef enum ma_aaudio_content_type:
         ma_aaudio_content_type_default = 0
         ma_aaudio_content_type_movie
@@ -1043,11 +926,9 @@ cdef extern from "miniaudio.h":
         ma_aaudio_input_preset_voice_communication
         ma_aaudio_input_preset_voice_performance
 
-
     ctypedef union ma_timer:
         ma_int64 counter
         double counterD
-
 
     cdef union ma_device_id__custom:
         int i
@@ -1150,9 +1031,9 @@ cdef extern from "miniaudio.h":
         ma_opensl_recording_preset recordingPreset
 
     cdef struct ma_device_config__aaudio:
-            ma_aaudio_usage usage
-            ma_aaudio_content_type contentType
-            ma_aaudio_input_preset inputPreset
+        ma_aaudio_usage usage
+        ma_aaudio_content_type contentType
+        ma_aaudio_input_preset inputPreset
 
     ctypedef struct ma_device_config:
         ma_device_type deviceType
@@ -1176,10 +1057,7 @@ cdef extern from "miniaudio.h":
         ma_device_config__opensl opensl
         ma_device_config__aaudio aaudio
 
-    ctypedef ma_bool32 (*ma_enum_devices_callback_proc)(ma_context *pContext,
-                                                       ma_device_type deviceType,
-                                                       const ma_device_info *pInfo,
-                                                       void *pUserData)
+    ctypedef ma_bool32 (*ma_enum_devices_callback_proc)(ma_context *pContext, ma_device_type deviceType, const ma_device_info *pInfo, void *pUserData)
 
     ctypedef struct ma_device_descriptor:
         const ma_device_id *pDeviceID
@@ -1193,31 +1071,18 @@ cdef extern from "miniaudio.h":
         ma_uint32 periodCount
 
     ctypedef struct ma_backend_callbacks:
-        ma_result (*onContextInit)(ma_context *pContext,
-                                   const ma_context_config *pConfig,
-                                   ma_backend_callbacks *pCallbacks)
+        ma_result (*onContextInit)(ma_context *pContext, const ma_context_config *pConfig, ma_backend_callbacks *pCallbacks)
         ma_result (*onContextUninit)(ma_context *pContext)
-        ma_result (*onContextEnumerateDevices)(
-            ma_context *pContext, ma_enum_devices_callback_proc callback,
-            void *pUserData)
-        ma_result (*onContextGetDeviceInfo)(ma_context *pContext,
-                                            ma_device_type deviceType,
-                                            const ma_device_id *pDeviceID,
-                                            ma_device_info *pDeviceInfo)
-        ma_result (*onDeviceInit)(ma_device *pDevice,
-                                  const ma_device_config *pConfig,
-                                  ma_device_descriptor *pDescriptorPlayback,
-                                  ma_device_descriptor *pDescriptorCapture)
+        ma_result (*onContextEnumerateDevices)(ma_context *pContext, ma_enum_devices_callback_proc callback, void *pUserData)
+        ma_result (*onContextGetDeviceInfo)(ma_context *pContext, ma_device_type deviceType, const ma_device_id *pDeviceID, ma_device_info *pDeviceInfo)
+        ma_result (*onDeviceInit)(ma_device *pDevice, const ma_device_config *pConfig, ma_device_descriptor *pDescriptorPlayback, ma_device_descriptor *pDescriptorCapture)
         ma_result (*onDeviceUninit)(ma_device *pDevice)
         ma_result (*onDeviceStart)(ma_device *pDevice)
         ma_result (*onDeviceStop)(ma_device *pDevice)
-        ma_result (*onDeviceRead)(ma_device *pDevice, void *pFrames,
-                                  ma_uint32 frameCount, ma_uint32 *pFramesRead)
-        ma_result (*onDeviceWrite)(ma_device *pDevice, const void *pFrames,
-                                   ma_uint32 frameCount, ma_uint32 *pFramesWritten)
+        ma_result (*onDeviceRead)(ma_device *pDevice, void *pFrames, ma_uint32 frameCount, ma_uint32 *pFramesRead)
+        ma_result (*onDeviceWrite)(ma_device *pDevice, const void *pFrames, ma_uint32 frameCount, ma_uint32 *pFramesWritten)
         ma_result (*onDeviceDataLoop)(ma_device *pDevice)
         ma_result (*onDeviceDataLoopWakeup)(ma_device *pDevice)
-
 
     cdef struct ma_context_config__alsa:
         ma_bool32 useVerboseDeviceEnumeration
@@ -1447,231 +1312,91 @@ cdef extern from "miniaudio.h":
         ma_device__null_device null_device
         
 
-
-
     ma_context_config ma_context_config_init()
-
-    ma_result ma_context_init(const ma_backend backends[],
-                                     ma_uint32 backendCount,
-                                     const ma_context_config *pConfig,
-                                     ma_context *pContext)
-
+    ma_result ma_context_init(const ma_backend backends[], ma_uint32 backendCount, const ma_context_config *pConfig, ma_context *pContext)
     ma_result ma_context_uninit(ma_context *pContext)
-
     size_t ma_context_sizeof()
-
-    ma_result ma_context_enumerate_devices(ma_context *pContext,
-                                 ma_enum_devices_callback_proc callback,
-                                 void *pUserData)
-
-    ma_result ma_context_get_devices(ma_context *pContext,
-                                            ma_device_info **ppPlaybackDeviceInfos,
-                                            ma_uint32 *pPlaybackDeviceCount,
-                                            ma_device_info **ppCaptureDeviceInfos,
-                                            ma_uint32 *pCaptureDeviceCount)
-
-    ma_result ma_context_get_device_info(ma_context *pContext,
-                                                ma_device_type deviceType,
-                                                const ma_device_id *pDeviceID,
-                                                ma_share_mode shareMode,
-                                                ma_device_info *pDeviceInfo)
-
+    ma_result ma_context_enumerate_devices(ma_context *pContext, ma_enum_devices_callback_proc callback, void *pUserData)
+    ma_result ma_context_get_devices(ma_context *pContext, ma_device_info **ppPlaybackDeviceInfos, ma_uint32 *pPlaybackDeviceCount, ma_device_info **ppCaptureDeviceInfos, ma_uint32 *pCaptureDeviceCount)
+    ma_result ma_context_get_device_info(ma_context *pContext, ma_device_type deviceType, const ma_device_id *pDeviceID, ma_share_mode shareMode, ma_device_info *pDeviceInfo)
     ma_bool32 ma_context_is_loopback_supported(ma_context *pContext)
 
     ma_device_config ma_device_config_init(ma_device_type deviceType)
-
-    ma_result ma_device_init(ma_context *pContext,
-                                    const ma_device_config *pConfig,
-                                    ma_device *pDevice)
-
-    ma_result ma_device_init_ex(const ma_backend backends[],
-                                       ma_uint32 backendCount,
-                                       const ma_context_config *pContextConfig,
-                                       const ma_device_config *pConfig,
-                                       ma_device *pDevice)
-
+    ma_result ma_device_init(ma_context *pContext, const ma_device_config *pConfig, ma_device *pDevice)
+    ma_result ma_device_init_ex(const ma_backend backends[], ma_uint32 backendCount, const ma_context_config *pContextConfig, const ma_device_config *pConfig, ma_device *pDevice)
     void ma_device_uninit(ma_device *pDevice)
-
     ma_result ma_device_start(ma_device *pDevice)
-
     ma_result ma_device_stop(ma_device *pDevice)
-
     ma_bool32 ma_device_is_started(const ma_device *pDevice)
-
     ma_uint32 ma_device_get_state(const ma_device *pDevice)
-
     ma_result ma_device_set_master_volume(ma_device *pDevice, float volume)
-
-    ma_result ma_device_get_master_volume(ma_device *pDevice,
-                                                 float *pVolume)
-
+    ma_result ma_device_get_master_volume(ma_device *pDevice, float *pVolume)
     ma_result ma_device_set_master_gain_db(ma_device *pDevice, float gainDB)
+    ma_result ma_device_get_master_gain_db(ma_device *pDevice, float *pGainDB)
+    ma_result ma_device_handle_backend_data_callback(ma_device *pDevice, void *pOutput, const void *pInput, ma_uint32 frameCount)
 
-    ma_result ma_device_get_master_gain_db(ma_device *pDevice,
-                                                  float *pGainDB)
-
-    ma_result ma_device_handle_backend_data_callback(ma_device *pDevice,
-                                                            void *pOutput,
-                                                            const void *pInput,
-                                                            ma_uint32 frameCount)
-
-    ma_uint32 ma_calculate_buffer_size_in_frames_from_descriptor(
-        const ma_device_descriptor *pDescriptor, ma_uint32 nativeSampleRate,
-        ma_performance_profile performanceProfile)
+    ma_uint32 ma_calculate_buffer_size_in_frames_from_descriptor(const ma_device_descriptor *pDescriptor, ma_uint32 nativeSampleRate, ma_performance_profile performanceProfile)
 
     char *ma_get_backend_name(ma_backend backend)
-
     ma_bool32 ma_is_backend_enabled(ma_backend backend)
-
-    ma_result ma_get_enabled_backends(ma_backend *pBackends,
-                                             size_t backendCap,
-                                             size_t *pBackendCount)
-
+    ma_result ma_get_enabled_backends(ma_backend *pBackends, size_t backendCap, size_t *pBackendCount)
     ma_bool32 ma_is_loopback_supported(ma_backend backend)
 
     ma_result ma_spinlock_lock(ma_spinlock *pSpinlock)
-
     ma_result ma_spinlock_lock_noyield(ma_spinlock *pSpinlock)
-
     ma_result ma_spinlock_unlock(ma_spinlock *pSpinlock)
-
+    
     ma_result ma_mutex_init(ma_mutex *pMutex)
-
     void ma_mutex_uninit(ma_mutex *pMutex)
-
     void ma_mutex_lock(ma_mutex *pMutex)
-
     void ma_mutex_unlock(ma_mutex *pMutex)
-
+    
     ma_result ma_event_init(ma_event *pEvent)
-
     void ma_event_uninit(ma_event *pEvent)
-
     ma_result ma_event_wait(ma_event *pEvent)
-
     ma_result ma_event_signal(ma_event *pEvent)
-
     ma_uint32 ma_scale_buffer_size(ma_uint32 baseBufferSize, float scale)
-
-    ma_uint32 ma_calculate_buffer_size_in_milliseconds_from_frames(
-        ma_uint32 bufferSizeInFrames, ma_uint32 sampleRate)
-
-    ma_uint32 ma_calculate_buffer_size_in_frames_from_milliseconds(
-        ma_uint32 bufferSizeInMilliseconds, ma_uint32 sampleRate)
-
-    void ma_copy_pcm_frames(void *dst, const void *src, ma_uint64 frameCount,
-                                   ma_format format, ma_uint32 channels)
-
-
-
-
-
-
-
-
-    void ma_silence_pcm_frames(void *p, ma_uint64 frameCount,
-                                      ma_format format, ma_uint32 channels)
-    void ma_zero_pcm_frames(void *p, ma_uint64 frameCount, ma_format format,
-                       ma_uint32 channels)
-
-    void *ma_offset_pcm_frames_ptr(void *p, ma_uint64 offsetInFrames,
-                                          ma_format format, ma_uint32 channels)
-
-    void *ma_offset_pcm_frames_const_ptr(const void *p,
-                                                      ma_uint64 offsetInFrames,
-                                                      ma_format format,
-                                                      ma_uint32 channels)
-
-    float * ma_offset_pcm_frames_ptr_f32(float *p, ma_uint64 offsetInFrames,
-                                 ma_uint32 channels)
-
-    float * ma_offset_pcm_frames_const_ptr_f32(const float *p, ma_uint64 offsetInFrames,
-                                       ma_uint32 channels)
-
+    ma_uint32 ma_calculate_buffer_size_in_milliseconds_from_frames( ma_uint32 bufferSizeInFrames, ma_uint32 sampleRate)
+    ma_uint32 ma_calculate_buffer_size_in_frames_from_milliseconds(ma_uint32 bufferSizeInMilliseconds, ma_uint32 sampleRate)
+    void ma_copy_pcm_frames(void *dst, const void *src, ma_uint64 frameCount, ma_format format, ma_uint32 channels)
+    void ma_silence_pcm_frames(void *p, ma_uint64 frameCount, ma_format format, ma_uint32 channels)
+    void ma_zero_pcm_frames(void *p, ma_uint64 frameCount, ma_format format, ma_uint32 channels)
+    void *ma_offset_pcm_frames_ptr(void *p, ma_uint64 offsetInFrames, ma_format format, ma_uint32 channels)
+    void *ma_offset_pcm_frames_const_ptr(const void *p, ma_uint64 offsetInFrames, ma_format format, ma_uint32 channels)
+    float * ma_offset_pcm_frames_ptr_f32(float *p, ma_uint64 offsetInFrames, ma_uint32 channels)
+    float * ma_offset_pcm_frames_const_ptr_f32(const float *p, ma_uint64 offsetInFrames, ma_uint32 channels)
     void ma_clip_samples_f32(float *p, ma_uint64 sampleCount)
-
     void ma_clip_pcm_frames_f32(float *p, ma_uint64 frameCount, ma_uint32 channels)
+    void ma_copy_and_apply_volume_factor_u8(ma_uint8 *pSamplesOut, const ma_uint8 *pSamplesIn, ma_uint64 sampleCount, float factor)
+    void ma_copy_and_apply_volume_factor_s16(ma_int16 *pSamplesOut, const ma_int16 *pSamplesIn, ma_uint64 sampleCount, float factor)
+    void ma_copy_and_apply_volume_factor_s24(void *pSamplesOut, const void *pSamplesIn, ma_uint64 sampleCount, float factor)
+    void ma_copy_and_apply_volume_factor_s32(ma_int32 *pSamplesOut, const ma_int32 *pSamplesIn, ma_uint64 sampleCount, float factor)
+    void ma_copy_and_apply_volume_factor_f32(float *pSamplesOut, const float *pSamplesIn, ma_uint64 sampleCount, float factor)
 
-    void ma_copy_and_apply_volume_factor_u8(ma_uint8 *pSamplesOut,
-                                                   const ma_uint8 *pSamplesIn,
-                                                   ma_uint64 sampleCount,
-                                                   float factor)
-    void ma_copy_and_apply_volume_factor_s16(ma_int16 *pSamplesOut,
-                                                    const ma_int16 *pSamplesIn,
-                                                    ma_uint64 sampleCount,
-                                                    float factor)
-    void ma_copy_and_apply_volume_factor_s24(void *pSamplesOut,
-                                                    const void *pSamplesIn,
-                                                    ma_uint64 sampleCount,
-                                                    float factor)
-    void ma_copy_and_apply_volume_factor_s32(ma_int32 *pSamplesOut,
-                                                    const ma_int32 *pSamplesIn,
-                                                    ma_uint64 sampleCount,
-                                                    float factor)
-    void ma_copy_and_apply_volume_factor_f32(float *pSamplesOut,
-                                                    const float *pSamplesIn,
-                                                    ma_uint64 sampleCount,
-                                                    float factor)
+    void ma_apply_volume_factor_u8(ma_uint8 *pSamples, ma_uint64 sampleCount, float factor)
+    void ma_apply_volume_factor_s16(ma_int16 *pSamples, ma_uint64 sampleCount, float factor)
+    void ma_apply_volume_factor_s24(void *pSamples, ma_uint64 sampleCount, float factor)
+    void ma_apply_volume_factor_s32(ma_int32 *pSamples, ma_uint64 sampleCount, float factor)
+    void ma_apply_volume_factor_f32(float *pSamples, ma_uint64 sampleCount, float factor)
 
-    void ma_apply_volume_factor_u8(ma_uint8 *pSamples, ma_uint64 sampleCount,
-                                          float factor)
-    void ma_apply_volume_factor_s16(ma_int16 *pSamples,
-                                           ma_uint64 sampleCount, float factor)
-    void ma_apply_volume_factor_s24(void *pSamples, ma_uint64 sampleCount,
-                                           float factor)
-    void ma_apply_volume_factor_s32(ma_int32 *pSamples,
-                                           ma_uint64 sampleCount, float factor)
-    void ma_apply_volume_factor_f32(float *pSamples, ma_uint64 sampleCount,
-                                           float factor)
+    void ma_copy_and_apply_volume_factor_pcm_frames_u8( ma_uint8 *pPCMFramesOut, const ma_uint8 *pPCMFramesIn, ma_uint64 frameCount, ma_uint32 channels, float factor)
 
-    void ma_copy_and_apply_volume_factor_pcm_frames_u8(
-        ma_uint8 *pPCMFramesOut, const ma_uint8 *pPCMFramesIn, ma_uint64 frameCount,
-        ma_uint32 channels, float factor)
-
-    void ma_copy_and_apply_volume_factor_pcm_frames_s16(
-        ma_int16 *pPCMFramesOut, const ma_int16 *pPCMFramesIn, ma_uint64 frameCount,
-        ma_uint32 channels, float factor)
+    void ma_copy_and_apply_volume_factor_pcm_frames_s16(ma_int16 *pPCMFramesOut, const ma_int16 *pPCMFramesIn, ma_uint64 frameCount, ma_uint32 channels, float factor)
     
-    void ma_copy_and_apply_volume_factor_pcm_frames_s24(
-        void *pPCMFramesOut, const void *pPCMFramesIn, ma_uint64 frameCount,
-        ma_uint32 channels, float factor)
+    void ma_copy_and_apply_volume_factor_pcm_frames_s24(void *pPCMFramesOut, const void *pPCMFramesIn, ma_uint64 frameCount, ma_uint32 channels, float factor)
     
-    void ma_copy_and_apply_volume_factor_pcm_frames_s32(
-        ma_int32 *pPCMFramesOut, const ma_int32 *pPCMFramesIn, ma_uint64 frameCount,
-        ma_uint32 channels, float factor)
+    void ma_copy_and_apply_volume_factor_pcm_frames_s32(ma_int32 *pPCMFramesOut, const ma_int32 *pPCMFramesIn, ma_uint64 frameCount, ma_uint32 channels, float factor)
     
-    void ma_copy_and_apply_volume_factor_pcm_frames_f32(
-        float *pPCMFramesOut, const float *pPCMFramesIn, ma_uint64 frameCount,
-        ma_uint32 channels, float factor)
+    void ma_copy_and_apply_volume_factor_pcm_frames_f32(float *pPCMFramesOut, const float *pPCMFramesIn, ma_uint64 frameCount, ma_uint32 channels, float factor)
     
-    void ma_copy_and_apply_volume_factor_pcm_frames(
-        void *pFramesOut, const void *pFramesIn, ma_uint64 frameCount,
-        ma_format format, ma_uint32 channels, float factor)
+    void ma_copy_and_apply_volume_factor_pcm_frames(void *pFramesOut, const void *pFramesIn, ma_uint64 frameCount, ma_format format, ma_uint32 channels, float factor)
 
-    void ma_apply_volume_factor_pcm_frames_u8(ma_uint8 *pFrames,
-                                                     ma_uint64 frameCount,
-                                                     ma_uint32 channels,
-                                                     float factor)
-    void ma_apply_volume_factor_pcm_frames_s16(ma_int16 *pFrames,
-                                                      ma_uint64 frameCount,
-                                                      ma_uint32 channels,
-                                                      float factor)
-    void ma_apply_volume_factor_pcm_frames_s24(void *pFrames,
-                                                      ma_uint64 frameCount,
-                                                      ma_uint32 channels,
-                                                      float factor)
-    void ma_apply_volume_factor_pcm_frames_s32(ma_int32 *pFrames,
-                                                      ma_uint64 frameCount,
-                                                      ma_uint32 channels,
-                                                      float factor)
-    void ma_apply_volume_factor_pcm_frames_f32(float *pFrames,
-                                                      ma_uint64 frameCount,
-                                                      ma_uint32 channels,
-                                                      float factor)
-    void ma_apply_volume_factor_pcm_frames(void *pFrames,
-                                                  ma_uint64 frameCount,
-                                                  ma_format format,
-                                                  ma_uint32 channels, float factor)
+    void ma_apply_volume_factor_pcm_frames_u8(ma_uint8 *pFrames, ma_uint64 frameCount, ma_uint32 channels, float factor)
+    void ma_apply_volume_factor_pcm_frames_s16(ma_int16 *pFrames, ma_uint64 frameCount, ma_uint32 channels, float factor)
+    void ma_apply_volume_factor_pcm_frames_s24(void *pFrames, ma_uint64 frameCount, ma_uint32 channels, float factor)
+    void ma_apply_volume_factor_pcm_frames_s32(ma_int32 *pFrames, ma_uint64 frameCount, ma_uint32 channels, float factor)
+    void ma_apply_volume_factor_pcm_frames_f32(float *pFrames, ma_uint64 frameCount, ma_uint32 channels, float factor)
+    void ma_apply_volume_factor_pcm_frames(void *pFrames, ma_uint64 frameCount, ma_format format, ma_uint32 channels, float factor)
 
     float ma_factor_to_gain_db(float factor)
 
@@ -1681,42 +1406,23 @@ cdef extern from "miniaudio.h":
     ctypedef void ma_data_source
 
     ctypedef struct ma_data_source_callbacks:
-        ma_result (*onRead)(ma_data_source *pDataSource, void *pFramesOut,
-                            ma_uint64 frameCount, ma_uint64 *pFramesRead)
+        ma_result (*onRead)(ma_data_source *pDataSource, void *pFramesOut, ma_uint64 frameCount, ma_uint64 *pFramesRead)
         ma_result (*onSeek)(ma_data_source *pDataSource, ma_uint64 frameIndex)
-        ma_result (*onMap)(ma_data_source *pDataSource, void **ppFramesOut,
-                           ma_uint64 *pFrameCount)
+        ma_result (*onMap)(ma_data_source *pDataSource, void **ppFramesOut, ma_uint64 *pFrameCount)
         ma_result (*onUnmap)(ma_data_source *pDataSource, ma_uint64 frameCount)
-        ma_result (*onGetDataFormat)(ma_data_source *pDataSource,
-                                     ma_format *pFormat, ma_uint32 *pChannels,
-                                     ma_uint32 *pSampleRate)
+        ma_result (*onGetDataFormat)(ma_data_source *pDataSource, ma_format *pFormat, ma_uint32 *pChannels, ma_uint32 *pSampleRate)
         ma_result (*onGetCursor)(ma_data_source *pDataSource, ma_uint64 *pCursor)
         ma_result (*onGetLength)(ma_data_source *pDataSource, ma_uint64 *pLength)
 
 
-    ma_result ma_data_source_read_pcm_frames(ma_data_source *pDataSource,
-                                                    void *pFramesOut,
-                                                    ma_uint64 frameCount,
-                                                    ma_uint64 *pFramesRead,
-                                                    ma_bool32 loop)
-    ma_result ma_data_source_seek_pcm_frames(ma_data_source *pDataSource,
-                                                    ma_uint64 frameCount,
-                                                    ma_uint64 *pFramesSeeked,
-                                                    ma_bool32 loop)
-    ma_result ma_data_source_seek_to_pcm_frame(ma_data_source *pDataSource,
-                                                      ma_uint64 frameIndex)
-    ma_result ma_data_source_map(ma_data_source *pDataSource,
-                                        void **ppFramesOut, ma_uint64 *pFrameCount)
-    ma_result ma_data_source_unmap(ma_data_source *pDataSource,
-                                          ma_uint64 frameCount)
-    ma_result ma_data_source_get_data_format(ma_data_source *pDataSource,
-                                                    ma_format *pFormat,
-                                                    ma_uint32 *pChannels,
-                                                    ma_uint32 *pSampleRate)
-    ma_result ma_data_source_get_cursor_in_pcm_frames(ma_data_source *pDataSource,
-                                            ma_uint64 *pCursor)
-    ma_result ma_data_source_get_length_in_pcm_frames(ma_data_source *pDataSource,
-                                            ma_uint64 *pLength)
+    ma_result ma_data_source_read_pcm_frames(ma_data_source *pDataSource, void *pFramesOut, ma_uint64 frameCount, ma_uint64 *pFramesRead, ma_bool32 loop)
+    ma_result ma_data_source_seek_pcm_frames(ma_data_source *pDataSource, ma_uint64 frameCount, ma_uint64 *pFramesSeeked, ma_bool32 loop)
+    ma_result ma_data_source_seek_to_pcm_frame(ma_data_source *pDataSource, ma_uint64 frameIndex)
+    ma_result ma_data_source_map(ma_data_source *pDataSource, void **ppFramesOut, ma_uint64 *pFrameCount)
+    ma_result ma_data_source_unmap(ma_data_source *pDataSource, ma_uint64 frameCount)
+    ma_result ma_data_source_get_data_format(ma_data_source *pDataSource, ma_format *pFormat, ma_uint32 *pChannels, ma_uint32 *pSampleRate)
+    ma_result ma_data_source_get_cursor_in_pcm_frames(ma_data_source *pDataSource, ma_uint64 *pCursor)
+    ma_result ma_data_source_get_length_in_pcm_frames(ma_data_source *pDataSource, ma_uint64 *pLength)
 
     ctypedef struct ma_audio_buffer_ref:
         ma_data_source_callbacks ds
@@ -1728,31 +1434,20 @@ cdef extern from "miniaudio.h":
 
 
 
-    ma_result ma_audio_buffer_ref_init(ma_format format, ma_uint32 channels,
-                                              const void *pData,
-                                              ma_uint64 sizeInFrames,
-                                              ma_audio_buffer_ref *pAudioBufferRef)
+    ma_result ma_audio_buffer_ref_init(ma_format format, ma_uint32 channels, const void *pData, ma_uint64 sizeInFrames, ma_audio_buffer_ref *pAudioBufferRef)
     
-    ma_result ma_audio_buffer_ref_set_data(ma_audio_buffer_ref *pAudioBufferRef,
-                                 const void *pData, ma_uint64 sizeInFrames)
+    ma_result ma_audio_buffer_ref_set_data(ma_audio_buffer_ref *pAudioBufferRef, const void *pData, ma_uint64 sizeInFrames)
     
-    ma_uint64 ma_audio_buffer_ref_read_pcm_frames(ma_audio_buffer_ref *pAudioBufferRef,
-                                        void *pFramesOut, ma_uint64 frameCount,
-                                        ma_bool32 loop)
+    ma_uint64 ma_audio_buffer_ref_read_pcm_frames(ma_audio_buffer_ref *pAudioBufferRef, void *pFramesOut, ma_uint64 frameCount, ma_bool32 loop)
     
-    ma_result ma_audio_buffer_ref_seek_to_pcm_frame(ma_audio_buffer_ref *pAudioBufferRef,
-                                          ma_uint64 frameIndex)
+    ma_result ma_audio_buffer_ref_seek_to_pcm_frame(ma_audio_buffer_ref *pAudioBufferRef, ma_uint64 frameIndex)
     
-    ma_result ma_audio_buffer_ref_map(ma_audio_buffer_ref *pAudioBufferRef,
-                                             void **ppFramesOut,
-                                             ma_uint64 *pFrameCount)
+    ma_result ma_audio_buffer_ref_map(ma_audio_buffer_ref *pAudioBufferRef, void **ppFramesOut, ma_uint64 *pFrameCount)
     
-    ma_result ma_audio_buffer_ref_unmap(ma_audio_buffer_ref *pAudioBufferRef,
-                                               ma_uint64 frameCount)
+    ma_result ma_audio_buffer_ref_unmap(ma_audio_buffer_ref *pAudioBufferRef, ma_uint64 frameCount)
     ma_result ma_audio_buffer_ref_at_end(ma_audio_buffer_ref *pAudioBufferRef)
 
-    ma_result ma_audio_buffer_ref_get_available_frames(ma_audio_buffer_ref *pAudioBufferRef,
-                                             ma_uint64 *pAvailableFrames)
+    ma_result ma_audio_buffer_ref_get_available_frames(ma_audio_buffer_ref *pAudioBufferRef, ma_uint64 *pAvailableFrames)
 
     ctypedef struct ma_audio_buffer_config:
         ma_format format
@@ -1762,9 +1457,7 @@ cdef extern from "miniaudio.h":
         ma_allocation_callbacks allocationCallbacks
 
 
-    ma_audio_buffer_config ma_audio_buffer_config_init(
-        ma_format format, ma_uint32 channels, ma_uint64 sizeInFrames,
-        const void *pData, const ma_allocation_callbacks *pAllocationCallbacks)
+    ma_audio_buffer_config ma_audio_buffer_config_init( ma_format format, ma_uint32 channels, ma_uint64 sizeInFrames, const void *pData, const ma_allocation_callbacks *pAllocationCallbacks)
 
     ctypedef struct ma_audio_buffer:
         ma_audio_buffer_ref ref
@@ -1772,39 +1465,17 @@ cdef extern from "miniaudio.h":
         ma_bool32 ownsData
         ma_uint8 _pExtraData[1]
 
-    ma_result ma_audio_buffer_init(const ma_audio_buffer_config *pConfig,
-                                          ma_audio_buffer *pAudioBuffer)
-
-    ma_result ma_audio_buffer_init_copy(const ma_audio_buffer_config *pConfig,
-                              ma_audio_buffer *pAudioBuffer)
-
-    ma_result ma_audio_buffer_alloc_and_init(const ma_audio_buffer_config *pConfig,
-                                   ma_audio_buffer **ppAudioBuffer)
-    
+    ma_result ma_audio_buffer_init(const ma_audio_buffer_config *pConfig, ma_audio_buffer *pAudioBuffer)
+    ma_result ma_audio_buffer_init_copy(const ma_audio_buffer_config *pConfig, ma_audio_buffer *pAudioBuffer)
+    ma_result ma_audio_buffer_alloc_and_init(const ma_audio_buffer_config *pConfig, ma_audio_buffer **ppAudioBuffer)
     void ma_audio_buffer_uninit(ma_audio_buffer *pAudioBuffer)
-    
-    void ma_audio_buffer_uninit_and_free(ma_audio_buffer *pAudioBuffer)
-    
-    ma_uint64 ma_audio_buffer_read_pcm_frames(ma_audio_buffer *pAudioBuffer,
-                                                     void *pFramesOut,
-                                                     ma_uint64 frameCount,
-                                                     ma_bool32 loop)
-    
-    ma_result ma_audio_buffer_seek_to_pcm_frame(ma_audio_buffer *pAudioBuffer,
-                                      ma_uint64 frameIndex)
-    ma_result ma_audio_buffer_map(ma_audio_buffer *pAudioBuffer,
-                                         void **ppFramesOut,
-                                         ma_uint64 *pFrameCount)
-    ma_result ma_audio_buffer_unmap(ma_audio_buffer *pAudioBuffer,
-                                           ma_uint64 frameCount)
+    void ma_audio_buffer_uninit_and_free(ma_audio_buffer *pAudioBuffer)    
+    ma_uint64 ma_audio_buffer_read_pcm_frames(ma_audio_buffer *pAudioBuffer, void *pFramesOut, ma_uint64 frameCount, ma_bool32 loop)
+    ma_result ma_audio_buffer_seek_to_pcm_frame(ma_audio_buffer *pAudioBuffer, ma_uint64 frameIndex)
+    ma_result ma_audio_buffer_map(ma_audio_buffer *pAudioBuffer, void **ppFramesOut, ma_uint64 *pFrameCount)
+    ma_result ma_audio_buffer_unmap(ma_audio_buffer *pAudioBuffer, ma_uint64 frameCount)
     ma_result ma_audio_buffer_at_end(ma_audio_buffer *pAudioBuffer)
-    
-    ma_result ma_audio_buffer_get_available_frames(ma_audio_buffer *pAudioBuffer,
-                                         ma_uint64 *pAvailableFrames)
-
-
-
-
+    ma_result ma_audio_buffer_get_available_frames(ma_audio_buffer *pAudioBuffer, ma_uint64 *pAvailableFrames)
 
     ctypedef void ma_vfs
 
@@ -1821,77 +1492,43 @@ cdef extern from "miniaudio.h":
 
 
     ctypedef struct ma_vfs_callbacks:
-        ma_result (*onOpen)(ma_vfs *pVFS, const char *pFilePath, ma_uint32 openMode,
-                            ma_vfs_file *pFile)
-        ma_result (*onOpenW)(ma_vfs *pVFS, const wchar_t *pFilePath,
-                             ma_uint32 openMode, ma_vfs_file *pFile)
+        ma_result (*onOpen)(ma_vfs *pVFS, const char *pFilePath, ma_uint32 openMode, ma_vfs_file *pFile)
+        ma_result (*onOpenW)(ma_vfs *pVFS, const wchar_t *pFilePath, ma_uint32 openMode, ma_vfs_file *pFile)
         ma_result (*onClose)(ma_vfs *pVFS, ma_vfs_file file)
-        ma_result (*onRead)(ma_vfs *pVFS, ma_vfs_file file, void *pDst,
-                            size_t sizeInBytes, size_t *pBytesRead)
-        ma_result (*onWrite)(ma_vfs *pVFS, ma_vfs_file file, const void *pSrc,
-                             size_t sizeInBytes, size_t *pBytesWritten)
-        ma_result (*onSeek)(ma_vfs *pVFS, ma_vfs_file file, ma_int64 offset,
-                            ma_seek_origin origin)
+        ma_result (*onRead)(ma_vfs *pVFS, ma_vfs_file file, void *pDst, size_t sizeInBytes, size_t *pBytesRead)
+        ma_result (*onWrite)(ma_vfs *pVFS, ma_vfs_file file, const void *pSrc, size_t sizeInBytes, size_t *pBytesWritten)
+        ma_result (*onSeek)(ma_vfs *pVFS, ma_vfs_file file, ma_int64 offset, ma_seek_origin origin)
         ma_result (*onTell)(ma_vfs *pVFS, ma_vfs_file file, ma_int64 *pCursor)
         ma_result (*onInfo)(ma_vfs *pVFS, ma_vfs_file file, ma_file_info *pInfo)
 
 
-    ma_result ma_vfs_open(ma_vfs *pVFS, const char *pFilePath,
-                                 ma_uint32 openMode, ma_vfs_file *pFile)
-
-    ma_result ma_vfs_open_w(ma_vfs *pVFS, const wchar_t *pFilePath,
-                                   ma_uint32 openMode, ma_vfs_file *pFile)
-
+    ma_result ma_vfs_open(ma_vfs *pVFS, const char *pFilePath, ma_uint32 openMode, ma_vfs_file *pFile)
+    ma_result ma_vfs_open_w(ma_vfs *pVFS, const wchar_t *pFilePath, ma_uint32 openMode, ma_vfs_file *pFile)
     ma_result ma_vfs_close(ma_vfs *pVFS, ma_vfs_file file)
-
-    ma_result ma_vfs_read(ma_vfs *pVFS, ma_vfs_file file, void *pDst,
-                                 size_t sizeInBytes, size_t *pBytesRead)
-
-    ma_result ma_vfs_write(ma_vfs *pVFS, ma_vfs_file file, const void *pSrc,
-                                  size_t sizeInBytes, size_t *pBytesWritten)
-
-    ma_result ma_vfs_seek(ma_vfs *pVFS, ma_vfs_file file, ma_int64 offset,
-                                 ma_seek_origin origin)
-
+    ma_result ma_vfs_read(ma_vfs *pVFS, ma_vfs_file file, void *pDst, size_t sizeInBytes, size_t *pBytesRead)
+    ma_result ma_vfs_write(ma_vfs *pVFS, ma_vfs_file file, const void *pSrc, size_t sizeInBytes, size_t *pBytesWritten)
+    ma_result ma_vfs_seek(ma_vfs *pVFS, ma_vfs_file file, ma_int64 offset, ma_seek_origin origin)
     ma_result ma_vfs_tell(ma_vfs *pVFS, ma_vfs_file file, ma_int64 *pCursor)
-
-    ma_result ma_vfs_info(ma_vfs *pVFS, ma_vfs_file file,
-                                 ma_file_info *pInfo)
-
-    ma_result ma_vfs_open_and_read_file(ma_vfs *pVFS, const char *pFilePath, void **ppData,
-                              size_t *pSize,
-                              const ma_allocation_callbacks *pAllocationCallbacks)
+    ma_result ma_vfs_info(ma_vfs *pVFS, ma_vfs_file file, ma_file_info *pInfo)
+    ma_result ma_vfs_open_and_read_file(ma_vfs *pVFS, const char *pFilePath, void **ppData, size_t *pSize, const ma_allocation_callbacks *pAllocationCallbacks)
 
     ctypedef struct ma_default_vfs:
         ma_vfs_callbacks cb
         ma_allocation_callbacks allocationCallbacks
 
-    ma_result ma_default_vfs_init(ma_default_vfs *pVFS,
-                        const ma_allocation_callbacks *pAllocationCallbacks)
+    ma_result ma_default_vfs_init(ma_default_vfs *pVFS, const ma_allocation_callbacks *pAllocationCallbacks)
 
     ctypedef enum ma_resource_format:
         ma_resource_format_wav
 
     ctypedef struct ma_decoder
 
-    ctypedef size_t (*ma_decoder_read_proc)(ma_decoder *pDecoder, void *pBufferOut,
-                                           size_t bytesToRead)
-
-    ctypedef ma_bool32 (*ma_decoder_seek_proc)(ma_decoder *pDecoder, int byteOffset,
-                                              ma_seek_origin origin)
-
-    ctypedef ma_uint64 (*ma_decoder_read_pcm_frames_proc)(ma_decoder *pDecoder,
-                                                         void *pFramesOut,
-                                                         ma_uint64 frameCount)
-
-    ctypedef ma_result (*ma_decoder_seek_to_pcm_frame_proc)(ma_decoder *pDecoder,
-                                                           ma_uint64 frameIndex)
-
+    ctypedef size_t (*ma_decoder_read_proc)(ma_decoder *pDecoder, void *pBufferOut, size_t bytesToRead)
+    ctypedef ma_bool32 (*ma_decoder_seek_proc)(ma_decoder *pDecoder, int byteOffset, ma_seek_origin origin)
+    ctypedef ma_uint64 (*ma_decoder_read_pcm_frames_proc)(ma_decoder *pDecoder, void *pFramesOut, ma_uint64 frameCount)
+    ctypedef ma_result (*ma_decoder_seek_to_pcm_frame_proc)(ma_decoder *pDecoder, ma_uint64 frameIndex)
     ctypedef ma_result (*ma_decoder_uninit_proc)(ma_decoder *pDecoder)
-
-    ctypedef ma_uint64 (*ma_decoder_get_length_in_pcm_frames_proc)(
-        ma_decoder *pDecoder)
-
+    ctypedef ma_uint64 (*ma_decoder_get_length_in_pcm_frames_proc)(ma_decoder *pDecoder)
 
 
     cdef struct ma_decoder_config__resampling__linear:
@@ -1953,206 +1590,61 @@ cdef extern from "miniaudio.h":
         void *pInternalDecoder
         ma_decoder__backend backend
 
+    ma_decoder_config ma_decoder_config_init(ma_format outputFormat, ma_uint32 outputChannels, ma_uint32 outputSampleRate)
 
+    ma_result ma_decoder_init(ma_decoder_read_proc onRead, ma_decoder_seek_proc onSeek, void *pUserData, const ma_decoder_config *pConfig, ma_decoder *pDecoder)
+    ma_result ma_decoder_init_wav(ma_decoder_read_proc onRead, ma_decoder_seek_proc onSeek, void *pUserData, const ma_decoder_config *pConfig, ma_decoder *pDecoder)
+    ma_result ma_decoder_init_flac(ma_decoder_read_proc onRead, ma_decoder_seek_proc onSeek, void *pUserData, const ma_decoder_config *pConfig, ma_decoder *pDecoder)
+    ma_result ma_decoder_init_mp3(ma_decoder_read_proc onRead, ma_decoder_seek_proc onSeek, void *pUserData, const ma_decoder_config *pConfig, ma_decoder *pDecoder)
+    ma_result ma_decoder_init_vorbis(ma_decoder_read_proc onRead, ma_decoder_seek_proc onSeek, void *pUserData, const ma_decoder_config *pConfig, ma_decoder *pDecoder)
+    ma_result ma_decoder_init_raw(ma_decoder_read_proc onRead, ma_decoder_seek_proc onSeek, void *pUserData, const ma_decoder_config *pConfigIn, const ma_decoder_config *pConfigOut, ma_decoder *pDecoder)
 
+    ma_result ma_decoder_init_memory(const void *pData, size_t dataSize, const ma_decoder_config *pConfig, ma_decoder *pDecoder)
+    ma_result ma_decoder_init_memory_wav(const void *pData, size_t dataSize, const ma_decoder_config *pConfig, ma_decoder *pDecoder)
+    ma_result ma_decoder_init_memory_flac(const void *pData, size_t dataSize, const ma_decoder_config *pConfig, ma_decoder *pDecoder)
+    ma_result ma_decoder_init_memory_mp3(const void *pData, size_t dataSize, const ma_decoder_config *pConfig, ma_decoder *pDecoder)
+    ma_result ma_decoder_init_memory_vorbis(const void *pData, size_t dataSize, const ma_decoder_config *pConfig, ma_decoder *pDecoder)
+    ma_result ma_decoder_init_memory_raw(const void *pData, size_t dataSize, const ma_decoder_config *pConfigIn, const ma_decoder_config *pConfigOut, ma_decoder *pDecoder)
 
+    ma_result ma_decoder_init_vfs(ma_vfs *pVFS, const char *pFilePath, const ma_decoder_config *pConfig, ma_decoder *pDecoder)
+    ma_result ma_decoder_init_vfs_wav(ma_vfs *pVFS, const char *pFilePath, const ma_decoder_config *pConfig, ma_decoder *pDecoder)
+    ma_result ma_decoder_init_vfs_flac(ma_vfs *pVFS, const char *pFilePath, const ma_decoder_config *pConfig, ma_decoder *pDecoder)
+    ma_result ma_decoder_init_vfs_mp3(ma_vfs *pVFS, const char *pFilePath, const ma_decoder_config *pConfig, ma_decoder *pDecoder)
+    ma_result ma_decoder_init_vfs_vorbis(ma_vfs *pVFS, const char *pFilePath, const ma_decoder_config *pConfig, ma_decoder *pDecoder)
+    ma_result ma_decoder_init_vfs_w(ma_vfs *pVFS, const wchar_t *pFilePath, const ma_decoder_config *pConfig, ma_decoder *pDecoder)
+    ma_result ma_decoder_init_vfs_wav_w(ma_vfs *pVFS, const wchar_t *pFilePath, const ma_decoder_config *pConfig, ma_decoder *pDecoder)
+    ma_result ma_decoder_init_vfs_flac_w(ma_vfs *pVFS, const wchar_t *pFilePath, const ma_decoder_config *pConfig, ma_decoder *pDecoder)
+    ma_result ma_decoder_init_vfs_mp3_w(ma_vfs *pVFS, const wchar_t *pFilePath, const ma_decoder_config *pConfig, ma_decoder *pDecoder)
+    ma_result ma_decoder_init_vfs_vorbis_w(ma_vfs *pVFS, const wchar_t *pFilePath, const ma_decoder_config *pConfig, ma_decoder *pDecoder)
 
-    ma_decoder_config ma_decoder_config_init(ma_format outputFormat,
-                                                    ma_uint32 outputChannels,
-                                                    ma_uint32 outputSampleRate)
-
-    ma_result ma_decoder_init(ma_decoder_read_proc onRead,
-                                     ma_decoder_seek_proc onSeek, void *pUserData,
-                                     const ma_decoder_config *pConfig,
-                                     ma_decoder *pDecoder)
-
-    ma_result ma_decoder_init_wav(ma_decoder_read_proc onRead,
-                                         ma_decoder_seek_proc onSeek,
-                                         void *pUserData,
-                                         const ma_decoder_config *pConfig,
-                                         ma_decoder *pDecoder)
-
-    ma_result ma_decoder_init_flac(ma_decoder_read_proc onRead,
-                                          ma_decoder_seek_proc onSeek,
-                                          void *pUserData,
-                                          const ma_decoder_config *pConfig,
-                                          ma_decoder *pDecoder)
-
-    ma_result ma_decoder_init_mp3(ma_decoder_read_proc onRead,
-                                         ma_decoder_seek_proc onSeek,
-                                         void *pUserData,
-                                         const ma_decoder_config *pConfig,
-                                         ma_decoder *pDecoder)
-
-    ma_result ma_decoder_init_vorbis(ma_decoder_read_proc onRead,
-                                            ma_decoder_seek_proc onSeek,
-                                            void *pUserData,
-                                            const ma_decoder_config *pConfig,
-                                            ma_decoder *pDecoder)
-
-    ma_result ma_decoder_init_raw(ma_decoder_read_proc onRead, ma_decoder_seek_proc onSeek,
-                        void *pUserData, const ma_decoder_config *pConfigIn,
-                        const ma_decoder_config *pConfigOut, ma_decoder *pDecoder)
-
-    ma_result ma_decoder_init_memory(const void *pData, size_t dataSize,
-                                            const ma_decoder_config *pConfig,
-                                            ma_decoder *pDecoder)
-
-    ma_result ma_decoder_init_memory_wav(const void *pData, size_t dataSize,
-                                                const ma_decoder_config *pConfig,
-                                                ma_decoder *pDecoder)
-
-    ma_result ma_decoder_init_memory_flac(const void *pData, size_t dataSize,
-                                                 const ma_decoder_config *pConfig,
-                                                 ma_decoder *pDecoder)
-
-    ma_result ma_decoder_init_memory_mp3(const void *pData, size_t dataSize,
-                                                const ma_decoder_config *pConfig,
-                                                ma_decoder *pDecoder)
-
-    ma_result ma_decoder_init_memory_vorbis(const void *pData,
-                                                   size_t dataSize,
-                                                   const ma_decoder_config *pConfig,
-                                                   ma_decoder *pDecoder)
-
-    ma_result ma_decoder_init_memory_raw(const void *pData, size_t dataSize,
-                                                const ma_decoder_config *pConfigIn,
-                                                const ma_decoder_config *pConfigOut,
-                                                ma_decoder *pDecoder)
-
-    ma_result ma_decoder_init_vfs(ma_vfs *pVFS, const char *pFilePath,
-                                         const ma_decoder_config *pConfig,
-                                         ma_decoder *pDecoder)
-
-    ma_result ma_decoder_init_vfs_wav(ma_vfs *pVFS, const char *pFilePath,
-                                             const ma_decoder_config *pConfig,
-                                             ma_decoder *pDecoder)
-
-    ma_result ma_decoder_init_vfs_flac(ma_vfs *pVFS, const char *pFilePath,
-                                              const ma_decoder_config *pConfig,
-                                              ma_decoder *pDecoder)
-
-    ma_result ma_decoder_init_vfs_mp3(ma_vfs *pVFS, const char *pFilePath,
-                                             const ma_decoder_config *pConfig,
-                                             ma_decoder *pDecoder)
-
-    ma_result ma_decoder_init_vfs_vorbis(ma_vfs *pVFS, const char *pFilePath,
-                                                const ma_decoder_config *pConfig,
-                                                ma_decoder *pDecoder)
-
-    ma_result ma_decoder_init_vfs_w(ma_vfs *pVFS, const wchar_t *pFilePath,
-                                           const ma_decoder_config *pConfig,
-                                           ma_decoder *pDecoder)
-
-    ma_result ma_decoder_init_vfs_wav_w(ma_vfs *pVFS,
-                                               const wchar_t *pFilePath,
-                                               const ma_decoder_config *pConfig,
-                                               ma_decoder *pDecoder)
-
-    ma_result ma_decoder_init_vfs_flac_w(ma_vfs *pVFS,
-                                                const wchar_t *pFilePath,
-                                                const ma_decoder_config *pConfig,
-                                                ma_decoder *pDecoder)
-
-    ma_result ma_decoder_init_vfs_mp3_w(ma_vfs *pVFS,
-                                               const wchar_t *pFilePath,
-                                               const ma_decoder_config *pConfig,
-                                               ma_decoder *pDecoder)
-
-    ma_result ma_decoder_init_vfs_vorbis_w(ma_vfs *pVFS,
-                                                  const wchar_t *pFilePath,
-                                                  const ma_decoder_config *pConfig,
-                                                  ma_decoder *pDecoder)
-
-    ma_result ma_decoder_init_file(const char *pFilePath,
-                                          const ma_decoder_config *pConfig,
-                                          ma_decoder *pDecoder)
-
-    ma_result ma_decoder_init_file_wav(const char *pFilePath,
-                                              const ma_decoder_config *pConfig,
-                                              ma_decoder *pDecoder)
-
-    ma_result ma_decoder_init_file_flac(const char *pFilePath,
-                                               const ma_decoder_config *pConfig,
-                                               ma_decoder *pDecoder)
-
-    ma_result ma_decoder_init_file_mp3(const char *pFilePath,
-                                              const ma_decoder_config *pConfig,
-                                              ma_decoder *pDecoder)
-
-    ma_result ma_decoder_init_file_vorbis(const char *pFilePath,
-                                                 const ma_decoder_config *pConfig,
-                                                 ma_decoder *pDecoder)
-
-    ma_result ma_decoder_init_file_w(const wchar_t *pFilePath,
-                                            const ma_decoder_config *pConfig,
-                                            ma_decoder *pDecoder)
-
-    ma_result ma_decoder_init_file_wav_w(const wchar_t *pFilePath,
-                                                const ma_decoder_config *pConfig,
-                                                ma_decoder *pDecoder)
-    
-    ma_result ma_decoder_init_file_flac_w(const wchar_t *pFilePath,
-                                                 const ma_decoder_config *pConfig,
-                                                 ma_decoder *pDecoder)
-    
-    ma_result ma_decoder_init_file_mp3_w(const wchar_t *pFilePath,
-                                                const ma_decoder_config *pConfig,
-                                                ma_decoder *pDecoder)
-    
-    ma_result ma_decoder_init_file_vorbis_w(const wchar_t *pFilePath,
-                                                   const ma_decoder_config *pConfig,
-                                                   ma_decoder *pDecoder)
+    ma_result ma_decoder_init_file(const char *pFilePath, const ma_decoder_config *pConfig, ma_decoder *pDecoder)
+    ma_result ma_decoder_init_file_wav(const char *pFilePath, const ma_decoder_config *pConfig, ma_decoder *pDecoder)
+    ma_result ma_decoder_init_file_flac(const char *pFilePath, const ma_decoder_config *pConfig, ma_decoder *pDecoder)
+    ma_result ma_decoder_init_file_mp3(const char *pFilePath, const ma_decoder_config *pConfig, ma_decoder *pDecoder)
+    ma_result ma_decoder_init_file_vorbis(const char *pFilePath, const ma_decoder_config *pConfig, ma_decoder *pDecoder)
+    ma_result ma_decoder_init_file_w(const wchar_t *pFilePath, const ma_decoder_config *pConfig, ma_decoder *pDecoder)
+    ma_result ma_decoder_init_file_wav_w(const wchar_t *pFilePath, const ma_decoder_config *pConfig, ma_decoder *pDecoder)
+    ma_result ma_decoder_init_file_flac_w(const wchar_t *pFilePath, const ma_decoder_config *pConfig, ma_decoder *pDecoder)
+    ma_result ma_decoder_init_file_mp3_w(const wchar_t *pFilePath, const ma_decoder_config *pConfig, ma_decoder *pDecoder)
+    ma_result ma_decoder_init_file_vorbis_w(const wchar_t *pFilePath, const ma_decoder_config *pConfig, ma_decoder *pDecoder)
 
     ma_result ma_decoder_uninit(ma_decoder *pDecoder)
-
-    ma_result ma_decoder_get_cursor_in_pcm_frames(ma_decoder *pDecoder,
-                                                         ma_uint64 *pCursor)
-
+    ma_result ma_decoder_get_cursor_in_pcm_frames(ma_decoder *pDecoder, ma_uint64 *pCursor)
     ma_uint64 ma_decoder_get_length_in_pcm_frames(ma_decoder *pDecoder)
-
-    ma_result ma_decoder_read_pcm_frames(ma_decoder* pDecoder, 
-                                         void* pFramesOut, 
-                                         ma_uint64 frameCount, 
-                                         ma_uint64* pFramesRead) nogil
-
-    ma_result ma_decoder_seek_to_pcm_frame(ma_decoder *pDecoder,
-                                                  ma_uint64 frameIndex)
-
-    ma_result ma_decoder_get_available_frames(ma_decoder *pDecoder,
-                                                     ma_uint64 *pAvailableFrames)
-
-    ma_result ma_decode_from_vfs(ma_vfs *pVFS, const char *pFilePath,
-                                        ma_decoder_config *pConfig,
-                                        ma_uint64 *pFrameCountOut,
-                                        void **ppPCMFramesOut)
-
-    ma_result ma_decode_file(const char *pFilePath,
-                                    ma_decoder_config *pConfig,
-                                    ma_uint64 *pFrameCountOut,
-                                    void **ppPCMFramesOut)
-    
-    ma_result ma_decode_memory(const void *pData, size_t dataSize,
-                                      ma_decoder_config *pConfig,
-                                      ma_uint64 *pFrameCountOut,
-                                      void **ppPCMFramesOut)
+    ma_result ma_decoder_read_pcm_frames(ma_decoder* pDecoder, void* pFramesOut, ma_uint64 frameCount, ma_uint64* pFramesRead) nogil
+    ma_result ma_decoder_seek_to_pcm_frame(ma_decoder *pDecoder, ma_uint64 frameIndex)
+    ma_result ma_decoder_get_available_frames(ma_decoder *pDecoder, ma_uint64 *pAvailableFrames)
+    ma_result ma_decode_from_vfs(ma_vfs *pVFS, const char *pFilePath, ma_decoder_config *pConfig, ma_uint64 *pFrameCountOut, void **ppPCMFramesOut)
+    ma_result ma_decode_file(const char *pFilePath, ma_decoder_config *pConfig, ma_uint64 *pFrameCountOut, void **ppPCMFramesOut)
+    ma_result ma_decode_memory(const void *pData, size_t dataSize, ma_decoder_config *pConfig, ma_uint64 *pFrameCountOut, void **ppPCMFramesOut)
 
     ctypedef struct ma_encoder
 
-    ctypedef size_t (*ma_encoder_write_proc)(ma_encoder *pEncoder,
-                                            const void *pBufferIn,
-                                            size_t bytesToWrite)
-
-    ctypedef ma_bool32 (*ma_encoder_seek_proc)(ma_encoder *pEncoder, int byteOffset,
-                                              ma_seek_origin origin)
-    
+    ctypedef size_t (*ma_encoder_write_proc)(ma_encoder *pEncoder, const void *pBufferIn, size_t bytesToWrite)
+    ctypedef ma_bool32 (*ma_encoder_seek_proc)(ma_encoder *pEncoder, int byteOffset, ma_seek_origin origin)
     ctypedef ma_result (*ma_encoder_init_proc)(ma_encoder *pEncoder)
-    
     ctypedef void (*ma_encoder_uninit_proc)(ma_encoder *pEncoder)
-    
-    ctypedef ma_uint64 (*ma_encoder_write_pcm_frames_proc)(ma_encoder *pEncoder,
-                                                          const void *pFramesIn,
-                                                          ma_uint64 frameCount)
+    ctypedef ma_uint64 (*ma_encoder_write_pcm_frames_proc)(ma_encoder *pEncoder, const void *pFramesIn, ma_uint64 frameCount)
 
     ctypedef struct ma_encoder_config:
         ma_resource_format resourceFormat
@@ -2161,10 +1653,7 @@ cdef extern from "miniaudio.h":
         ma_uint32 sampleRate
         ma_allocation_callbacks allocationCallbacks
 
-
-
-    ma_encoder_config ma_encoder_config_init(ma_resource_format resourceFormat, ma_format format,
-                           ma_uint32 channels, ma_uint32 sampleRate)
+    ma_encoder_config ma_encoder_config_init(ma_resource_format resourceFormat, ma_format format, ma_uint32 channels, ma_uint32 sampleRate)
 
     ctypedef struct ma_encoder:
         ma_encoder_config config
@@ -2177,28 +1666,11 @@ cdef extern from "miniaudio.h":
         void *pInternalEncoder
         void *pFile
 
-    ma_result ma_encoder_init(ma_encoder_write_proc onWrite,
-                                     ma_encoder_seek_proc onSeek, void *pUserData,
-                                     const ma_encoder_config *pConfig,
-                                     ma_encoder *pEncoder)
-
-    ma_result ma_encoder_init_file(const char *pFilePath,
-                                          const ma_encoder_config *pConfig,
-                                          ma_encoder *pEncoder)
-
-    ma_result ma_encoder_init_file_w(const wchar_t *pFilePath,
-                                            const ma_encoder_config *pConfig,
-                                            ma_encoder *pEncoder)
-
+    ma_result ma_encoder_init(ma_encoder_write_proc onWrite, ma_encoder_seek_proc onSeek, void *pUserData, const ma_encoder_config *pConfig, ma_encoder *pEncoder)
+    ma_result ma_encoder_init_file(const char *pFilePath, const ma_encoder_config *pConfig, ma_encoder *pEncoder)
+    ma_result ma_encoder_init_file_w(const wchar_t *pFilePath, const ma_encoder_config *pConfig, ma_encoder *pEncoder)
     void ma_encoder_uninit(ma_encoder *pEncoder)
-
-    ma_uint64 ma_encoder_write_pcm_frames(ma_encoder *pEncoder,
-                                                 const void *pFramesIn,
-                                                 ma_uint64 frameCount)
-
-
-
-
+    ma_uint64 ma_encoder_write_pcm_frames(ma_encoder *pEncoder, const void *pFramesIn, ma_uint64 frameCount)
 
     ctypedef enum ma_waveform_type:
         ma_waveform_type_sine,
@@ -2216,9 +1688,7 @@ cdef extern from "miniaudio.h":
         double frequency
 
 
-    ma_waveform_config ma_waveform_config_init(ma_format format, ma_uint32 channels,
-                            ma_uint32 sampleRate, ma_waveform_type type,
-                            double amplitude, double frequency)
+    ma_waveform_config ma_waveform_config_init(ma_format format, ma_uint32 channels, ma_uint32 sampleRate, ma_waveform_type type, double amplitude, double frequency)
 
     ctypedef struct ma_waveform:
         ma_data_source_callbacks ds
@@ -2227,28 +1697,13 @@ cdef extern from "miniaudio.h":
         double time
 
 
-    ma_result ma_waveform_init(const ma_waveform_config *pConfig,
-                                      ma_waveform *pWaveform)
-
-    ma_result ma_waveform_read_pcm_frames(ma_waveform* pWaveform, 
-                                          void* pFramesOut,
-                                          ma_uint64 frameCount,
-                                          ma_uint64* pFramesRead) nogil
-    
-    ma_result ma_waveform_seek_to_pcm_frame(ma_waveform *pWaveform,
-                                                   ma_uint64 frameIndex)
-    
-    ma_result ma_waveform_set_amplitude(ma_waveform *pWaveform,
-                                               double amplitude)
-    
-    ma_result ma_waveform_set_frequency(ma_waveform *pWaveform,
-                                               double frequency)
-    
-    ma_result ma_waveform_set_type(ma_waveform *pWaveform,
-                                          ma_waveform_type type)
-    
-    ma_result ma_waveform_set_sample_rate(ma_waveform *pWaveform,
-                                                 ma_uint32 sampleRate)
+    ma_result ma_waveform_init(const ma_waveform_config *pConfig, ma_waveform *pWaveform)
+    ma_result ma_waveform_read_pcm_frames(ma_waveform* pWaveform, void* pFramesOut, ma_uint64 frameCount, ma_uint64* pFramesRead) nogil
+    ma_result ma_waveform_seek_to_pcm_frame(ma_waveform *pWaveform, ma_uint64 frameIndex)
+    ma_result ma_waveform_set_amplitude(ma_waveform *pWaveform, double amplitude)
+    ma_result ma_waveform_set_frequency(ma_waveform *pWaveform, double frequency)
+    ma_result ma_waveform_set_type(ma_waveform *pWaveform, ma_waveform_type type)
+    ma_result ma_waveform_set_sample_rate(ma_waveform *pWaveform, ma_uint32 sampleRate)
 
     ctypedef enum ma_noise_type:
         ma_noise_type_white,
@@ -2264,10 +1719,7 @@ cdef extern from "miniaudio.h":
         ma_bool32 duplicateChannels
 
 
-    ma_noise_config ma_noise_config_init(ma_format format,
-                                                ma_uint32 channels,
-                                                ma_noise_type type, ma_int32 seed,
-                                                double amplitude)
+    ma_noise_config ma_noise_config_init(ma_format format, ma_uint32 channels, ma_noise_type type, ma_int32 seed, double amplitude)
 
 
     cdef struct ma_noise__state__pink:
@@ -2288,17 +1740,9 @@ cdef extern from "miniaudio.h":
         ma_lcg lcg
         ma_noise__state state
 
-    ma_result ma_noise_init(const ma_noise_config *pConfig,
-                                   ma_noise *pNoise)
-
-    ma_uint64 ma_noise_read_pcm_frames(ma_noise *pNoise, void *pFramesOut,
-                                              ma_uint64 frameCount)
-    
+    ma_result ma_noise_init(const ma_noise_config *pConfig, ma_noise *pNoise)
+    ma_uint64 ma_noise_read_pcm_frames(ma_noise *pNoise, void *pFramesOut, ma_uint64 frameCount)
     ma_result ma_noise_set_amplitude(ma_noise *pNoise, double amplitude)
-    
     ma_result ma_noise_set_seed(ma_noise *pNoise, ma_int32 seed)
-    
     ma_result ma_noise_set_type(ma_noise *pNoise, ma_noise_type type)
-
-
 

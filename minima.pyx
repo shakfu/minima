@@ -15,7 +15,9 @@ def get_version():
 
 
 cdef void sine_data_callback(lib.ma_device* device, 
-                        void* output, const void* input_, lib.ma_uint32 frame_count) noexcept nogil:
+                            void* output, 
+                            const void* input_, 
+                            lib.ma_uint32 frame_count) noexcept nogil:
 
     cdef lib.ma_waveform* sinewave
 
@@ -67,7 +69,8 @@ def play_sine(double amp=0.2, double freq=220):
 
 
 cdef void file_data_callback(lib.ma_device* device, 
-                        void* output, const void* input_, lib.ma_uint32 frame_count) noexcept nogil:
+                            void* output, const void* input_,
+                            lib.ma_uint32 frame_count) noexcept nogil:
     
     cdef lib.ma_decoder* decoder = <lib.ma_decoder*>device.pUserData
     
