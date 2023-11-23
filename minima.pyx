@@ -1,7 +1,6 @@
-cimport libminiaudio as lib
 from enum import Enum
 
-DEF MA_SUCCESS = 0
+cimport libminiaudio as lib
 
 DEF MA_NO_DECODING = 1
 DEF MA_NO_ENCODING = 1
@@ -19,18 +18,14 @@ cdef void sine_data_callback(lib.ma_device* device,
                             void* output, 
                             const void* input_, 
                             lib.ma_uint32 frame_count) noexcept nogil:
-
+    """callback for `play_sine` function"""
     cdef lib.ma_waveform* sinewave
-
-    #assert device.playback.channels == DEVICE_CHANNELS
-
     sinewave = <lib.ma_waveform*>device.pUserData
-    #MA_ASSERT(sinewave != NULL)
-
     lib.ma_waveform_read_pcm_frames(sinewave, output, frame_count, NULL)
 
 
 def play_sine(double amp=0.2, double freq=220):
+    """generate and play a sign wave"""
     cdef lib.ma_waveform sineWave
     cdef lib.ma_device_config deviceConfig
     cdef lib.ma_device device
@@ -50,13 +45,13 @@ def play_sine(double amp=0.2, double freq=220):
     deviceConfig.dataCallback      = sine_data_callback
     deviceConfig.pUserData         = &sineWave
 
-    if (lib.ma_device_init(NULL, &deviceConfig, &device) != MA_SUCCESS):
+    if (lib.ma_device_init(NULL, &deviceConfig, &device) != lib.MA_SUCCESS):
         print("Failed to open playback device.")
         return -4
 
-    print("Device Name: %s" % device.playback.name)
+    print("Device Name: %s" % device.playback.name.decode())
 
-    if (lib.ma_device_start(&device) != MA_SUCCESS):
+    if (lib.ma_device_start(&device) != lib.MA_SUCCESS):
         print("Failed to start playback device.\n")
         lib.ma_device_uninit(&device)
         return -5
@@ -82,14 +77,14 @@ cdef void file_data_callback(lib.ma_device* device,
 
 
 def play_file(str path):
-
+    """play an audio file given a path to the default device"""
     cdef lib.ma_result result
     cdef lib.ma_decoder decoder
     cdef lib.ma_device_config deviceConfig
     cdef lib.ma_device device
 
     result = lib.ma_decoder_init_file(path.encode('utf8'), NULL, &decoder)
-    if (result != MA_SUCCESS):
+    if (result != lib.MA_SUCCESS):
         return
 
     deviceConfig = lib.ma_device_config_init(lib.ma_device_type_playback)
@@ -99,13 +94,13 @@ def play_file(str path):
     deviceConfig.dataCallback      = file_data_callback
     deviceConfig.pUserData         = &decoder
 
-    if (lib.ma_device_init(NULL, &deviceConfig, &device) != MA_SUCCESS):
+    if (lib.ma_device_init(NULL, &deviceConfig, &device) != lib.MA_SUCCESS):
         print("Failed to open playback device.")
         lib.ma_decoder_uninit(&decoder)
         return
 
 
-    if (lib.ma_device_start(&device) != MA_SUCCESS):
+    if (lib.ma_device_start(&device) != lib.MA_SUCCESS):
         print("Failed to start playback device.")
         lib.ma_device_uninit(&device)
         lib.ma_decoder_uninit(&decoder)
