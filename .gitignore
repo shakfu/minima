@@ -1,5 +1,5 @@
 .DS_Store
-legacy.py
+
 tests/test_miniaudio/
 
 # virtualenv

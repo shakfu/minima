@@ -77,7 +77,7 @@ cdef void file_data_callback(lib.ma_device* device,
 
 
 def play_file(str path):
-    """play an audio file given a path to the default device"""
+    """play a given audio file on the default device"""
     cdef lib.ma_result result
     cdef lib.ma_decoder decoder
     cdef lib.ma_device_config deviceConfig
@@ -109,6 +109,57 @@ def play_file(str path):
     if input("Press Enter to quit...\n") == '':
         lib.ma_device_uninit(&device)
         lib.ma_decoder_uninit(&decoder)
+
+def list_devices():
+    """enumerates the available devices detected by miniaudio"""
+
+    cdef lib.ma_result result
+    cdef lib.ma_context context
+    cdef lib.ma_device_info* pPlaybackDeviceInfos
+    cdef lib.ma_uint32 playbackDeviceCount
+    cdef lib.ma_device_info* pCaptureDeviceInfos
+    cdef lib.ma_uint32 captureDeviceCount
+    cdef lib.ma_uint32 i = 0
+    space = " "*4
+
+    if (lib.ma_context_init(NULL, 0, NULL, &context) != lib.MA_SUCCESS):
+        print("Failed to initialize context.")
+        return
+
+    result = lib.ma_context_get_devices(
+        &context, 
+        &pPlaybackDeviceInfos, &playbackDeviceCount, 
+        &pCaptureDeviceInfos, &captureDeviceCount)
+
+    if (result != lib.MA_SUCCESS):
+        print("Failed to retrieve device information.")
+        return
+
+    print("Playback Devices:")
+    for i in range(0, playbackDeviceCount):
+        print(space, i, pPlaybackDeviceInfos[i].name.decode())
+
+    print("Capture Devices:")
+    for i in range(0, captureDeviceCount):
+        print(space, i, pCaptureDeviceInfos[i].name.decode())
+
+    lib.ma_context_uninit(&context)
+
+def engine_play_file(str filename):
+    """demonstrates how to initialize an audio engine and play a sound."""
+
+    cdef lib.ma_result result
+    cdef lib.ma_engine engine
+
+    result = lib.ma_engine_init(NULL, &engine)
+    if (result != lib.MA_SUCCESS):
+        print("Failed to initialize audio engine.")
+        return
+
+    lib.ma_engine_play_sound(&engine, filename.encode('utf8'), NULL)
+
+    if input("Press Enter to quit...\n") == '':
+        lib.ma_engine_uninit(&engine)
 
 
 

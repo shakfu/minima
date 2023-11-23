@@ -1,4 +1,5 @@
 
+.PHONY: inplace test clean reset
 
 all: minima
 
@@ -8,13 +9,15 @@ miniaudio/libminiaudio.a:
 	@rm -f miniaudio/miniaudio.o
 
 minima: miniaudio/libminiaudio.a
+	@python3 setup.py build --build-lib=build
+	@rm -rf ./minima.c
+
+inplace: miniaudio/libminiaudio.a
 	@python3 setup.py build_ext --inplace	
 	@rm -rf ./build ./minima.c	
 
-.PHONY: test clean reset
-
 test:
-	python3 test_minima.py
+	PYTHONPATH=`pwd`/build python3 tests/test_minima.py
 
 clean:
 	@rm -f *.so
