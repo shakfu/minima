@@ -10,8 +10,9 @@ DEF DEVICE_CHANNELS    = 2
 DEF DEVICE_SAMPLE_RATE = 48000
 
 
-def get_version():
-    print(lib.ma_version_string())
+def get_version() -> str:
+    cdef const char* version = lib.ma_version_string()
+    return version.decode()
 
 
 cdef void sine_data_callback(lib.ma_device* device, 

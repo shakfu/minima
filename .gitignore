@@ -2,6 +2,10 @@
 legacy.py
 tests/test_miniaudio/
 
+# virtualenv
+venv
+.venv
+
 # Prerequisites
 *.d
 

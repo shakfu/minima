@@ -39,19 +39,21 @@ cdef extern from "miniaudio.h":
     ctypedef ma_uint8  ma_bool8
     ctypedef ma_uint32 ma_bool32
 
-    # TODO: check these
-    ctypedef void *ma_handle
-    ctypedef void *ma_ptr
-    ctypedef void (*ma_proc)()
+
+    # cdef int MA_TRUE = 1
+    # cdef int MA_TRUE = 0
+    # cdef int MA_SIZE_MAX = 0xFFFFFFFF
+
+
+    ctypedef float   ma_float
+    ctypedef double  ma_double
+
+    ctypedef void* ma_handle
+    ctypedef void* ma_ptr
+    ctypedef void* ma_proc
 
 # --------------------------------------------------------
-# header starts here
-
-    ctypedef enum ma_log_level:
-        MA_LOG_LEVEL_DEBUG = 4
-        MA_LOG_LEVEL_INFO = 3
-        MA_LOG_LEVEL_WARNING = 2
-        MA_LOG_LEVEL_ERROR = 1
+# Logging Levels
     
     ctypedef struct ma_context
     ctypedef struct ma_device
@@ -59,77 +61,85 @@ cdef extern from "miniaudio.h":
     ctypedef ma_uint8 ma_channel
 
     ctypedef enum ma_result:
-        MA_SUCCESS = 0
-        MA_ERROR = -1
-        MA_INVALID_ARGS = -2
-        MA_INVALID_OPERATION = -3
-        MA_OUT_OF_MEMORY = -4
-        MA_OUT_OF_RANGE = -5
-        MA_ACCESS_DENIED = -6
-        MA_DOES_NOT_EXIST = -7
-        MA_ALREADY_EXISTS = -8
-        MA_TOO_MANY_OPEN_FILES = -9
-        MA_INVALID_FILE = -10
-        MA_TOO_BIG = -11
-        MA_PATH_TOO_LONG = -12
-        MA_NAME_TOO_LONG = -13
-        MA_NOT_DIRECTORY = -14
-        MA_IS_DIRECTORY = -15
-        MA_DIRECTORY_NOT_EMPTY = -16
-        MA_AT_END = -17
-        MA_NO_SPACE = -18
-        MA_BUSY = -19
-        MA_IO_ERROR = -20
-        MA_INTERRUPT = -21
-        MA_UNAVAILABLE = -22
-        MA_ALREADY_IN_USE = -23
-        MA_BAD_ADDRESS = -24
-        MA_BAD_SEEK = -25
-        MA_BAD_PIPE = -26
-        MA_DEADLOCK = -27
-        MA_TOO_MANY_LINKS = -28
-        MA_NOT_IMPLEMENTED = -29
-        MA_NO_MESSAGE = -30
-        MA_BAD_MESSAGE = -31
-        MA_NO_DATA_AVAILABLE = -32
-        MA_INVALID_DATA = -33
-        MA_TIMEOUT = -34
-        MA_NO_NETWORK = -35
-        MA_NOT_UNIQUE = -36
-        MA_NOT_SOCKET = -37
-        MA_NO_ADDRESS = -38
-        MA_BAD_PROTOCOL = -39
-        MA_PROTOCOL_UNAVAILABLE = -40
-        MA_PROTOCOL_NOT_SUPPORTED = -41
-        MA_PROTOCOL_FAMILY_NOT_SUPPORTED = -42
-        MA_ADDRESS_FAMILY_NOT_SUPPORTED = -43
-        MA_SOCKET_NOT_SUPPORTED = -44
-        MA_CONNECTION_RESET = -45
-        MA_ALREADY_CONNECTED = -46
-        MA_NOT_CONNECTED = -47
-        MA_CONNECTION_REFUSED = -48
-        MA_NO_HOST = -49
-        MA_IN_PROGRESS = -50
-        MA_CANCELLED = -51
-        MA_MEMORY_ALREADY_MAPPED = -52
-        MA_CRC_MISMATCH = -100
-        MA_FORMAT_NOT_SUPPORTED = -200
-        MA_DEVICE_TYPE_NOT_SUPPORTED = -201
-        MA_SHARE_MODE_NOT_SUPPORTED = -202
-        MA_NO_BACKEND = -203
-        MA_NO_DEVICE = -204
-        MA_API_NOT_FOUND = -205
-        MA_INVALID_DEVICE_CONFIG = -206
-        MA_LOOP = -207
-        MA_BACKEND_NOT_ENABLED = -208
-        MA_DEVICE_NOT_INITIALIZED = -300
-        MA_DEVICE_ALREADY_INITIALIZED = -301
-        MA_DEVICE_NOT_STARTED = -302
-        MA_DEVICE_NOT_STOPPED = -303
-        MA_FAILED_TO_INIT_BACKEND = -400
-        MA_FAILED_TO_OPEN_BACKEND_DEVICE = -401
+        MA_SUCCESS                        =  0
+        MA_ERROR                          = -1  # A generic error.
+        MA_INVALID_ARGS                   = -2
+        MA_INVALID_OPERATION              = -3
+        MA_OUT_OF_MEMORY                  = -4
+        MA_OUT_OF_RANGE                   = -5
+        MA_ACCESS_DENIED                  = -6
+        MA_DOES_NOT_EXIST                 = -7
+        MA_ALREADY_EXISTS                 = -8
+        MA_TOO_MANY_OPEN_FILES            = -9
+        MA_INVALID_FILE                   = -10
+        MA_TOO_BIG                        = -11
+        MA_PATH_TOO_LONG                  = -12
+        MA_NAME_TOO_LONG                  = -13
+        MA_NOT_DIRECTORY                  = -14
+        MA_IS_DIRECTORY                   = -15
+        MA_DIRECTORY_NOT_EMPTY            = -16
+        MA_AT_END                         = -17
+        MA_NO_SPACE                       = -18
+        MA_BUSY                           = -19
+        MA_IO_ERROR                       = -20
+        MA_INTERRUPT                      = -21
+        MA_UNAVAILABLE                    = -22
+        MA_ALREADY_IN_USE                 = -23
+        MA_BAD_ADDRESS                    = -24
+        MA_BAD_SEEK                       = -25
+        MA_BAD_PIPE                       = -26
+        MA_DEADLOCK                       = -27
+        MA_TOO_MANY_LINKS                 = -28
+        MA_NOT_IMPLEMENTED                = -29
+        MA_NO_MESSAGE                     = -30
+        MA_BAD_MESSAGE                    = -31
+        MA_NO_DATA_AVAILABLE              = -32
+        MA_INVALID_DATA                   = -33
+        MA_TIMEOUT                        = -34
+        MA_NO_NETWORK                     = -35
+        MA_NOT_UNIQUE                     = -36
+        MA_NOT_SOCKET                     = -37
+        MA_NO_ADDRESS                     = -38
+        MA_BAD_PROTOCOL                   = -39
+        MA_PROTOCOL_UNAVAILABLE           = -40
+        MA_PROTOCOL_NOT_SUPPORTED         = -41
+        MA_PROTOCOL_FAMILY_NOT_SUPPORTED  = -42
+        MA_ADDRESS_FAMILY_NOT_SUPPORTED   = -43
+        MA_SOCKET_NOT_SUPPORTED           = -44
+        MA_CONNECTION_RESET               = -45
+        MA_ALREADY_CONNECTED              = -46
+        MA_NOT_CONNECTED                  = -47
+        MA_CONNECTION_REFUSED             = -48
+        MA_NO_HOST                        = -49
+        MA_IN_PROGRESS                    = -50
+        MA_CANCELLED                      = -51
+        MA_MEMORY_ALREADY_MAPPED          = -52
+
+        # General non-standard errors.
+        MA_CRC_MISMATCH                   = -100
+
+        # General miniaudio-specific errors.
+        MA_FORMAT_NOT_SUPPORTED           = -200
+        MA_DEVICE_TYPE_NOT_SUPPORTED      = -201
+        MA_SHARE_MODE_NOT_SUPPORTED       = -202
+        MA_NO_BACKEND                     = -203
+        MA_NO_DEVICE                      = -204
+        MA_API_NOT_FOUND                  = -205
+        MA_INVALID_DEVICE_CONFIG          = -206
+        MA_LOOP                           = -207
+        MA_BACKEND_NOT_ENABLED            = -208
+
+        # State errors.
+        MA_DEVICE_NOT_INITIALIZED         = -300
+        MA_DEVICE_ALREADY_INITIALIZED     = -301
+        MA_DEVICE_NOT_STARTED             = -302
+        MA_DEVICE_NOT_STOPPED             = -303
+
+        # Operation errors.
+        MA_FAILED_TO_INIT_BACKEND         = -400
+        MA_FAILED_TO_OPEN_BACKEND_DEVICE  = -401
         MA_FAILED_TO_START_BACKEND_DEVICE = -402
-        MA_FAILED_TO_STOP_BACKEND_DEVICE = -403
+        MA_FAILED_TO_STOP_BACKEND_DEVICE  = -403
 
 
     ctypedef enum ma_stream_format:
@@ -228,10 +238,22 @@ cdef extern from "miniaudio.h":
         pthread_mutex_t lock
         pthread_cond_t cond
 
+# -----------------------------------------------------------
+# get version funcs
+
     void ma_version(ma_uint32* pMajor, ma_uint32* pMinor, ma_uint32* pRevision)
     char* ma_version_string()
 
+# -----------------------------------------------------------
+# logging
 
+    ctypedef enum ma_log_level:
+        MA_LOG_LEVEL_DEBUG = 4
+        MA_LOG_LEVEL_INFO = 3
+        MA_LOG_LEVEL_WARNING = 2
+        MA_LOG_LEVEL_ERROR = 1
+
+    # The callback for handling log messages.
     ctypedef void (* ma_log_callback_proc)(void* pUserData, ma_uint32 level, const char* pMessage)
 
     ctypedef struct ma_log_callback:
@@ -254,6 +276,9 @@ cdef extern from "miniaudio.h":
     # ma_result ma_log_postv(ma_log* pLog, ma_uint32 level, const char* pFormat, va_list args)
     # ma_result ma_log_postf(ma_log* pLog, ma_uint32 level, const char* pFormat, ...) __attribute__((format(printf, 3, 4)))
 
+
+# -----------------------------------------------------------
+# Biquad Filtering
 
     ctypedef union ma_biquad_coefficient:
         float f32
@@ -293,6 +318,10 @@ cdef extern from "miniaudio.h":
     ma_result ma_biquad_process_pcm_frames(ma_biquad* pBQ, void* pFramesOut, const void* pFramesIn, ma_uint64 frameCount)
     ma_uint32 ma_biquad_get_latency(const ma_biquad* pBQ)
 
+
+# -----------------------------------------------------------
+# Low-Pass Filtering
+
     ctypedef struct ma_lpf1_config:
         ma_format format
         ma_uint32 channels
@@ -302,7 +331,7 @@ cdef extern from "miniaudio.h":
 
     ctypedef ma_lpf1_config ma_lpf2_config
 
-
+    # API
     ma_lpf1_config ma_lpf1_config_init(ma_format format, ma_uint32 channels, ma_uint32 sampleRate, double cutoffFrequency)
     ma_lpf2_config ma_lpf2_config_init(ma_format format, ma_uint32 channels, ma_uint32 sampleRate, double cutoffFrequency, double q)
 
@@ -313,18 +342,28 @@ cdef extern from "miniaudio.h":
         ma_biquad_coefficient a
         ma_biquad_coefficient* pR1
 
-    ma_result ma_lpf1_init(const ma_lpf1_config *pConfig, ma_lpf1 *pLPF)
-    ma_result ma_lpf1_reinit(const ma_lpf1_config *pConfig, ma_lpf1 *pLPF)
-    ma_result ma_lpf1_process_pcm_frames(ma_lpf1 *pLPF, void *pFramesOut, const void *pFramesIn, ma_uint64 frameCount)
-    ma_uint32 ma_lpf1_get_latency(const ma_lpf1 *pLPF)
+    # API
+    ma_result ma_lpf1_get_heap_size(const ma_lpf1_config* pConfig, size_t* pHeapSizeInBytes)
+    ma_result ma_lpf1_init_preallocated(const ma_lpf1_config* pConfig, void* pHeap, ma_lpf1* pLPF)
+    ma_result ma_lpf1_init(const ma_lpf1_config* pConfig, const ma_allocation_callbacks* pAllocationCallbacks, ma_lpf1* pLPF)
+    void ma_lpf1_uninit(ma_lpf1* pLPF, const ma_allocation_callbacks* pAllocationCallbacks)
+    ma_result ma_lpf1_reinit(const ma_lpf1_config* pConfig, ma_lpf1* pLPF)
+    ma_result ma_lpf1_clear_cache(ma_lpf1* pLPF)
+    ma_result ma_lpf1_process_pcm_frames(ma_lpf1* pLPF, void* pFramesOut, const void* pFramesIn, ma_uint64 frameCount)
+    ma_uint32 ma_lpf1_get_latency(const ma_lpf1* pLPF)
 
     ctypedef struct ma_lpf2:
         ma_biquad bq
 
-    ma_result ma_lpf2_init(const ma_lpf2_config *pConfig, ma_lpf2 *pLPF)
-    ma_result ma_lpf2_reinit(const ma_lpf2_config *pConfig, ma_lpf2 *pLPF)
-    ma_result ma_lpf2_process_pcm_frames(ma_lpf2 *pLPF, void *pFramesOut, const void *pFramesIn, ma_uint64 frameCount)
-    ma_uint32 ma_lpf2_get_latency(const ma_lpf2 *pLPF)
+    # API
+    ma_result ma_lpf2_get_heap_size(const ma_lpf2_config* pConfig, size_t* pHeapSizeInBytes)
+    ma_result ma_lpf2_init_preallocated(const ma_lpf2_config* pConfig, void* pHeap, ma_lpf2* pHPF)
+    ma_result ma_lpf2_init(const ma_lpf2_config* pConfig, const ma_allocation_callbacks* pAllocationCallbacks, ma_lpf2* pLPF)
+    void ma_lpf2_uninit(ma_lpf2* pLPF, const ma_allocation_callbacks* pAllocationCallbacks)
+    ma_result ma_lpf2_reinit(const ma_lpf2_config* pConfig, ma_lpf2* pLPF)
+    ma_result ma_lpf2_clear_cache(ma_lpf2* pLPF)
+    ma_result ma_lpf2_process_pcm_frames(ma_lpf2* pLPF, void* pFramesOut, const void* pFramesIn, ma_uint64 frameCount)
+    ma_uint32 ma_lpf2_get_latency(const ma_lpf2* pLPF)
 
     ctypedef struct ma_lpf_config:
         ma_format format
@@ -333,7 +372,7 @@ cdef extern from "miniaudio.h":
         double cutoffFrequency
         ma_uint32 order
 
-
+    # API
     ma_lpf_config ma_lpf_config_init(ma_format format, ma_uint32 channels, ma_uint32 sampleRate, double cutoffFrequency, ma_uint32 order)
 
     ctypedef struct ma_lpf:
@@ -345,6 +384,7 @@ cdef extern from "miniaudio.h":
         ma_lpf1* pLPF1
         ma_lpf2* pLPF2
 
+    # API
     ma_result ma_lpf_get_heap_size(const ma_lpf_config* pConfig, size_t* pHeapSizeInBytes)
     ma_result ma_lpf_init_preallocated(const ma_lpf_config* pConfig, void* pHeap, ma_lpf* pLPF)
     ma_result ma_lpf_init(const ma_lpf_config* pConfig, const ma_allocation_callbacks* pAllocationCallbacks, ma_lpf* pLPF)
@@ -354,6 +394,8 @@ cdef extern from "miniaudio.h":
     ma_result ma_lpf_process_pcm_frames(ma_lpf* pLPF, void* pFramesOut, const void* pFramesIn, ma_uint64 frameCount)
     ma_uint32 ma_lpf_get_latency(const ma_lpf* pLPF)
 
+# -----------------------------------------------------------
+# High-Pass Filtering
 
     ctypedef struct ma_hpf1_config:
         ma_format format
@@ -364,6 +406,7 @@ cdef extern from "miniaudio.h":
 
     ctypedef ma_hpf1_config ma_hpf2_config
 
+    # API
     ma_hpf1_config ma_hpf1_config_init(ma_format format, ma_uint32 channels, ma_uint32 sampleRate, double cutoffFrequency)
     ma_hpf2_config ma_hpf2_config_init(ma_format format, ma_uint32 channels, ma_uint32 sampleRate, double cutoffFrequency, double q)
 
@@ -373,6 +416,7 @@ cdef extern from "miniaudio.h":
         ma_biquad_coefficient a
         ma_biquad_coefficient* pR1
 
+    # API
     ma_result ma_hpf1_get_heap_size(const ma_hpf1_config* pConfig, size_t* pHeapSizeInBytes)
     ma_result ma_hpf1_init_preallocated(const ma_hpf1_config* pConfig, void* pHeap, ma_hpf1* pLPF)
     ma_result ma_hpf1_init(const ma_hpf1_config* pConfig, const ma_allocation_callbacks* pAllocationCallbacks, ma_hpf1* pHPF)
@@ -384,6 +428,7 @@ cdef extern from "miniaudio.h":
     ctypedef struct ma_hpf2:
         ma_biquad bq
 
+    # API
     ma_result ma_hpf2_get_heap_size(const ma_hpf2_config* pConfig, size_t* pHeapSizeInBytes)
     ma_result ma_hpf2_init_preallocated(const ma_hpf2_config* pConfig, void* pHeap, ma_hpf2* pHPF)
     ma_result ma_hpf2_init(const ma_hpf2_config* pConfig, const ma_allocation_callbacks* pAllocationCallbacks, ma_hpf2* pHPF)
@@ -410,6 +455,7 @@ cdef extern from "miniaudio.h":
         ma_hpf1* pHPF1
         ma_hpf2* pHPF2
 
+    # API
     ma_result ma_hpf_get_heap_size(const ma_hpf_config* pConfig, size_t* pHeapSizeInBytes)
     ma_result ma_hpf_init_preallocated(const ma_hpf_config* pConfig, void* pHeap, ma_hpf* pLPF)
     ma_result ma_hpf_init(const ma_hpf_config* pConfig, const ma_allocation_callbacks* pAllocationCallbacks, ma_hpf* pHPF)
@@ -418,6 +464,9 @@ cdef extern from "miniaudio.h":
     ma_result ma_hpf_process_pcm_frames(ma_hpf* pHPF, void* pFramesOut, const void* pFramesIn, ma_uint64 frameCount)
     ma_uint32 ma_hpf_get_latency(const ma_hpf* pHPF)
 
+# -----------------------------------------------------------
+# Band-Pass Filtering
+
     ctypedef struct ma_bpf2_config:
         ma_format format
         ma_uint32 channels
@@ -425,12 +474,13 @@ cdef extern from "miniaudio.h":
         double cutoffFrequency
         double q
 
-
+    # API
     ma_bpf2_config ma_bpf2_config_init(ma_format format, ma_uint32 channels, ma_uint32 sampleRate, double cutoffFrequency, double q)
 
     ctypedef struct ma_bpf2:
         ma_biquad bq
 
+    # API
     ma_result ma_bpf2_get_heap_size(const ma_bpf2_config* pConfig, size_t* pHeapSizeInBytes)
     ma_result ma_bpf2_init_preallocated(const ma_bpf2_config* pConfig, void* pHeap, ma_bpf2* pBPF)
     ma_result ma_bpf2_init(const ma_bpf2_config* pConfig, const ma_allocation_callbacks* pAllocationCallbacks, ma_bpf2* pBPF)
@@ -446,6 +496,7 @@ cdef extern from "miniaudio.h":
         double cutoffFrequency
         ma_uint32 order
 
+    # API
     ma_bpf_config ma_bpf_config_init(ma_format format, ma_uint32 channels, ma_uint32 sampleRate, double cutoffFrequency, ma_uint32 order)
 
     ctypedef struct ma_bpf:
@@ -454,6 +505,7 @@ cdef extern from "miniaudio.h":
         ma_uint32 bpf2Count
         ma_bpf2* pBPF2
 
+    # API
     ma_result ma_bpf_get_heap_size(const ma_bpf_config* pConfig, size_t* pHeapSizeInBytes)
     ma_result ma_bpf_init_preallocated(const ma_bpf_config* pConfig, void* pHeap, ma_bpf* pBPF)
     ma_result ma_bpf_init(const ma_bpf_config* pConfig, const ma_allocation_callbacks* pAllocationCallbacks, ma_bpf* pBPF)
@@ -462,6 +514,10 @@ cdef extern from "miniaudio.h":
     ma_result ma_bpf_process_pcm_frames(ma_bpf* pBPF, void* pFramesOut, const void* pFramesIn, ma_uint64 frameCount)
     ma_uint32 ma_bpf_get_latency(const ma_bpf* pBPF)
 
+
+# -----------------------------------------------------------
+# Notch Filter
+
     ctypedef struct ma_notch2_config:
         ma_format format
         ma_uint32 channels
@@ -469,11 +525,13 @@ cdef extern from "miniaudio.h":
         double q
         double frequency
 
+    # API
     ma_notch2_config ma_notch2_config_init(ma_format format, ma_uint32 channels, ma_uint32 sampleRate, double q, double frequency)
 
     ctypedef struct ma_notch2:
         ma_biquad bq
 
+    # API
     ma_result ma_notch2_get_heap_size(const ma_notch2_config* pConfig, size_t* pHeapSizeInBytes)
     ma_result ma_notch2_init_preallocated(const ma_notch2_config* pConfig, void* pHeap, ma_notch2* pFilter)
     ma_result ma_notch2_init(const ma_notch2_config* pConfig, const ma_allocation_callbacks* pAllocationCallbacks, ma_notch2* pFilter)
@@ -481,6 +539,10 @@ cdef extern from "miniaudio.h":
     ma_result ma_notch2_reinit(const ma_notch2_config* pConfig, ma_notch2* pFilter)
     ma_result ma_notch2_process_pcm_frames(ma_notch2* pFilter, void* pFramesOut, const void* pFramesIn, ma_uint64 frameCount)
     ma_uint32 ma_notch2_get_latency(const ma_notch2* pFilter)
+
+
+# -----------------------------------------------------------
+# Peaking EQ Filter
 
     ctypedef struct ma_peak2_config:
         ma_format format
@@ -490,12 +552,15 @@ cdef extern from "miniaudio.h":
         double q
         double frequency
 
+    ctypedef ma_peak2_config ma_peak_config
+
+    # API
     ma_peak2_config ma_peak2_config_init(ma_format format, ma_uint32 channels, ma_uint32 sampleRate, double gainDB, double q, double frequency)
 
     ctypedef struct ma_peak2:
         ma_biquad bq
 
-
+    # API
     ma_result ma_peak2_get_heap_size(const ma_peak2_config* pConfig, size_t* pHeapSizeInBytes)
     ma_result ma_peak2_init_preallocated(const ma_peak2_config* pConfig, void* pHeap, ma_peak2* pFilter)
     ma_result ma_peak2_init(const ma_peak2_config* pConfig, const ma_allocation_callbacks* pAllocationCallbacks, ma_peak2* pFilter)
@@ -503,6 +568,10 @@ cdef extern from "miniaudio.h":
     ma_result ma_peak2_reinit(const ma_peak2_config* pConfig, ma_peak2* pFilter)
     ma_result ma_peak2_process_pcm_frames(ma_peak2* pFilter, void* pFramesOut, const void* pFramesIn, ma_uint64 frameCount)
     ma_uint32 ma_peak2_get_latency(const ma_peak2* pFilter)
+
+
+# -----------------------------------------------------------
+# Low Shelf Filter
 
     ctypedef struct ma_loshelf2_config:
         ma_format format
@@ -512,12 +581,15 @@ cdef extern from "miniaudio.h":
         double shelfSlope
         double frequency
 
+    ctypedef ma_loshelf2_config ma_loshelf_config
 
+    # API
     ma_loshelf2_config ma_loshelf2_config_init(ma_format format, ma_uint32 channels, ma_uint32 sampleRate, double gainDB, double shelfSlope, double frequency)
 
     ctypedef struct ma_loshelf2:
         ma_biquad bq
 
+    # API
     ma_result ma_loshelf2_get_heap_size(const ma_loshelf2_config* pConfig, size_t* pHeapSizeInBytes)
     ma_result ma_loshelf2_init_preallocated(const ma_loshelf2_config* pConfig, void* pHeap, ma_loshelf2* pFilter)
     ma_result ma_loshelf2_init(const ma_loshelf2_config* pConfig, const ma_allocation_callbacks* pAllocationCallbacks, ma_loshelf2* pFilter)
@@ -525,6 +597,9 @@ cdef extern from "miniaudio.h":
     ma_result ma_loshelf2_reinit(const ma_loshelf2_config* pConfig, ma_loshelf2* pFilter)
     ma_result ma_loshelf2_process_pcm_frames(ma_loshelf2* pFilter, void* pFramesOut, const void* pFramesIn, ma_uint64 frameCount)
     ma_uint32 ma_loshelf2_get_latency(const ma_loshelf2* pFilter)
+
+# -----------------------------------------------------------
+# High Shelf Filter
 
     ctypedef struct ma_hishelf2_config:
         ma_format format
@@ -534,11 +609,15 @@ cdef extern from "miniaudio.h":
         double shelfSlope
         double frequency
 
+    ctypedef ma_hishelf2_config ma_hishelf_config
+
+    # API
     ma_hishelf2_config ma_hishelf2_config_init(ma_format format, ma_uint32 channels, ma_uint32 sampleRate, double gainDB, double shelfSlope, double frequency)
 
     ctypedef struct ma_hishelf2:
         ma_biquad bq
 
+    # API
     ma_result ma_hishelf2_get_heap_size(const ma_hishelf2_config* pConfig, size_t* pHeapSizeInBytes)
     ma_result ma_hishelf2_init_preallocated(const ma_hishelf2_config* pConfig, void* pHeap, ma_hishelf2* pFilter)
     ma_result ma_hishelf2_init(const ma_hishelf2_config* pConfig, const ma_allocation_callbacks* pAllocationCallbacks, ma_hishelf2* pFilter)
@@ -547,6 +626,9 @@ cdef extern from "miniaudio.h":
     ma_result ma_hishelf2_process_pcm_frames(ma_hishelf2* pFilter, void* pFramesOut, const void* pFramesIn, ma_uint64 frameCount)
     ma_uint32 ma_hishelf2_get_latency(const ma_hishelf2* pFilter)
 
+
+# -----------------------------------------------------------
+# Delay
 
     ctypedef struct ma_delay_config:
         ma_uint32 channels
@@ -557,6 +639,7 @@ cdef extern from "miniaudio.h":
         float dry
         float decay
 
+    # API
     ma_delay_config ma_delay_config_init(ma_uint32 channels, ma_uint32 sampleRate, ma_uint32 delayInFrames, float decay)
 
 
@@ -566,7 +649,7 @@ cdef extern from "miniaudio.h":
         ma_uint32 bufferSizeInFrames
         float* pBuffer
 
-
+    # API
     ma_result ma_delay_init(const ma_delay_config* pConfig, const ma_allocation_callbacks* pAllocationCallbacks, ma_delay* pDelay)
     void ma_delay_uninit(ma_delay* pDelay, const ma_allocation_callbacks* pAllocationCallbacks)
     ma_result ma_delay_process_pcm_frames(ma_delay* pDelay, void* pFramesOut, const void* pFramesIn, ma_uint32 frameCount)
@@ -578,10 +661,14 @@ cdef extern from "miniaudio.h":
     float ma_delay_get_decay(const ma_delay* pDelay)
 
 
+# -----------------------------------------------------------
+# Gainer for smooth volume changes
+
     ctypedef struct  ma_gainer_config:
         ma_uint32 channels
         ma_uint32 smoothTimeInFrames
 
+    # API
     ma_gainer_config ma_gainer_config_init(ma_uint32 channels, ma_uint32 smoothTimeInFrames)
 
 
@@ -592,11 +679,7 @@ cdef extern from "miniaudio.h":
         float* pOldGains
         float* pNewGains
 
-
-        void* _pHeap
-        ma_bool32 _ownsHeap
-
-
+    # API
     ma_result ma_gainer_get_heap_size(const ma_gainer_config* pConfig, size_t* pHeapSizeInBytes)
     ma_result ma_gainer_init_preallocated(const ma_gainer_config* pConfig, void* pHeap, ma_gainer* pGainer)
     ma_result ma_gainer_init(const ma_gainer_config* pConfig, const ma_allocation_callbacks* pAllocationCallbacks, ma_gainer* pGainer)
@@ -607,18 +690,21 @@ cdef extern from "miniaudio.h":
     ma_result ma_gainer_set_master_volume(ma_gainer* pGainer, float volume)
     ma_result ma_gainer_get_master_volume(const ma_gainer* pGainer, float* pVolume)
 
+
+# -----------------------------------------------------------
+# Stereo Panner
+
     ctypedef enum ma_pan_mode :
         ma_pan_mode_balance = 0
         ma_pan_mode_pan
 
     ctypedef struct ma_panner_config:
-
         ma_format format
         ma_uint32 channels
         ma_pan_mode mode
         float pan
      
-
+    # API
     ma_panner_config ma_panner_config_init(ma_format format, ma_uint32 channels)
 
 
@@ -628,6 +714,7 @@ cdef extern from "miniaudio.h":
         ma_pan_mode mode
         float pan
 
+    # API
     ma_result ma_panner_init(const ma_panner_config* pConfig, ma_panner* pPanner)
     ma_result ma_panner_process_pcm_frames(ma_panner* pPanner, void* pFramesOut, const void* pFramesIn, ma_uint64 frameCount)
     void ma_panner_set_mode(ma_panner* pPanner, ma_pan_mode mode)
@@ -635,11 +722,15 @@ cdef extern from "miniaudio.h":
     void ma_panner_set_pan(ma_panner* pPanner, float pan)
     float ma_panner_get_pan(const ma_panner* pPanner)
 
+# -----------------------------------------------------------
+# Fader
+
     ctypedef struct ma_fader_config:
         ma_format format
         ma_uint32 channels
         ma_uint32 sampleRate
 
+    # API
     ma_fader_config ma_fader_config_init(ma_format format, ma_uint32 channels, ma_uint32 sampleRate)
 
     ctypedef struct ma_fader:
@@ -649,6 +740,7 @@ cdef extern from "miniaudio.h":
         ma_uint64 lengthInFrames
         ma_int64 cursorInFrames
 
+    # API
     ma_result ma_fader_init(const ma_fader_config* pConfig, ma_fader* pFader)
     ma_result ma_fader_process_pcm_frames(ma_fader* pFader, void* pFramesOut, const void* pFramesIn, ma_uint64 frameCount)
     void ma_fader_get_data_format(const ma_fader* pFader, ma_format* pFormat, ma_uint32* pChannels, ma_uint32* pSampleRate)
@@ -656,6 +748,8 @@ cdef extern from "miniaudio.h":
     void ma_fader_set_fade_ex(ma_fader* pFader, float volumeBeg, float volumeEnd, ma_uint64 lengthInFrames, ma_int64 startOffsetInFrames)
     float ma_fader_get_current_volume(const ma_fader* pFader)
 
+# -----------------------------------------------------------
+# Spatializer
 
     ctypedef struct ma_vec3f:
         float x
@@ -664,17 +758,14 @@ cdef extern from "miniaudio.h":
      
 
     ctypedef struct ma_atomic_vec3f:
-
         ma_vec3f v
         ma_spinlock lock
 
     ctypedef enum ma_attenuation_model:
-
         ma_attenuation_model_none
         ma_attenuation_model_inverse
         ma_attenuation_model_linear
         ma_attenuation_model_exponential
-
 
     ctypedef enum ma_positioning:
         ma_positioning_absolute
@@ -684,10 +775,6 @@ cdef extern from "miniaudio.h":
         ma_handedness_right
         ma_handedness_left
      
-
-
-
-
     ctypedef struct ma_spatializer_listener_config:
 
         ma_uint32 channelsOut
@@ -699,6 +786,7 @@ cdef extern from "miniaudio.h":
         float speedOfSound
         ma_vec3f worldUp
 
+    # API
     ma_spatializer_listener_config ma_spatializer_listener_config_init(ma_uint32 channelsOut)
 
 
@@ -712,6 +800,7 @@ cdef extern from "miniaudio.h":
         ma_bool32 _ownsHeap
         void* _pHeap
 
+    # API
     ma_result ma_spatializer_listener_get_heap_size(const ma_spatializer_listener_config* pConfig, size_t* pHeapSizeInBytes)
     ma_result ma_spatializer_listener_init_preallocated(const ma_spatializer_listener_config* pConfig, void* pHeap, ma_spatializer_listener* pListener)
     ma_result ma_spatializer_listener_init(const ma_spatializer_listener_config* pConfig, const ma_allocation_callbacks* pAllocationCallbacks, ma_spatializer_listener* pListener)
@@ -753,7 +842,7 @@ cdef extern from "miniaudio.h":
         float minSpatializationChannelGain
         ma_uint32 gainSmoothTimeInFrames
 
-
+    # API
     ma_spatializer_config ma_spatializer_config_init(ma_uint32 channelsIn, ma_uint32 channelsOut)
 
 
@@ -786,6 +875,7 @@ cdef extern from "miniaudio.h":
         void* _pHeap
         ma_bool32 _ownsHeap
 
+    # API
     ma_result ma_spatializer_get_heap_size(const ma_spatializer_config* pConfig, size_t* pHeapSizeInBytes)
     ma_result ma_spatializer_init_preallocated(const ma_spatializer_config* pConfig, void* pHeap, ma_spatializer* pSpatializer)
     ma_result ma_spatializer_init(const ma_spatializer_config* pConfig, const ma_allocation_callbacks* pAllocationCallbacks, ma_spatializer* pSpatializer)
@@ -823,6 +913,11 @@ cdef extern from "miniaudio.h":
     ma_vec3f ma_spatializer_get_velocity(const ma_spatializer* pSpatializer)
     void ma_spatializer_get_relative_position_and_direction(const ma_spatializer* pSpatializer, const ma_spatializer_listener* pListener, ma_vec3f* pRelativePos, ma_vec3f* pRelativeDir)
 
+# ===========================================================
+# DATA CONVERSION SECTION
+
+# -----------------------------------------------------------
+# Resampling
 
     ctypedef struct ma_linear_resampler_config:
         ma_format format
@@ -832,10 +927,8 @@ cdef extern from "miniaudio.h":
         ma_uint32 lpfOrder
         double lpfNyquistFactor
 
-    ma_linear_resampler_config ma_linear_resampler_config_init(
-        ma_format format, ma_uint32 channels,
-        ma_uint32 sampleRateIn,
-        ma_uint32 sampleRateOut)
+    # API
+    ma_linear_resampler_config ma_linear_resampler_config_init(ma_format format, ma_uint32 channels, ma_uint32 sampleRateIn, ma_uint32 sampleRateOut)
 
 
     cdef union ma_linear_resampler__x0:
@@ -856,6 +949,7 @@ cdef extern from "miniaudio.h":
         ma_linear_resampler__x1 x1
         ma_lpf lpf
 
+    # API
     ma_result ma_linear_resampler_get_heap_size(const ma_linear_resampler_config* pConfig, size_t* pHeapSizeInBytes)
     ma_result ma_linear_resampler_init_preallocated(const ma_linear_resampler_config* pConfig, void* pHeap, ma_linear_resampler* pResampler)
     ma_result ma_linear_resampler_init(const ma_linear_resampler_config* pConfig, const ma_allocation_callbacks* pAllocationCallbacks, ma_linear_resampler* pResampler)
@@ -903,6 +997,7 @@ cdef extern from "miniaudio.h":
         void* pBackendUserData
         ma_resampler_config__linear linear
 
+    # API
     ma_resampler_config ma_resampler_config_init(ma_format format, ma_uint32 channels, ma_uint32 sampleRateIn, ma_uint32 sampleRateOut, ma_resample_algorithm algorithm)
 
     cdef union ma_resampler__state:
@@ -918,7 +1013,7 @@ cdef extern from "miniaudio.h":
         ma_uint32 sampleRateOut
         ma_resampler__state state
 
-
+    # API
     ma_result ma_resampler_get_heap_size(const ma_resampler_config* pConfig, size_t* pHeapSizeInBytes)
     ma_result ma_resampler_init_preallocated(const ma_resampler_config* pConfig, void* pHeap, ma_resampler* pResampler)
     ma_result ma_resampler_init(const ma_resampler_config* pConfig, const ma_allocation_callbacks* pAllocationCallbacks, ma_resampler* pResampler)
@@ -932,6 +1027,9 @@ cdef extern from "miniaudio.h":
     ma_result ma_resampler_get_expected_output_frame_count(const ma_resampler* pResampler, ma_uint64 inputFrameCount, ma_uint64* pOutputFrameCount)
     ma_result ma_resampler_reset(ma_resampler* pResampler)
 
+
+# -----------------------------------------------------------
+# Channel Conversion
 
     ctypedef enum ma_channel_conversion_path:
         ma_channel_conversion_path_unknown
@@ -957,6 +1055,7 @@ cdef extern from "miniaudio.h":
         ma_bool32 calculateLFEFromSpatialChannels
         float** ppWeights
 
+    # API
     ma_channel_converter_config ma_channel_converter_config_init(ma_format format, ma_uint32 channelsIn, const ma_channel *pChannelMapIn,ma_uint32 channelsOut, const ma_channel *pChannelMapOut,ma_channel_mix_mode mixingMode)
 
     cdef union ma_channel_converter__weights:
@@ -975,6 +1074,7 @@ cdef extern from "miniaudio.h":
         ma_channel_converter__weights weights
 
 
+    # API
     ma_result ma_channel_converter_get_heap_size(const ma_channel_converter_config* pConfig, size_t* pHeapSizeInBytes)
     ma_result ma_channel_converter_init_preallocated(const ma_channel_converter_config* pConfig, void* pHeap, ma_channel_converter* pConverter)
     ma_result ma_channel_converter_init(const ma_channel_converter_config* pConfig, const ma_allocation_callbacks* pAllocationCallbacks, ma_channel_converter* pConverter)
@@ -984,20 +1084,8 @@ cdef extern from "miniaudio.h":
     ma_result ma_channel_converter_get_output_channel_map(const ma_channel_converter* pConverter, ma_channel* pChannelMap, size_t channelMapCap)
 
 
-
-
-    # cdef struct ma_data_converter_config__resampling__linear:
-    #     ma_uint32 lpfOrder
-    #     double lpfNyquistFactor
-
-    # cdef struct ma_data_converter_config__resampling__speex:
-    #     int quality
-
-    # cdef struct ma_data_converter_config__resampling:
-    #     ma_resample_algorithm algorithm
-    #     ma_bool32 allowDynamicSampleRate
-    #     ma_data_converter_config__resampling__linear linear
-    #     ma_data_converter_config__resampling__speex speex
+# -----------------------------------------------------------
+# Data Conversion
 
     ctypedef struct ma_data_converter_config:
         ma_format formatIn
@@ -1015,6 +1103,7 @@ cdef extern from "miniaudio.h":
         ma_bool32 allowDynamicSampleRate
         ma_resampler_config resampling
 
+    # API
     ma_data_converter_config ma_data_converter_config_init_default()
     ma_data_converter_config ma_data_converter_config_init(ma_format formatIn, ma_format formatOut, ma_uint32 channelsIn, ma_uint32 channelsOut, ma_uint32 sampleRateIn, ma_uint32 sampleRateOut)
 
@@ -1044,6 +1133,7 @@ cdef extern from "miniaudio.h":
         ma_bool8 hasResampler
         ma_bool8 isPassthrough
 
+    # API
     ma_result ma_data_converter_get_heap_size(const ma_data_converter_config* pConfig, size_t* pHeapSizeInBytes)
     ma_result ma_data_converter_init_preallocated(const ma_data_converter_config* pConfig, void* pHeap, ma_data_converter* pConverter)
     ma_result ma_data_converter_init(const ma_data_converter_config* pConfig, const ma_allocation_callbacks* pAllocationCallbacks, ma_data_converter* pConverter)
@@ -1060,7 +1150,10 @@ cdef extern from "miniaudio.h":
     ma_result ma_data_converter_reset(ma_data_converter* pConverter)
 
 
+# -----------------------------------------------------------
+# Format Conversion
 
+    # API
     void ma_pcm_u8_to_s16(void* pOut, const void* pIn, ma_uint64 count, ma_dither_mode ditherMode)
     void ma_pcm_u8_to_s24(void* pOut, const void* pIn, ma_uint64 count, ma_dither_mode ditherMode)
     void ma_pcm_u8_to_s32(void* pOut, const void* pIn, ma_uint64 count, ma_dither_mode ditherMode)
@@ -1081,13 +1174,18 @@ cdef extern from "miniaudio.h":
     void ma_pcm_f32_to_s16(void* pOut, const void* pIn, ma_uint64 count, ma_dither_mode ditherMode)
     void ma_pcm_f32_to_s24(void* pOut, const void* pIn, ma_uint64 count, ma_dither_mode ditherMode)
     void ma_pcm_f32_to_s32(void* pOut, const void* pIn, ma_uint64 count, ma_dither_mode ditherMode)
-
     void ma_pcm_convert(void* pOut, ma_format formatOut, const void* pIn, ma_format formatIn, ma_uint64 sampleCount, ma_dither_mode ditherMode)
     void ma_convert_pcm_frames_format(void* pOut, ma_format formatOut, const void* pIn, ma_format formatIn, ma_uint64 frameCount, ma_uint32 channels, ma_dither_mode ditherMode)
 
     void ma_deinterleave_pcm_frames(ma_format format, ma_uint32 channels, ma_uint64 frameCount, const void* pInterleavedPCMFrames, void** ppDeinterleavedPCMFrames)
     void ma_interleave_pcm_frames(ma_format format, ma_uint32 channels, ma_uint64 frameCount, const void** ppDeinterleavedPCMFrames, void* pInterleavedPCMFrames)
 
+# -----------------------------------------------------------
+# Channel Maps
+
+    # cdef int MA_CHANNEL_INDEX_NULL = 255
+
+    # API
     ma_channel ma_channel_map_get_channel(const ma_channel* pChannelMap, ma_uint32 channelCount, ma_uint32 channelIndex)
     void ma_channel_map_init_blank(ma_channel* pChannelMap, ma_uint32 channels)
     void ma_channel_map_init_standard(ma_standard_channel_map standardChannelMap, ma_channel* pChannelMap, size_t channelMapCap, ma_uint32 channels)
@@ -1101,9 +1199,173 @@ cdef extern from "miniaudio.h":
     size_t ma_channel_map_to_string(const ma_channel* pChannelMap, ma_uint32 channels, char* pBufferOut, size_t bufferCap)
     const char* ma_channel_position_to_string(ma_channel channel)
 
+# -----------------------------------------------------------
+# Conversion Helpers
+
+    # API
     ma_uint64 ma_convert_frames(void* pOut, ma_uint64 frameCountOut, ma_format formatOut, ma_uint32 channelsOut, ma_uint32 sampleRateOut, const void* pIn, ma_uint64 frameCountIn, ma_format formatIn, ma_uint32 channelsIn, ma_uint32 sampleRateIn)
     ma_uint64 ma_convert_frames_ex(void* pOut, ma_uint64 frameCountOut, const void* pIn, ma_uint64 frameCountIn, const ma_data_converter_config* pConfig)
 
+# -----------------------------------------------------------
+# Data Source
+
+    # ctypedef void ma_data_source
+
+    # ctypedef struct ma_data_source_vtable:
+    #     ma_result (* onRead)(ma_data_source* pDataSource, void* pFramesOut, ma_uint64 frameCount, ma_uint64* pFramesRead)
+    #     ma_result (* onSeek)(ma_data_source* pDataSource, ma_uint64 frameIndex)
+    #     ma_result (* onGetDataFormat)(ma_data_source* pDataSource, ma_format* pFormat, ma_uint32* pChannels, ma_uint32* pSampleRate, ma_channel* pChannelMap, size_t channelMapCap)
+    #     ma_result (* onGetCursor)(ma_data_source* pDataSource, ma_uint64* pCursor)
+    #     ma_result (* onGetLength)(ma_data_source* pDataSource, ma_uint64* pLength)
+    #     ma_result (* onSetLooping)(ma_data_source* pDataSource, ma_bool32 isLooping)
+    #     ma_uint32 flags
+
+    # ctypedef ma_data_source* (* ma_data_source_get_next_proc)(ma_data_source* pDataSource)
+
+    # ctypedef struct ma_data_source_config:
+    #     const ma_data_source_vtable* vtable
+
+    # # API
+    # ma_data_source_config ma_data_source_config_init()
+
+
+    # ctypedef struct ma_data_source_base:
+    #     const ma_data_source_vtable* vtable
+    #     ma_uint64 rangeBegInFrames
+    #     ma_uint64 rangeEndInFrames
+    #     ma_uint64 loopBegInFrames
+    #     ma_uint64 loopEndInFrames
+    #     ma_data_source* pCurrent
+    #     ma_data_source* pNext
+    #     ma_data_source_get_next_proc onGetNext
+    #     ma_bool32 isLooping
+
+    # # API
+    # ma_result ma_data_source_init(const ma_data_source_config* pConfig, ma_data_source* pDataSource)
+    # void ma_data_source_uninit(ma_data_source* pDataSource)
+    # ma_result ma_data_source_read_pcm_frames(ma_data_source* pDataSource, void* pFramesOut, ma_uint64 frameCount, ma_uint64* pFramesRead)
+    # ma_result ma_data_source_seek_pcm_frames(ma_data_source* pDataSource, ma_uint64 frameCount, ma_uint64* pFramesSeeked)
+    # ma_result ma_data_source_seek_to_pcm_frame(ma_data_source* pDataSource, ma_uint64 frameIndex)
+    # ma_result ma_data_source_get_data_format(ma_data_source* pDataSource, ma_format* pFormat, ma_uint32* pChannels, ma_uint32* pSampleRate, ma_channel* pChannelMap, size_t channelMapCap)
+    # ma_result ma_data_source_get_cursor_in_pcm_frames(ma_data_source* pDataSource, ma_uint64* pCursor)
+    # ma_result ma_data_source_get_length_in_pcm_frames(ma_data_source* pDataSource, ma_uint64* pLength)
+    # ma_result ma_data_source_get_cursor_in_seconds(ma_data_source* pDataSource, float* pCursor)
+    # ma_result ma_data_source_get_length_in_seconds(ma_data_source* pDataSource, float* pLength)
+    # ma_result ma_data_source_set_looping(ma_data_source* pDataSource, ma_bool32 isLooping)
+    # ma_bool32 ma_data_source_is_looping(const ma_data_source* pDataSource)
+    # ma_result ma_data_source_set_range_in_pcm_frames(ma_data_source* pDataSource, ma_uint64 rangeBegInFrames, ma_uint64 rangeEndInFrames)
+    # void ma_data_source_get_range_in_pcm_frames(const ma_data_source* pDataSource, ma_uint64* pRangeBegInFrames, ma_uint64* pRangeEndInFrames)
+    # ma_result ma_data_source_set_loop_point_in_pcm_frames(ma_data_source* pDataSource, ma_uint64 loopBegInFrames, ma_uint64 loopEndInFrames)
+    # void ma_data_source_get_loop_point_in_pcm_frames(const ma_data_source* pDataSource, ma_uint64* pLoopBegInFrames, ma_uint64* pLoopEndInFrames)
+    # ma_result ma_data_source_set_current(ma_data_source* pDataSource, ma_data_source* pCurrentDataSource)
+    # ma_data_source* ma_data_source_get_current(const ma_data_source* pDataSource)
+    # ma_result ma_data_source_set_next(ma_data_source* pDataSource, ma_data_source* pNextDataSource)
+    # ma_data_source* ma_data_source_get_next(const ma_data_source* pDataSource)
+    # ma_result ma_data_source_set_next_callback(ma_data_source* pDataSource, ma_data_source_get_next_proc onGetNext)
+    # ma_data_source_get_next_proc ma_data_source_get_next_callback(const ma_data_source* pDataSource)
+
+
+    # ctypedef struct ma_audio_buffer_ref:
+    #     ma_data_source_base ds
+    #     ma_format format
+    #     ma_uint32 channels
+    #     ma_uint32 sampleRate
+    #     ma_uint64 cursor
+    #     ma_uint64 sizeInFrames
+    #     const void* pData
+
+    # ma_result ma_audio_buffer_ref_init(ma_format format, ma_uint32 channels, const void* pData, ma_uint64 sizeInFrames, ma_audio_buffer_ref* pAudioBufferRef)
+    # void ma_audio_buffer_ref_uninit(ma_audio_buffer_ref* pAudioBufferRef)
+    # ma_result ma_audio_buffer_ref_set_data(ma_audio_buffer_ref* pAudioBufferRef, const void* pData, ma_uint64 sizeInFrames)
+    # ma_uint64 ma_audio_buffer_ref_read_pcm_frames(ma_audio_buffer_ref* pAudioBufferRef, void* pFramesOut, ma_uint64 frameCount, ma_bool32 loop)
+    # ma_result ma_audio_buffer_ref_seek_to_pcm_frame(ma_audio_buffer_ref* pAudioBufferRef, ma_uint64 frameIndex)
+    # ma_result ma_audio_buffer_ref_map(ma_audio_buffer_ref* pAudioBufferRef, void** ppFramesOut, ma_uint64* pFrameCount)
+    # ma_result ma_audio_buffer_ref_unmap(ma_audio_buffer_ref* pAudioBufferRef, ma_uint64 frameCount)
+    # ma_bool32 ma_audio_buffer_ref_at_end(const ma_audio_buffer_ref* pAudioBufferRef)
+    # ma_result ma_audio_buffer_ref_get_cursor_in_pcm_frames(const ma_audio_buffer_ref* pAudioBufferRef, ma_uint64* pCursor)
+    # ma_result ma_audio_buffer_ref_get_length_in_pcm_frames(const ma_audio_buffer_ref* pAudioBufferRef, ma_uint64* pLength)
+    # ma_result ma_audio_buffer_ref_get_available_frames(const ma_audio_buffer_ref* pAudioBufferRef, ma_uint64* pAvailableFrames)
+
+    # ctypedef struct ma_audio_buffer_config:
+    #     ma_format format
+    #     ma_uint32 channels
+    #     ma_uint32 sampleRate
+    #     ma_uint64 sizeInFrames
+    #     const void* pData
+    #     ma_allocation_callbacks allocationCallbacks
+
+    # ma_audio_buffer_config ma_audio_buffer_config_init(ma_format format, ma_uint32 channels, ma_uint64 sizeInFrames, const void* pData, const ma_allocation_callbacks* pAllocationCallbacks)
+
+    # ctypedef struct ma_audio_buffer:
+    #     ma_audio_buffer_ref ref
+    #     ma_allocation_callbacks allocationCallbacks
+    #     ma_bool32 ownsData
+    #     ma_uint8 _pExtraData[1]
+
+    # ma_result ma_audio_buffer_init(const ma_audio_buffer_config* pConfig, ma_audio_buffer* pAudioBuffer)
+    # ma_result ma_audio_buffer_init_copy(const ma_audio_buffer_config* pConfig, ma_audio_buffer* pAudioBuffer)
+    # ma_result ma_audio_buffer_alloc_and_init(const ma_audio_buffer_config* pConfig, ma_audio_buffer** ppAudioBuffer)
+    # void ma_audio_buffer_uninit(ma_audio_buffer* pAudioBuffer)
+    # void ma_audio_buffer_uninit_and_free(ma_audio_buffer* pAudioBuffer)
+    # ma_uint64 ma_audio_buffer_read_pcm_frames(ma_audio_buffer* pAudioBuffer, void* pFramesOut, ma_uint64 frameCount, ma_bool32 loop)
+    # ma_result ma_audio_buffer_seek_to_pcm_frame(ma_audio_buffer* pAudioBuffer, ma_uint64 frameIndex)
+    # ma_result ma_audio_buffer_map(ma_audio_buffer* pAudioBuffer, void** ppFramesOut, ma_uint64* pFrameCount)
+    # ma_result ma_audio_buffer_unmap(ma_audio_buffer* pAudioBuffer, ma_uint64 frameCount)
+    # ma_bool32 ma_audio_buffer_at_end(const ma_audio_buffer* pAudioBuffer)
+    # ma_result ma_audio_buffer_get_cursor_in_pcm_frames(const ma_audio_buffer* pAudioBuffer, ma_uint64* pCursor)
+    # ma_result ma_audio_buffer_get_length_in_pcm_frames(const ma_audio_buffer* pAudioBuffer, ma_uint64* pLength)
+    # ma_result ma_audio_buffer_get_available_frames(const ma_audio_buffer* pAudioBuffer, ma_uint64* pAvailableFrames)
+
+
+    # ctypedef struct ma_paged_audio_buffer_page
+
+    # ctypedef struct ma_paged_audio_buffer_page:
+    #     # MA_ATOMIC(MA_SIZEOF_PTR, ma_paged_audio_buffer_page*) pNext
+    #     ma_uint64 sizeInFrames
+    #     ma_uint8 pAudioData[1]
+
+    # ctypedef struct ma_paged_audio_buffer_data:
+    #     ma_format format
+    #     ma_uint32 channels
+    #     ma_paged_audio_buffer_page head
+    #     # MA_ATOMIC(MA_SIZEOF_PTR, ma_paged_audio_buffer_page*) pTail
+
+    # # API
+    # ma_result ma_paged_audio_buffer_data_init(ma_format format, ma_uint32 channels, ma_paged_audio_buffer_data* pData)
+    # void ma_paged_audio_buffer_data_uninit(ma_paged_audio_buffer_data* pData, const ma_allocation_callbacks* pAllocationCallbacks)
+    # ma_paged_audio_buffer_page* ma_paged_audio_buffer_data_get_head(ma_paged_audio_buffer_data* pData)
+    # ma_paged_audio_buffer_page* ma_paged_audio_buffer_data_get_tail(ma_paged_audio_buffer_data* pData)
+    # ma_result ma_paged_audio_buffer_data_get_length_in_pcm_frames(ma_paged_audio_buffer_data* pData, ma_uint64* pLength)
+    # ma_result ma_paged_audio_buffer_data_allocate_page(ma_paged_audio_buffer_data* pData, ma_uint64 pageSizeInFrames, const void* pInitialData, const ma_allocation_callbacks* pAllocationCallbacks, ma_paged_audio_buffer_page** ppPage)
+    # ma_result ma_paged_audio_buffer_data_free_page(ma_paged_audio_buffer_data* pData, ma_paged_audio_buffer_page* pPage, const ma_allocation_callbacks* pAllocationCallbacks)
+    # ma_result ma_paged_audio_buffer_data_append_page(ma_paged_audio_buffer_data* pData, ma_paged_audio_buffer_page* pPage)
+    # ma_result ma_paged_audio_buffer_data_allocate_and_append_page(ma_paged_audio_buffer_data* pData, ma_uint32 pageSizeInFrames, const void* pInitialData, const ma_allocation_callbacks* pAllocationCallbacks)
+
+
+    # ctypedef struct ma_paged_audio_buffer_config:
+    #     ma_paged_audio_buffer_data* pData
+
+    # # API
+    # ma_paged_audio_buffer_config ma_paged_audio_buffer_config_init(ma_paged_audio_buffer_data* pData)
+
+
+    # ctypedef struct ma_paged_audio_buffer:
+    #     ma_data_source_base ds
+    #     ma_paged_audio_buffer_data* pData
+    #     ma_paged_audio_buffer_page* pCurrent
+    #     ma_uint64 relativeCursor
+    #     ma_uint64 absoluteCursor
+
+    # ma_result ma_paged_audio_buffer_init(const ma_paged_audio_buffer_config* pConfig, ma_paged_audio_buffer* pPagedAudioBuffer)
+    # void ma_paged_audio_buffer_uninit(ma_paged_audio_buffer* pPagedAudioBuffer)
+    # ma_result ma_paged_audio_buffer_read_pcm_frames(ma_paged_audio_buffer* pPagedAudioBuffer, void* pFramesOut, ma_uint64 frameCount, ma_uint64* pFramesRead)
+    # ma_result ma_paged_audio_buffer_seek_to_pcm_frame(ma_paged_audio_buffer* pPagedAudioBuffer, ma_uint64 frameIndex)
+    # ma_result ma_paged_audio_buffer_get_cursor_in_pcm_frames(ma_paged_audio_buffer* pPagedAudioBuffer, ma_uint64* pCursor)
+    # ma_result ma_paged_audio_buffer_get_length_in_pcm_frames(ma_paged_audio_buffer* pPagedAudioBuffer, ma_uint64* pLength)
+
+
+# -----------------------------------------------------------
+# Ring Buffer
 
 
     ctypedef struct ma_rb:
