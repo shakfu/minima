@@ -537,6 +537,8 @@ cdef extern from "miniaudio.h":
         double q
         double frequency
 
+    ctypedef ma_notch2_config ma_notch_config
+
     # API
     ma_notch2_config ma_notch2_config_init(ma_format format, ma_uint32 channels, ma_uint32 sampleRate, double q, double frequency)
 
@@ -1814,38 +1816,33 @@ cdef extern from "miniaudio.h":
     # RESTART HERE <--
     # ----------------------------------------------------------------------
 
-    cdef struct ma_device_config__resampling__linear:
-        ma_uint32 lpfOrder
-
-    cdef struct ma_device_config__resampling__speex:
-        int quality
-
-    cdef struct ma_device_config__resampling:
-        ma_resample_algorithm algorithm
-        ma_device_config__resampling__linear linear
-        ma_device_config__resampling__speex speex
 
     cdef struct ma_device_config__playback:
-        ma_device_id* pDeviceID
+        const ma_device_id* pDeviceID
         ma_format format
         ma_uint32 channels
-        ma_channel channelMap[MA_MAX_CHANNELS]
+        ma_channel* pChannelMap
         ma_channel_mix_mode channelMixMode
+        ma_bool32 calculateLFEFromSpatialChannels
         ma_share_mode shareMode
 
     cdef struct ma_device_config__capture:
-        ma_device_id* pDeviceID
+        const ma_device_id* pDeviceID
         ma_format format
         ma_uint32 channels
-        ma_channel channelMap[MA_MAX_CHANNELS]
+        ma_channel* pChannelMap
         ma_channel_mix_mode channelMixMode
+        ma_bool32 calculateLFEFromSpatialChannels
         ma_share_mode shareMode
 
     cdef struct ma_device_config__wasapi:
+        ma_wasapi_usage usage
         ma_bool8 noAutoConvertSRC
         ma_bool8 noDefaultQualitySRC
-        ma_bool8 noAutoStreamRouting
+        ma_bool8 noAutoStreamRouting       
         ma_bool8 noHardwareOffloading
+        ma_uint32 loopbackProcessID
+        ma_bool8 loopbackProcessExclude
 
     cdef struct ma_device_config__alsa:
         ma_bool32 noMMap
@@ -1854,8 +1851,8 @@ cdef extern from "miniaudio.h":
         ma_bool32 noAutoResample
 
     cdef struct ma_device_config__pulse:
-        char *pStreamNamePlayback
-        char *pStreamNameCapture
+        const char* pStreamNamePlayback
+        const char* pStreamNameCapture
 
     cdef struct ma_device_config__coreaudio:
         ma_bool32 allowNominalSampleRateChange
@@ -1863,11 +1860,15 @@ cdef extern from "miniaudio.h":
     cdef struct ma_device_config__opensl:
         ma_opensl_stream_type streamType
         ma_opensl_recording_preset recordingPreset
+        ma_bool32 enableCompatibilityWorkarounds
 
     cdef struct ma_device_config__aaudio:
         ma_aaudio_usage usage
         ma_aaudio_content_type contentType
         ma_aaudio_input_preset inputPreset
+        ma_aaudio_allowed_capture_policy allowedCapturePolicy
+        ma_bool32 noAutoStartAfterReroute
+        ma_bool32 enableCompatibilityWorkarounds
 
     ctypedef struct ma_device_config:
         ma_device_type deviceType
@@ -1885,8 +1886,6 @@ cdef extern from "miniaudio.h":
         ma_stop_proc stopCallback
         void* pUserData
         ma_resampler_config resampling
-
-        ma_device_config__resampling resampling
         ma_device_config__playback playback
         ma_device_config__capture capture
         ma_device_config__wasapi wasapi
@@ -1897,7 +1896,6 @@ cdef extern from "miniaudio.h":
         ma_device_config__aaudio aaudio
 
     ctypedef ma_bool32 (* ma_enum_devices_callback_proc)(ma_context* pContext, ma_device_type deviceType, const ma_device_info* pInfo, void* pUserData)
-
 
     ctypedef struct ma_device_descriptor:
         const ma_device_id *pDeviceID
@@ -2543,5 +2541,989 @@ cdef extern from "miniaudio.h":
     ma_result ma_noise_set_amplitude(ma_noise* pNoise, double amplitude)
     ma_result ma_noise_set_seed(ma_noise* pNoise, ma_int32 seed)
     ma_result ma_noise_set_type(ma_noise* pNoise, ma_noise_type type)
+
+# --------------------------------------------------------------
+# Resource Manager
+
+    ctypedef struct ma_resource_manager
+    ctypedef struct ma_resource_manager_data_buffer_node
+    ctypedef struct ma_resource_manager_data_buffer
+    ctypedef struct ma_resource_manager_data_stream
+    ctypedef struct ma_resource_manager_data_source
+
+    ctypedef enum ma_resource_manager_data_source_flags:
+        MA_RESOURCE_MANAGER_DATA_SOURCE_FLAG_STREAM = 0x00000001
+        MA_RESOURCE_MANAGER_DATA_SOURCE_FLAG_DECODE = 0x00000002
+        MA_RESOURCE_MANAGER_DATA_SOURCE_FLAG_ASYNC = 0x00000004
+        MA_RESOURCE_MANAGER_DATA_SOURCE_FLAG_WAIT_INIT = 0x00000008
+        MA_RESOURCE_MANAGER_DATA_SOURCE_FLAG_UNKNOWN_LENGTH = 0x00000010
+
+
+    ctypedef struct ma_resource_manager_pipeline_stage_notification:
+        ma_async_notification* pNotification
+        ma_fence* pFence
+
+    ctypedef struct ma_resource_manager_pipeline_notifications:
+        ma_resource_manager_pipeline_stage_notification init
+        ma_resource_manager_pipeline_stage_notification done
+
+    ma_resource_manager_pipeline_notifications ma_resource_manager_pipeline_notifications_init()
+
+    ctypedef enum ma_resource_manager_flags:
+        MA_RESOURCE_MANAGER_FLAG_NON_BLOCKING = 0x00000001
+        MA_RESOURCE_MANAGER_FLAG_NO_THREADING = 0x00000002
+
+    ctypedef struct ma_resource_manager_data_source_config:
+        const char* pFilePath
+        const wchar_t* pFilePathW
+        const ma_resource_manager_pipeline_notifications* pNotifications
+        ma_uint64 initialSeekPointInPCMFrames
+        ma_uint64 rangeBegInPCMFrames
+        ma_uint64 rangeEndInPCMFrames
+        ma_uint64 loopPointBegInPCMFrames
+        ma_uint64 loopPointEndInPCMFrames
+        ma_bool32 isLooping
+        ma_uint32 flags
+
+    ma_resource_manager_data_source_config ma_resource_manager_data_source_config_init()
+
+    ctypedef enum ma_resource_manager_data_supply_type:
+        ma_resource_manager_data_supply_type_unknown = 0
+        ma_resource_manager_data_supply_type_encoded
+        ma_resource_manager_data_supply_type_decoded
+        ma_resource_manager_data_supply_type_decoded_paged
+
+    ctypedef struct ma_resource_manager_data_supply__backend_encoded:
+        const void* pData
+        size_t sizeInBytes
+
+    ctypedef struct ma_resource_manager_data_supply__backend_decoded:
+        const void* pData
+        ma_uint64 totalFrameCount
+        ma_uint64 decodedFrameCount
+        ma_format format
+        ma_uint32 channels
+        ma_uint32 sampleRate
+        
+    ctypedef struct ma_resource_manager_data_supply__backend_decodedPaged:
+        ma_paged_audio_buffer_data data
+        ma_uint64 decodedFrameCount
+        ma_uint32 sampleRate
+
+    ctypedef union ma_resource_manager_data_supply__backend:
+        ma_resource_manager_data_supply__backend_encoded encoded
+        ma_resource_manager_data_supply__backend_decoded decoded
+        ma_resource_manager_data_supply__backend_decodedPaged decodedPaged
+
+    ctypedef struct ma_resource_manager_data_supply:
+        ma_resource_manager_data_supply_type type
+        ma_resource_manager_data_supply__backend backend
+
+    ctypedef struct ma_resource_manager_data_buffer_node:
+        ma_uint32 hashedName32
+        ma_uint32 refCount
+        ma_result result
+        ma_uint32 executionCounter
+        ma_uint32 executionPointer
+        ma_bool32 isDataOwnedByResourceManager
+        ma_resource_manager_data_supply data
+        ma_resource_manager_data_buffer_node* pParent
+        ma_resource_manager_data_buffer_node* pChildLo
+        ma_resource_manager_data_buffer_node* pChildHi
+
+    ctypedef union ma_resource_manager_data_buffer__connector:
+        ma_decoder decoder
+        ma_audio_buffer buffer
+        ma_paged_audio_buffer pagedBuffer
+
+    ctypedef struct ma_resource_manager_data_buffer:
+        ma_data_source_base ds
+        ma_resource_manager* pResourceManager
+        ma_resource_manager_data_buffer_node* pNode
+        ma_uint32 flags
+        ma_uint32 executionCounter
+        ma_uint32 executionPointer
+        ma_uint64 seekTargetInPCMFrames
+        ma_bool32 seekToCursorOnNextRead
+        ma_result result
+        ma_bool32 isLooping
+        ma_atomic_bool32 isConnectorInitialized
+        ma_resource_manager_data_buffer__connector connector
+
+    ctypedef struct ma_resource_manager_data_stream:
+        ma_data_source_base ds
+        ma_resource_manager* pResourceManager
+        ma_uint32 flags
+        ma_decoder decoder
+        ma_bool32 isDecoderInitialized
+        ma_uint64 totalLengthInPCMFrames
+        ma_uint32 relativeCursor
+        ma_uint64 absoluteCursor
+        ma_uint32 currentPageIndex
+        ma_uint32 executionCounter
+        ma_uint32 executionPointer
+        ma_bool32 isLooping
+        void* pPageData
+        ma_uint32 pageFrameCount[2]
+        ma_result result
+        ma_bool32 isDecoderAtEnd
+        ma_bool32 isPageValid[2]
+        ma_bool32 seekCounter
+
+    ctypedef union ma_resource_manager_data_source__backend:
+        ma_resource_manager_data_buffer buffer
+        ma_resource_manager_data_stream stream
+
+    ctypedef struct ma_resource_manager_data_source:
+        ma_resource_manager_data_source__backend backend
+        ma_uint32 flags
+        ma_uint32 executionCounter
+        ma_uint32 executionPointer
+
+    ctypedef struct ma_resource_manager_config:
+        ma_allocation_callbacks allocationCallbacks
+        ma_log* pLog
+        ma_format decodedFormat
+        ma_uint32 decodedChannels
+        ma_uint32 decodedSampleRate
+        ma_uint32 jobThreadCount
+        size_t jobThreadStackSize
+        ma_uint32 jobQueueCapacity
+        ma_uint32 flags
+        ma_vfs* pVFS
+        ma_decoding_backend_vtable** ppCustomDecodingBackendVTables
+        ma_uint32 customDecodingBackendCount
+        void* pCustomDecodingBackendUserData
+
+
+    ma_resource_manager_config ma_resource_manager_config_init()
+
+    ctypedef struct ma_resource_manager:
+        ma_resource_manager_config config
+        ma_resource_manager_data_buffer_node* pRootDataBufferNode
+
+        ma_mutex dataBufferBSTLock
+        ma_thread jobThreads[64]
+
+        ma_job_queue jobQueue
+        ma_default_vfs defaultVFS
+        ma_log log
+
+
+    ma_result ma_resource_manager_init(const ma_resource_manager_config* pConfig, ma_resource_manager* pResourceManager)
+    void ma_resource_manager_uninit(ma_resource_manager* pResourceManager)
+    ma_log* ma_resource_manager_get_log(ma_resource_manager* pResourceManager)
+
+
+    ma_result ma_resource_manager_register_file(ma_resource_manager* pResourceManager, const char* pFilePath, ma_uint32 flags)
+    ma_result ma_resource_manager_register_file_w(ma_resource_manager* pResourceManager, const wchar_t* pFilePath, ma_uint32 flags)
+    ma_result ma_resource_manager_register_decoded_data(ma_resource_manager* pResourceManager, const char* pName, const void* pData, ma_uint64 frameCount, ma_format format, ma_uint32 channels, ma_uint32 sampleRate)
+    ma_result ma_resource_manager_register_decoded_data_w(ma_resource_manager* pResourceManager, const wchar_t* pName, const void* pData, ma_uint64 frameCount, ma_format format, ma_uint32 channels, ma_uint32 sampleRate)
+    ma_result ma_resource_manager_register_encoded_data(ma_resource_manager* pResourceManager, const char* pName, const void* pData, size_t sizeInBytes)
+    ma_result ma_resource_manager_register_encoded_data_w(ma_resource_manager* pResourceManager, const wchar_t* pName, const void* pData, size_t sizeInBytes)
+    ma_result ma_resource_manager_unregister_file(ma_resource_manager* pResourceManager, const char* pFilePath)
+    ma_result ma_resource_manager_unregister_file_w(ma_resource_manager* pResourceManager, const wchar_t* pFilePath)
+    ma_result ma_resource_manager_unregister_data(ma_resource_manager* pResourceManager, const char* pName)
+    ma_result ma_resource_manager_unregister_data_w(ma_resource_manager* pResourceManager, const wchar_t* pName)
+
+
+    ma_result ma_resource_manager_data_buffer_init_ex(ma_resource_manager* pResourceManager, const ma_resource_manager_data_source_config* pConfig, ma_resource_manager_data_buffer* pDataBuffer)
+    ma_result ma_resource_manager_data_buffer_init(ma_resource_manager* pResourceManager, const char* pFilePath, ma_uint32 flags, const ma_resource_manager_pipeline_notifications* pNotifications, ma_resource_manager_data_buffer* pDataBuffer)
+    ma_result ma_resource_manager_data_buffer_init_w(ma_resource_manager* pResourceManager, const wchar_t* pFilePath, ma_uint32 flags, const ma_resource_manager_pipeline_notifications* pNotifications, ma_resource_manager_data_buffer* pDataBuffer)
+    ma_result ma_resource_manager_data_buffer_init_copy(ma_resource_manager* pResourceManager, const ma_resource_manager_data_buffer* pExistingDataBuffer, ma_resource_manager_data_buffer* pDataBuffer)
+    ma_result ma_resource_manager_data_buffer_uninit(ma_resource_manager_data_buffer* pDataBuffer)
+    ma_result ma_resource_manager_data_buffer_read_pcm_frames(ma_resource_manager_data_buffer* pDataBuffer, void* pFramesOut, ma_uint64 frameCount, ma_uint64* pFramesRead)
+    ma_result ma_resource_manager_data_buffer_seek_to_pcm_frame(ma_resource_manager_data_buffer* pDataBuffer, ma_uint64 frameIndex)
+    ma_result ma_resource_manager_data_buffer_get_data_format(ma_resource_manager_data_buffer* pDataBuffer, ma_format* pFormat, ma_uint32* pChannels, ma_uint32* pSampleRate, ma_channel* pChannelMap, size_t channelMapCap)
+    ma_result ma_resource_manager_data_buffer_get_cursor_in_pcm_frames(ma_resource_manager_data_buffer* pDataBuffer, ma_uint64* pCursor)
+    ma_result ma_resource_manager_data_buffer_get_length_in_pcm_frames(ma_resource_manager_data_buffer* pDataBuffer, ma_uint64* pLength)
+    ma_result ma_resource_manager_data_buffer_result(const ma_resource_manager_data_buffer* pDataBuffer)
+    ma_result ma_resource_manager_data_buffer_set_looping(ma_resource_manager_data_buffer* pDataBuffer, ma_bool32 isLooping)
+    ma_bool32 ma_resource_manager_data_buffer_is_looping(const ma_resource_manager_data_buffer* pDataBuffer)
+    ma_result ma_resource_manager_data_buffer_get_available_frames(ma_resource_manager_data_buffer* pDataBuffer, ma_uint64* pAvailableFrames)
+
+
+    ma_result ma_resource_manager_data_stream_init_ex(ma_resource_manager* pResourceManager, const ma_resource_manager_data_source_config* pConfig, ma_resource_manager_data_stream* pDataStream)
+    ma_result ma_resource_manager_data_stream_init(ma_resource_manager* pResourceManager, const char* pFilePath, ma_uint32 flags, const ma_resource_manager_pipeline_notifications* pNotifications, ma_resource_manager_data_stream* pDataStream)
+    ma_result ma_resource_manager_data_stream_init_w(ma_resource_manager* pResourceManager, const wchar_t* pFilePath, ma_uint32 flags, const ma_resource_manager_pipeline_notifications* pNotifications, ma_resource_manager_data_stream* pDataStream)
+    ma_result ma_resource_manager_data_stream_uninit(ma_resource_manager_data_stream* pDataStream)
+    ma_result ma_resource_manager_data_stream_read_pcm_frames(ma_resource_manager_data_stream* pDataStream, void* pFramesOut, ma_uint64 frameCount, ma_uint64* pFramesRead)
+    ma_result ma_resource_manager_data_stream_seek_to_pcm_frame(ma_resource_manager_data_stream* pDataStream, ma_uint64 frameIndex)
+    ma_result ma_resource_manager_data_stream_get_data_format(ma_resource_manager_data_stream* pDataStream, ma_format* pFormat, ma_uint32* pChannels, ma_uint32* pSampleRate, ma_channel* pChannelMap, size_t channelMapCap)
+    ma_result ma_resource_manager_data_stream_get_cursor_in_pcm_frames(ma_resource_manager_data_stream* pDataStream, ma_uint64* pCursor)
+    ma_result ma_resource_manager_data_stream_get_length_in_pcm_frames(ma_resource_manager_data_stream* pDataStream, ma_uint64* pLength)
+    ma_result ma_resource_manager_data_stream_result(const ma_resource_manager_data_stream* pDataStream)
+    ma_result ma_resource_manager_data_stream_set_looping(ma_resource_manager_data_stream* pDataStream, ma_bool32 isLooping)
+    ma_bool32 ma_resource_manager_data_stream_is_looping(const ma_resource_manager_data_stream* pDataStream)
+    ma_result ma_resource_manager_data_stream_get_available_frames(ma_resource_manager_data_stream* pDataStream, ma_uint64* pAvailableFrames)
+
+
+    ma_result ma_resource_manager_data_source_init_ex(ma_resource_manager* pResourceManager, const ma_resource_manager_data_source_config* pConfig, ma_resource_manager_data_source* pDataSource)
+    ma_result ma_resource_manager_data_source_init(ma_resource_manager* pResourceManager, const char* pName, ma_uint32 flags, const ma_resource_manager_pipeline_notifications* pNotifications, ma_resource_manager_data_source* pDataSource)
+    ma_result ma_resource_manager_data_source_init_w(ma_resource_manager* pResourceManager, const wchar_t* pName, ma_uint32 flags, const ma_resource_manager_pipeline_notifications* pNotifications, ma_resource_manager_data_source* pDataSource)
+    ma_result ma_resource_manager_data_source_init_copy(ma_resource_manager* pResourceManager, const ma_resource_manager_data_source* pExistingDataSource, ma_resource_manager_data_source* pDataSource)
+    ma_result ma_resource_manager_data_source_uninit(ma_resource_manager_data_source* pDataSource)
+    ma_result ma_resource_manager_data_source_read_pcm_frames(ma_resource_manager_data_source* pDataSource, void* pFramesOut, ma_uint64 frameCount, ma_uint64* pFramesRead)
+    ma_result ma_resource_manager_data_source_seek_to_pcm_frame(ma_resource_manager_data_source* pDataSource, ma_uint64 frameIndex)
+    ma_result ma_resource_manager_data_source_get_data_format(ma_resource_manager_data_source* pDataSource, ma_format* pFormat, ma_uint32* pChannels, ma_uint32* pSampleRate, ma_channel* pChannelMap, size_t channelMapCap)
+    ma_result ma_resource_manager_data_source_get_cursor_in_pcm_frames(ma_resource_manager_data_source* pDataSource, ma_uint64* pCursor)
+    ma_result ma_resource_manager_data_source_get_length_in_pcm_frames(ma_resource_manager_data_source* pDataSource, ma_uint64* pLength)
+    ma_result ma_resource_manager_data_source_result(const ma_resource_manager_data_source* pDataSource)
+    ma_result ma_resource_manager_data_source_set_looping(ma_resource_manager_data_source* pDataSource, ma_bool32 isLooping)
+    ma_bool32 ma_resource_manager_data_source_is_looping(const ma_resource_manager_data_source* pDataSource)
+    ma_result ma_resource_manager_data_source_get_available_frames(ma_resource_manager_data_source* pDataSource, ma_uint64* pAvailableFrames)
+
+
+    ma_result ma_resource_manager_post_job(ma_resource_manager* pResourceManager, const ma_job* pJob)
+    ma_result ma_resource_manager_post_job_quit(ma_resource_manager* pResourceManager)
+    ma_result ma_resource_manager_next_job(ma_resource_manager* pResourceManager, ma_job* pJob)
+    ma_result ma_resource_manager_process_job(ma_resource_manager* pResourceManager, ma_job* pJob)
+    ma_result ma_resource_manager_process_next_job(ma_resource_manager* pResourceManager)
+
+# --------------------------------------------------------------
+# Node Graph
+
+    ctypedef struct ma_node_graph
+    ctypedef void ma_node
+
+    ctypedef enum ma_node_flags:
+        MA_NODE_FLAG_PASSTHROUGH = 0x00000001
+        MA_NODE_FLAG_CONTINUOUS_PROCESSING = 0x00000002
+        MA_NODE_FLAG_ALLOW_NULL_INPUT = 0x00000004
+        MA_NODE_FLAG_DIFFERENT_PROCESSING_RATES = 0x00000008
+        MA_NODE_FLAG_SILENT_OUTPUT = 0x00000010
+
+    ctypedef enum ma_node_state:
+        ma_node_state_started = 0
+        ma_node_state_stopped = 1
+
+    ctypedef struct ma_node_vtable:
+        void (* onProcess)(ma_node* pNode, const float** ppFramesIn, ma_uint32* pFrameCountIn, float** ppFramesOut, ma_uint32* pFrameCountOut)
+        ma_result (* onGetRequiredInputFrameCount)(ma_node* pNode, ma_uint32 outputFrameCount, ma_uint32* pInputFrameCount)
+        ma_uint8 inputBusCount
+        ma_uint8 outputBusCount
+        ma_uint32 flags
+
+    ctypedef struct ma_node_config:
+        void (* onProcess)(ma_node* pNode, const float** ppFramesIn, ma_uint32* pFrameCountIn, float** ppFramesOut, ma_uint32* pFrameCountOut)
+        ma_result (* onGetRequiredInputFrameCount)(ma_node* pNode, ma_uint32 outputFrameCount, ma_uint32* pInputFrameCount)
+        ma_uint8 inputBusCount
+        ma_uint8 outputBusCount
+        ma_uint32 flags
+
+    ma_node_config ma_node_config_init()
+
+
+    ctypedef struct ma_node_output_bus
+
+    ctypedef struct ma_node_output_bus:
+        ma_node* pNode
+        ma_uint8 outputBusIndex
+        ma_uint8 channels
+        ma_uint8 inputNodeInputBusIndex
+        ma_uint32 flags
+        ma_uint32 refCount
+        ma_bool32 isAttached
+        ma_spinlock lock
+        float volume
+        ma_node_output_bus* pNext
+        ma_node_output_bus* pPrev
+        ma_node* pInputNode
+
+
+    ctypedef struct ma_node_input_bus
+
+    ctypedef struct ma_node_input_bus:
+        ma_node_output_bus head
+        ma_uint32 nextCounter
+        ma_spinlock lock
+        ma_uint8 channels
+
+
+
+    ctypedef struct ma_node_base
+    ctypedef struct ma_node_base:
+        ma_node_graph* pNodeGraph
+        const ma_node_vtable* vtable
+        float* pCachedData
+        ma_uint16 cachedDataCapInFramesPerBus
+
+        ma_uint16 cachedFrameCountOut
+        ma_uint16 cachedFrameCountIn
+        ma_uint16 consumedFrameCountIn
+
+        ma_node_state state
+        ma_uint64 stateTimes[2]
+        ma_uint64 localTime
+        ma_uint32 inputBusCount
+        ma_uint32 outputBusCount
+        ma_node_input_bus* pInputBuses
+        ma_node_output_bus* pOutputBuses
+
+        ma_node_input_bus _inputBuses[2]
+        ma_node_output_bus _outputBuses[2]
+        void* _pHeap
+        ma_bool32 _ownsHeap
+
+    ma_result ma_node_get_heap_size(ma_node_graph* pNodeGraph, const ma_node_config* pConfig, size_t* pHeapSizeInBytes)
+    ma_result ma_node_init_preallocated(ma_node_graph* pNodeGraph, const ma_node_config* pConfig, void* pHeap, ma_node* pNode)
+    ma_result ma_node_init(ma_node_graph* pNodeGraph, const ma_node_config* pConfig, const ma_allocation_callbacks* pAllocationCallbacks, ma_node* pNode)
+    void ma_node_uninit(ma_node* pNode, const ma_allocation_callbacks* pAllocationCallbacks)
+    ma_node_graph* ma_node_get_node_graph(const ma_node* pNode)
+    ma_uint32 ma_node_get_input_bus_count(const ma_node* pNode)
+    ma_uint32 ma_node_get_output_bus_count(const ma_node* pNode)
+    ma_uint32 ma_node_get_input_channels(const ma_node* pNode, ma_uint32 inputBusIndex)
+    ma_uint32 ma_node_get_output_channels(const ma_node* pNode, ma_uint32 outputBusIndex)
+    ma_result ma_node_attach_output_bus(ma_node* pNode, ma_uint32 outputBusIndex, ma_node* pOtherNode, ma_uint32 otherNodeInputBusIndex)
+    ma_result ma_node_detach_output_bus(ma_node* pNode, ma_uint32 outputBusIndex)
+    ma_result ma_node_detach_all_output_buses(ma_node* pNode)
+    ma_result ma_node_set_output_bus_volume(ma_node* pNode, ma_uint32 outputBusIndex, float volume)
+    float ma_node_get_output_bus_volume(const ma_node* pNode, ma_uint32 outputBusIndex)
+    ma_result ma_node_set_state(ma_node* pNode, ma_node_state state)
+    ma_node_state ma_node_get_state(const ma_node* pNode)
+    ma_result ma_node_set_state_time(ma_node* pNode, ma_node_state state, ma_uint64 globalTime)
+    ma_uint64 ma_node_get_state_time(const ma_node* pNode, ma_node_state state)
+    ma_node_state ma_node_get_state_by_time(const ma_node* pNode, ma_uint64 globalTime)
+    ma_node_state ma_node_get_state_by_time_range(const ma_node* pNode, ma_uint64 globalTimeBeg, ma_uint64 globalTimeEnd)
+    ma_uint64 ma_node_get_time(const ma_node* pNode)
+    ma_result ma_node_set_time(ma_node* pNode, ma_uint64 localTime)
+
+
+    ctypedef struct ma_node_graph_config:
+        ma_uint32 channels
+        ma_uint16 nodeCacheCapInFrames
+     
+
+    ma_node_graph_config ma_node_graph_config_init(ma_uint32 channels)
+
+
+    ctypedef struct ma_node_graph:
+        ma_node_base base
+        ma_node_base endpoint
+        ma_uint16 nodeCacheCapInFrames
+
+        ma_bool32 isReading
+
+
+    ma_result ma_node_graph_init(const ma_node_graph_config* pConfig, const ma_allocation_callbacks* pAllocationCallbacks, ma_node_graph* pNodeGraph)
+    void ma_node_graph_uninit(ma_node_graph* pNodeGraph, const ma_allocation_callbacks* pAllocationCallbacks)
+    ma_node* ma_node_graph_get_endpoint(ma_node_graph* pNodeGraph)
+    ma_result ma_node_graph_read_pcm_frames(ma_node_graph* pNodeGraph, void* pFramesOut, ma_uint64 frameCount, ma_uint64* pFramesRead)
+    ma_uint32 ma_node_graph_get_channels(const ma_node_graph* pNodeGraph)
+    ma_uint64 ma_node_graph_get_time(const ma_node_graph* pNodeGraph)
+    ma_result ma_node_graph_set_time(ma_node_graph* pNodeGraph, ma_uint64 globalTime)
+
+
+    ctypedef struct ma_data_source_node_config:
+        ma_node_config nodeConfig
+        ma_data_source* pDataSource
+     
+
+    ma_data_source_node_config ma_data_source_node_config_init(ma_data_source* pDataSource)
+
+
+    ctypedef struct ma_data_source_node:
+        ma_node_base base
+        ma_data_source* pDataSource
+     
+
+    ma_result ma_data_source_node_init(ma_node_graph* pNodeGraph, const ma_data_source_node_config* pConfig, const ma_allocation_callbacks* pAllocationCallbacks, ma_data_source_node* pDataSourceNode)
+    void ma_data_source_node_uninit(ma_data_source_node* pDataSourceNode, const ma_allocation_callbacks* pAllocationCallbacks)
+    ma_result ma_data_source_node_set_looping(ma_data_source_node* pDataSourceNode, ma_bool32 isLooping)
+    ma_bool32 ma_data_source_node_is_looping(ma_data_source_node* pDataSourceNode)
+
+
+
+    ctypedef struct ma_splitter_node_config:
+
+        ma_node_config nodeConfig
+        ma_uint32 channels
+        ma_uint32 outputBusCount
+     
+
+    ma_splitter_node_config ma_splitter_node_config_init(ma_uint32 channels)
+
+
+    ctypedef struct ma_splitter_node:
+
+        ma_node_base base
+     
+
+    ma_result ma_splitter_node_init(ma_node_graph* pNodeGraph, const ma_splitter_node_config* pConfig, const ma_allocation_callbacks* pAllocationCallbacks, ma_splitter_node* pSplitterNode)
+    void ma_splitter_node_uninit(ma_splitter_node* pSplitterNode, const ma_allocation_callbacks* pAllocationCallbacks)
+
+
+
+    ctypedef struct ma_biquad_node_config:
+
+        ma_node_config nodeConfig
+        ma_biquad_config biquad
+     
+
+    ma_biquad_node_config ma_biquad_node_config_init(ma_uint32 channels, float b0, float b1, float b2, float a0, float a1, float a2)
+
+
+    ctypedef struct ma_biquad_node:
+
+        ma_node_base baseNode
+        ma_biquad biquad
+     
+
+    ma_result ma_biquad_node_init(ma_node_graph* pNodeGraph, const ma_biquad_node_config* pConfig, const ma_allocation_callbacks* pAllocationCallbacks, ma_biquad_node* pNode)
+    ma_result ma_biquad_node_reinit(const ma_biquad_config* pConfig, ma_biquad_node* pNode)
+    void ma_biquad_node_uninit(ma_biquad_node* pNode, const ma_allocation_callbacks* pAllocationCallbacks)
+
+
+
+    ctypedef struct ma_lpf_node_config:
+
+        ma_node_config nodeConfig
+        ma_lpf_config lpf
+     
+
+    ma_lpf_node_config ma_lpf_node_config_init(ma_uint32 channels, ma_uint32 sampleRate, double cutoffFrequency, ma_uint32 order)
+
+
+    ctypedef struct ma_lpf_node:
+
+        ma_node_base baseNode
+        ma_lpf lpf
+     
+
+    ma_result ma_lpf_node_init(ma_node_graph* pNodeGraph, const ma_lpf_node_config* pConfig, const ma_allocation_callbacks* pAllocationCallbacks, ma_lpf_node* pNode)
+    ma_result ma_lpf_node_reinit(const ma_lpf_config* pConfig, ma_lpf_node* pNode)
+    void ma_lpf_node_uninit(ma_lpf_node* pNode, const ma_allocation_callbacks* pAllocationCallbacks)
+
+
+
+
+
+    ctypedef struct ma_hpf_node_config:
+
+        ma_node_config nodeConfig
+        ma_hpf_config hpf
+     
+
+    ma_hpf_node_config ma_hpf_node_config_init(ma_uint32 channels, ma_uint32 sampleRate, double cutoffFrequency, ma_uint32 order)
+
+
+    ctypedef struct ma_hpf_node:
+        ma_node_base baseNode
+        ma_hpf hpf
+
+
+    ma_result ma_hpf_node_init(ma_node_graph* pNodeGraph, const ma_hpf_node_config* pConfig, const ma_allocation_callbacks* pAllocationCallbacks, ma_hpf_node* pNode)
+    ma_result ma_hpf_node_reinit(const ma_hpf_config* pConfig, ma_hpf_node* pNode)
+    void ma_hpf_node_uninit(ma_hpf_node* pNode, const ma_allocation_callbacks* pAllocationCallbacks)
+
+
+
+
+
+    ctypedef struct ma_bpf_node_config:
+
+        ma_node_config nodeConfig
+        ma_bpf_config bpf
+     
+
+    ma_bpf_node_config ma_bpf_node_config_init(ma_uint32 channels, ma_uint32 sampleRate, double cutoffFrequency, ma_uint32 order)
+
+
+    ctypedef struct ma_bpf_node:
+
+        ma_node_base baseNode
+        ma_bpf bpf
+     
+
+    ma_result ma_bpf_node_init(ma_node_graph* pNodeGraph, const ma_bpf_node_config* pConfig, const ma_allocation_callbacks* pAllocationCallbacks, ma_bpf_node* pNode)
+    ma_result ma_bpf_node_reinit(const ma_bpf_config* pConfig, ma_bpf_node* pNode)
+    void ma_bpf_node_uninit(ma_bpf_node* pNode, const ma_allocation_callbacks* pAllocationCallbacks)
+
+
+    ctypedef struct ma_notch_node_config:
+
+        ma_node_config nodeConfig
+        ma_notch_config notch
+     
+
+    ma_notch_node_config ma_notch_node_config_init(ma_uint32 channels, ma_uint32 sampleRate, double q, double frequency)
+
+
+    ctypedef struct ma_notch_node:
+
+        ma_node_base baseNode
+        ma_notch2 notch
+     
+
+    ma_result ma_notch_node_init(ma_node_graph* pNodeGraph, const ma_notch_node_config* pConfig, const ma_allocation_callbacks* pAllocationCallbacks, ma_notch_node* pNode)
+    ma_result ma_notch_node_reinit(const ma_notch_config* pConfig, ma_notch_node* pNode)
+    void ma_notch_node_uninit(ma_notch_node* pNode, const ma_allocation_callbacks* pAllocationCallbacks)
+
+
+
+
+
+    ctypedef struct ma_peak_node_config:
+
+        ma_node_config nodeConfig
+        ma_peak_config peak
+     
+
+    ma_peak_node_config ma_peak_node_config_init(ma_uint32 channels, ma_uint32 sampleRate, double gainDB, double q, double frequency)
+
+
+    ctypedef struct ma_peak_node:
+
+        ma_node_base baseNode
+        ma_peak2 peak
+     
+
+    ma_result ma_peak_node_init(ma_node_graph* pNodeGraph, const ma_peak_node_config* pConfig, const ma_allocation_callbacks* pAllocationCallbacks, ma_peak_node* pNode)
+    ma_result ma_peak_node_reinit(const ma_peak_config* pConfig, ma_peak_node* pNode)
+    void ma_peak_node_uninit(ma_peak_node* pNode, const ma_allocation_callbacks* pAllocationCallbacks)
+
+
+
+
+
+    ctypedef struct ma_loshelf_node_config:
+
+        ma_node_config nodeConfig
+        ma_loshelf_config loshelf
+     
+
+    ma_loshelf_node_config ma_loshelf_node_config_init(ma_uint32 channels, ma_uint32 sampleRate, double gainDB, double q, double frequency)
+
+
+    ctypedef struct ma_loshelf_node:
+
+        ma_node_base baseNode
+        ma_loshelf2 loshelf
+     
+
+    ma_result ma_loshelf_node_init(ma_node_graph* pNodeGraph, const ma_loshelf_node_config* pConfig, const ma_allocation_callbacks* pAllocationCallbacks, ma_loshelf_node* pNode)
+    ma_result ma_loshelf_node_reinit(const ma_loshelf_config* pConfig, ma_loshelf_node* pNode)
+    void ma_loshelf_node_uninit(ma_loshelf_node* pNode, const ma_allocation_callbacks* pAllocationCallbacks)
+
+
+
+
+
+    ctypedef struct ma_hishelf_node_config:
+
+        ma_node_config nodeConfig
+        ma_hishelf_config hishelf
+     
+
+    ma_hishelf_node_config ma_hishelf_node_config_init(ma_uint32 channels, ma_uint32 sampleRate, double gainDB, double q, double frequency)
+
+
+    ctypedef struct ma_hishelf_node:
+
+        ma_node_base baseNode
+        ma_hishelf2 hishelf
+     
+
+    ma_result ma_hishelf_node_init(ma_node_graph* pNodeGraph, const ma_hishelf_node_config* pConfig, const ma_allocation_callbacks* pAllocationCallbacks, ma_hishelf_node* pNode)
+    ma_result ma_hishelf_node_reinit(const ma_hishelf_config* pConfig, ma_hishelf_node* pNode)
+    void ma_hishelf_node_uninit(ma_hishelf_node* pNode, const ma_allocation_callbacks* pAllocationCallbacks)
+
+
+    ctypedef struct ma_delay_node_config:
+
+        ma_node_config nodeConfig
+        ma_delay_config delay
+     
+
+    ma_delay_node_config ma_delay_node_config_init(ma_uint32 channels, ma_uint32 sampleRate, ma_uint32 delayInFrames, float decay)
+
+
+    ctypedef struct ma_delay_node:
+
+        ma_node_base baseNode
+        ma_delay delay
+     
+
+    ma_result ma_delay_node_init(ma_node_graph* pNodeGraph, const ma_delay_node_config* pConfig, const ma_allocation_callbacks* pAllocationCallbacks, ma_delay_node* pDelayNode)
+    void ma_delay_node_uninit(ma_delay_node* pDelayNode, const ma_allocation_callbacks* pAllocationCallbacks)
+    void ma_delay_node_set_wet(ma_delay_node* pDelayNode, float value)
+    float ma_delay_node_get_wet(const ma_delay_node* pDelayNode)
+    void ma_delay_node_set_dry(ma_delay_node* pDelayNode, float value)
+    float ma_delay_node_get_dry(const ma_delay_node* pDelayNode)
+    void ma_delay_node_set_decay(ma_delay_node* pDelayNode, float value)
+    float ma_delay_node_get_decay(const ma_delay_node* pDelayNode)
+
+
+# --------------------------------------------------------------
+# Engine
+
+
+    ctypedef struct ma_engine
+    ctypedef struct ma_sound
+
+
+
+    ctypedef enum ma_sound_flags:
+        MA_SOUND_FLAG_STREAM = 0x00000001
+        MA_SOUND_FLAG_DECODE = 0x00000002
+        MA_SOUND_FLAG_ASYNC = 0x00000004
+        MA_SOUND_FLAG_WAIT_INIT = 0x00000008
+        MA_SOUND_FLAG_UNKNOWN_LENGTH = 0x00000010
+        MA_SOUND_FLAG_NO_DEFAULT_ATTACHMENT = 0x00001000
+        MA_SOUND_FLAG_NO_PITCH = 0x00002000
+        MA_SOUND_FLAG_NO_SPATIALIZATION = 0x00004000
+
+    ctypedef enum ma_engine_node_type:
+        ma_engine_node_type_sound,
+        ma_engine_node_type_group
+
+    ctypedef struct ma_engine_node_config:
+        ma_engine* pEngine
+        ma_engine_node_type type
+        ma_uint32 channelsIn
+        ma_uint32 channelsOut
+        ma_uint32 sampleRate
+        ma_uint32 volumeSmoothTimeInPCMFrames
+        ma_mono_expansion_mode monoExpansionMode
+        ma_bool8 isPitchDisabled
+        ma_bool8 isSpatializationDisabled
+        ma_uint8 pinnedListenerIndex
+
+
+    ma_engine_node_config ma_engine_node_config_init(ma_engine* pEngine, ma_engine_node_type type, ma_uint32 flags)
+
+    ctypedef struct ma_engine_node__fadeSettings:
+        ma_atomic_float volumeBeg
+        ma_atomic_float volumeEnd
+        ma_atomic_uint64 fadeLengthInFrames
+        ma_atomic_uint64 absoluteGlobalTimeInFrames
+
+
+    ctypedef struct ma_engine_node:
+        ma_node_base baseNode
+        ma_engine* pEngine
+        ma_uint32 sampleRate
+        ma_uint32 volumeSmoothTimeInPCMFrames
+        ma_mono_expansion_mode monoExpansionMode
+        ma_fader fader
+        ma_linear_resampler resampler
+        ma_spatializer spatializer
+        ma_panner panner
+        ma_gainer volumeGainer
+        ma_atomic_float volume
+        float pitch
+        float oldPitch
+        float oldDopplerPitch
+        ma_bool32 isPitchDisabled
+        ma_bool32 isSpatializationDisabled
+        ma_uint32 pinnedListenerIndex
+
+        ma_engine_node__fadeSettings fadeSettings
+
+        ma_bool8 _ownsHeap
+        void* _pHeap
+
+
+    ma_result ma_engine_node_get_heap_size(const ma_engine_node_config* pConfig, size_t* pHeapSizeInBytes)
+    ma_result ma_engine_node_init_preallocated(const ma_engine_node_config* pConfig, void* pHeap, ma_engine_node* pEngineNode)
+    ma_result ma_engine_node_init(const ma_engine_node_config* pConfig, const ma_allocation_callbacks* pAllocationCallbacks, ma_engine_node* pEngineNode)
+    void ma_engine_node_uninit(ma_engine_node* pEngineNode, const ma_allocation_callbacks* pAllocationCallbacks)
+
+
+
+
+
+    ctypedef void (* ma_sound_end_proc)(void* pUserData, ma_sound* pSound)
+
+    ctypedef struct ma_sound_config:
+        const char* pFilePath
+        const wchar_t* pFilePathW
+        ma_data_source* pDataSource
+        ma_node* pInitialAttachment
+        ma_uint32 initialAttachmentInputBusIndex
+        ma_uint32 channelsIn
+        ma_uint32 channelsOut
+        ma_mono_expansion_mode monoExpansionMode
+        ma_uint32 flags
+        ma_uint32 volumeSmoothTimeInPCMFrames
+        ma_uint64 initialSeekPointInPCMFrames
+        ma_uint64 rangeBegInPCMFrames
+        ma_uint64 rangeEndInPCMFrames
+        ma_uint64 loopPointBegInPCMFrames
+        ma_uint64 loopPointEndInPCMFrames
+        ma_bool32 isLooping
+        ma_sound_end_proc endCallback
+        void* pEndCallbackUserData
+
+        ma_resource_manager_pipeline_notifications initNotifications
+
+        ma_fence* pDoneFence
+
+
+    ma_sound_config ma_sound_config_init()
+    ma_sound_config ma_sound_config_init_2(ma_engine* pEngine)
+
+    ctypedef struct ma_sound:
+        ma_engine_node engineNode
+        ma_data_source* pDataSource
+        ma_uint64 seekTarget
+        ma_bool32 atEnd
+        ma_sound_end_proc endCallback
+        void* pEndCallbackUserData
+        ma_bool8 ownsDataSource
+
+        ma_resource_manager_data_source* pResourceManagerDataSource
+
+
+    ctypedef struct ma_sound_inlined
+    ctypedef struct ma_sound_inlined:
+        ma_sound sound
+        ma_sound_inlined* pNext
+        ma_sound_inlined* pPrev
+
+
+    ctypedef ma_sound_config ma_sound_group_config
+    ctypedef ma_sound ma_sound_group
+
+    ma_sound_group_config ma_sound_group_config_init()
+    ma_sound_group_config ma_sound_group_config_init_2(ma_engine* pEngine)
+
+    ctypedef void (* ma_engine_process_proc)(void* pUserData, float* pFramesOut, ma_uint64 frameCount)
+
+    ctypedef struct ma_engine_config:
+        ma_resource_manager* pResourceManager
+
+        ma_context* pContext
+        ma_device* pDevice
+        ma_device_id* pPlaybackDeviceID
+        ma_device_data_proc dataCallback
+        ma_device_notification_proc notificationCallback
+
+        ma_log* pLog
+        ma_uint32 listenerCount
+        ma_uint32 channels
+        ma_uint32 sampleRate
+        ma_uint32 periodSizeInFrames
+        ma_uint32 periodSizeInMilliseconds
+        ma_uint32 gainSmoothTimeInFrames
+        ma_uint32 gainSmoothTimeInMilliseconds
+        ma_uint32 defaultVolumeSmoothTimeInPCMFrames
+        ma_allocation_callbacks allocationCallbacks
+        ma_bool32 noAutoStart
+        ma_bool32 noDevice
+        ma_mono_expansion_mode monoExpansionMode
+        ma_vfs* pResourceManagerVFS
+        ma_engine_process_proc onProcess
+        void* pProcessUserData
+
+
+    ma_engine_config ma_engine_config_init()
+
+
+    ctypedef struct ma_engine:
+        ma_node_graph nodeGraph
+
+        ma_resource_manager* pResourceManager
+
+        ma_device* pDevice
+
+        ma_log* pLog
+        ma_uint32 sampleRate
+        ma_uint32 listenerCount
+        ma_spatializer_listener listeners[4]
+        ma_allocation_callbacks allocationCallbacks
+        ma_bool8 ownsResourceManager
+        ma_bool8 ownsDevice
+        ma_spinlock inlinedSoundLock
+        ma_sound_inlined* pInlinedSoundHead
+        ma_uint32 inlinedSoundCount
+        ma_uint32 gainSmoothTimeInFrames
+        ma_uint32 defaultVolumeSmoothTimeInPCMFrames
+        ma_mono_expansion_mode monoExpansionMode
+        ma_engine_process_proc onProcess
+        void* pProcessUserData
+
+
+    ma_result ma_engine_init(const ma_engine_config* pConfig, ma_engine* pEngine)
+    void ma_engine_uninit(ma_engine* pEngine)
+    ma_result ma_engine_read_pcm_frames(ma_engine* pEngine, void* pFramesOut, ma_uint64 frameCount, ma_uint64* pFramesRead)
+    ma_node_graph* ma_engine_get_node_graph(ma_engine* pEngine)
+
+    ma_resource_manager* ma_engine_get_resource_manager(ma_engine* pEngine)
+
+    ma_device* ma_engine_get_device(ma_engine* pEngine)
+    ma_log* ma_engine_get_log(ma_engine* pEngine)
+    ma_node* ma_engine_get_endpoint(ma_engine* pEngine)
+    ma_uint64 ma_engine_get_time_in_pcm_frames(const ma_engine* pEngine)
+    ma_uint64 ma_engine_get_time_in_milliseconds(const ma_engine* pEngine)
+    ma_result ma_engine_set_time_in_pcm_frames(ma_engine* pEngine, ma_uint64 globalTime)
+    ma_result ma_engine_set_time_in_milliseconds(ma_engine* pEngine, ma_uint64 globalTime)
+    ma_uint64 ma_engine_get_time(const ma_engine* pEngine)
+    ma_result ma_engine_set_time(ma_engine* pEngine, ma_uint64 globalTime)
+    ma_uint32 ma_engine_get_channels(const ma_engine* pEngine)
+    ma_uint32 ma_engine_get_sample_rate(const ma_engine* pEngine)
+
+    ma_result ma_engine_start(ma_engine* pEngine)
+    ma_result ma_engine_stop(ma_engine* pEngine)
+    ma_result ma_engine_set_volume(ma_engine* pEngine, float volume)
+    float ma_engine_get_volume(ma_engine* pEngine)
+    ma_result ma_engine_set_gain_db(ma_engine* pEngine, float gainDB)
+    float ma_engine_get_gain_db(ma_engine* pEngine)
+
+    ma_uint32 ma_engine_get_listener_count(const ma_engine* pEngine)
+    ma_uint32 ma_engine_find_closest_listener(const ma_engine* pEngine, float absolutePosX, float absolutePosY, float absolutePosZ)
+    void ma_engine_listener_set_position(ma_engine* pEngine, ma_uint32 listenerIndex, float x, float y, float z)
+    ma_vec3f ma_engine_listener_get_position(const ma_engine* pEngine, ma_uint32 listenerIndex)
+    void ma_engine_listener_set_direction(ma_engine* pEngine, ma_uint32 listenerIndex, float x, float y, float z)
+    ma_vec3f ma_engine_listener_get_direction(const ma_engine* pEngine, ma_uint32 listenerIndex)
+    void ma_engine_listener_set_velocity(ma_engine* pEngine, ma_uint32 listenerIndex, float x, float y, float z)
+    ma_vec3f ma_engine_listener_get_velocity(const ma_engine* pEngine, ma_uint32 listenerIndex)
+    void ma_engine_listener_set_cone(ma_engine* pEngine, ma_uint32 listenerIndex, float innerAngleInRadians, float outerAngleInRadians, float outerGain)
+    void ma_engine_listener_get_cone(const ma_engine* pEngine, ma_uint32 listenerIndex, float* pInnerAngleInRadians, float* pOuterAngleInRadians, float* pOuterGain)
+    void ma_engine_listener_set_world_up(ma_engine* pEngine, ma_uint32 listenerIndex, float x, float y, float z)
+    ma_vec3f ma_engine_listener_get_world_up(const ma_engine* pEngine, ma_uint32 listenerIndex)
+    void ma_engine_listener_set_enabled(ma_engine* pEngine, ma_uint32 listenerIndex, ma_bool32 isEnabled)
+    ma_bool32 ma_engine_listener_is_enabled(const ma_engine* pEngine, ma_uint32 listenerIndex)
+
+
+    ma_result ma_engine_play_sound_ex(ma_engine* pEngine, const char* pFilePath, ma_node* pNode, ma_uint32 nodeInputBusIndex)
+    ma_result ma_engine_play_sound(ma_engine* pEngine, const char* pFilePath, ma_sound_group* pGroup)
+
+
+
+    ma_result ma_sound_init_from_file(ma_engine* pEngine, const char* pFilePath, ma_uint32 flags, ma_sound_group* pGroup, ma_fence* pDoneFence, ma_sound* pSound)
+    ma_result ma_sound_init_from_file_w(ma_engine* pEngine, const wchar_t* pFilePath, ma_uint32 flags, ma_sound_group* pGroup, ma_fence* pDoneFence, ma_sound* pSound)
+    ma_result ma_sound_init_copy(ma_engine* pEngine, const ma_sound* pExistingSound, ma_uint32 flags, ma_sound_group* pGroup, ma_sound* pSound)
+
+    ma_result ma_sound_init_from_data_source(ma_engine* pEngine, ma_data_source* pDataSource, ma_uint32 flags, ma_sound_group* pGroup, ma_sound* pSound)
+    ma_result ma_sound_init_ex(ma_engine* pEngine, const ma_sound_config* pConfig, ma_sound* pSound)
+    void ma_sound_uninit(ma_sound* pSound)
+    ma_engine* ma_sound_get_engine(const ma_sound* pSound)
+    ma_data_source* ma_sound_get_data_source(const ma_sound* pSound)
+    ma_result ma_sound_start(ma_sound* pSound)
+    ma_result ma_sound_stop(ma_sound* pSound)
+    ma_result ma_sound_stop_with_fade_in_pcm_frames(ma_sound* pSound, ma_uint64 fadeLengthInFrames)
+    ma_result ma_sound_stop_with_fade_in_milliseconds(ma_sound* pSound, ma_uint64 fadeLengthInFrames)
+    void ma_sound_set_volume(ma_sound* pSound, float volume)
+    float ma_sound_get_volume(const ma_sound* pSound)
+    void ma_sound_set_pan(ma_sound* pSound, float pan)
+    float ma_sound_get_pan(const ma_sound* pSound)
+    void ma_sound_set_pan_mode(ma_sound* pSound, ma_pan_mode panMode)
+    ma_pan_mode ma_sound_get_pan_mode(const ma_sound* pSound)
+    void ma_sound_set_pitch(ma_sound* pSound, float pitch)
+    float ma_sound_get_pitch(const ma_sound* pSound)
+    void ma_sound_set_spatialization_enabled(ma_sound* pSound, ma_bool32 enabled)
+    ma_bool32 ma_sound_is_spatialization_enabled(const ma_sound* pSound)
+    void ma_sound_set_pinned_listener_index(ma_sound* pSound, ma_uint32 listenerIndex)
+    ma_uint32 ma_sound_get_pinned_listener_index(const ma_sound* pSound)
+    ma_uint32 ma_sound_get_listener_index(const ma_sound* pSound)
+    ma_vec3f ma_sound_get_direction_to_listener(const ma_sound* pSound)
+    void ma_sound_set_position(ma_sound* pSound, float x, float y, float z)
+    ma_vec3f ma_sound_get_position(const ma_sound* pSound)
+    void ma_sound_set_direction(ma_sound* pSound, float x, float y, float z)
+    ma_vec3f ma_sound_get_direction(const ma_sound* pSound)
+    void ma_sound_set_velocity(ma_sound* pSound, float x, float y, float z)
+    ma_vec3f ma_sound_get_velocity(const ma_sound* pSound)
+    void ma_sound_set_attenuation_model(ma_sound* pSound, ma_attenuation_model attenuationModel)
+    ma_attenuation_model ma_sound_get_attenuation_model(const ma_sound* pSound)
+    void ma_sound_set_positioning(ma_sound* pSound, ma_positioning positioning)
+    ma_positioning ma_sound_get_positioning(const ma_sound* pSound)
+    void ma_sound_set_rolloff(ma_sound* pSound, float rolloff)
+    float ma_sound_get_rolloff(const ma_sound* pSound)
+    void ma_sound_set_min_gain(ma_sound* pSound, float minGain)
+    float ma_sound_get_min_gain(const ma_sound* pSound)
+    void ma_sound_set_max_gain(ma_sound* pSound, float maxGain)
+    float ma_sound_get_max_gain(const ma_sound* pSound)
+    void ma_sound_set_min_distance(ma_sound* pSound, float minDistance)
+    float ma_sound_get_min_distance(const ma_sound* pSound)
+    void ma_sound_set_max_distance(ma_sound* pSound, float maxDistance)
+    float ma_sound_get_max_distance(const ma_sound* pSound)
+    void ma_sound_set_cone(ma_sound* pSound, float innerAngleInRadians, float outerAngleInRadians, float outerGain)
+    void ma_sound_get_cone(const ma_sound* pSound, float* pInnerAngleInRadians, float* pOuterAngleInRadians, float* pOuterGain)
+    void ma_sound_set_doppler_factor(ma_sound* pSound, float dopplerFactor)
+    float ma_sound_get_doppler_factor(const ma_sound* pSound)
+    void ma_sound_set_directional_attenuation_factor(ma_sound* pSound, float directionalAttenuationFactor)
+    float ma_sound_get_directional_attenuation_factor(const ma_sound* pSound)
+    void ma_sound_set_fade_in_pcm_frames(ma_sound* pSound, float volumeBeg, float volumeEnd, ma_uint64 fadeLengthInFrames)
+    void ma_sound_set_fade_in_milliseconds(ma_sound* pSound, float volumeBeg, float volumeEnd, ma_uint64 fadeLengthInMilliseconds)
+    void ma_sound_set_fade_start_in_pcm_frames(ma_sound* pSound, float volumeBeg, float volumeEnd, ma_uint64 fadeLengthInFrames, ma_uint64 absoluteGlobalTimeInFrames)
+    void ma_sound_set_fade_start_in_milliseconds(ma_sound* pSound, float volumeBeg, float volumeEnd, ma_uint64 fadeLengthInMilliseconds, ma_uint64 absoluteGlobalTimeInMilliseconds)
+    float ma_sound_get_current_fade_volume(const ma_sound* pSound)
+    void ma_sound_set_start_time_in_pcm_frames(ma_sound* pSound, ma_uint64 absoluteGlobalTimeInFrames)
+    void ma_sound_set_start_time_in_milliseconds(ma_sound* pSound, ma_uint64 absoluteGlobalTimeInMilliseconds)
+    void ma_sound_set_stop_time_in_pcm_frames(ma_sound* pSound, ma_uint64 absoluteGlobalTimeInFrames)
+    void ma_sound_set_stop_time_in_milliseconds(ma_sound* pSound, ma_uint64 absoluteGlobalTimeInMilliseconds)
+    void ma_sound_set_stop_time_with_fade_in_pcm_frames(ma_sound* pSound, ma_uint64 stopAbsoluteGlobalTimeInFrames, ma_uint64 fadeLengthInFrames)
+    void ma_sound_set_stop_time_with_fade_in_milliseconds(ma_sound* pSound, ma_uint64 stopAbsoluteGlobalTimeInMilliseconds, ma_uint64 fadeLengthInMilliseconds)
+    ma_bool32 ma_sound_is_playing(const ma_sound* pSound)
+    ma_uint64 ma_sound_get_time_in_pcm_frames(const ma_sound* pSound)
+    ma_uint64 ma_sound_get_time_in_milliseconds(const ma_sound* pSound)
+    void ma_sound_set_looping(ma_sound* pSound, ma_bool32 isLooping)
+    ma_bool32 ma_sound_is_looping(const ma_sound* pSound)
+    ma_bool32 ma_sound_at_end(const ma_sound* pSound)
+    ma_result ma_sound_seek_to_pcm_frame(ma_sound* pSound, ma_uint64 frameIndex)
+    ma_result ma_sound_get_data_format(ma_sound* pSound, ma_format* pFormat, ma_uint32* pChannels, ma_uint32* pSampleRate, ma_channel* pChannelMap, size_t channelMapCap)
+    ma_result ma_sound_get_cursor_in_pcm_frames(ma_sound* pSound, ma_uint64* pCursor)
+    ma_result ma_sound_get_length_in_pcm_frames(ma_sound* pSound, ma_uint64* pLength)
+    ma_result ma_sound_get_cursor_in_seconds(ma_sound* pSound, float* pCursor)
+    ma_result ma_sound_get_length_in_seconds(ma_sound* pSound, float* pLength)
+    ma_result ma_sound_set_end_callback(ma_sound* pSound, ma_sound_end_proc callback, void* pUserData)
+
+    ma_result ma_sound_group_init(ma_engine* pEngine, ma_uint32 flags, ma_sound_group* pParentGroup, ma_sound_group* pGroup)
+    ma_result ma_sound_group_init_ex(ma_engine* pEngine, const ma_sound_group_config* pConfig, ma_sound_group* pGroup)
+    void ma_sound_group_uninit(ma_sound_group* pGroup)
+    ma_engine* ma_sound_group_get_engine(const ma_sound_group* pGroup)
+    ma_result ma_sound_group_start(ma_sound_group* pGroup)
+    ma_result ma_sound_group_stop(ma_sound_group* pGroup)
+    void ma_sound_group_set_volume(ma_sound_group* pGroup, float volume)
+    float ma_sound_group_get_volume(const ma_sound_group* pGroup)
+    void ma_sound_group_set_pan(ma_sound_group* pGroup, float pan)
+    float ma_sound_group_get_pan(const ma_sound_group* pGroup)
+    void ma_sound_group_set_pan_mode(ma_sound_group* pGroup, ma_pan_mode panMode)
+    ma_pan_mode ma_sound_group_get_pan_mode(const ma_sound_group* pGroup)
+    void ma_sound_group_set_pitch(ma_sound_group* pGroup, float pitch)
+    float ma_sound_group_get_pitch(const ma_sound_group* pGroup)
+    void ma_sound_group_set_spatialization_enabled(ma_sound_group* pGroup, ma_bool32 enabled)
+    ma_bool32 ma_sound_group_is_spatialization_enabled(const ma_sound_group* pGroup)
+    void ma_sound_group_set_pinned_listener_index(ma_sound_group* pGroup, ma_uint32 listenerIndex)
+    ma_uint32 ma_sound_group_get_pinned_listener_index(const ma_sound_group* pGroup)
+    ma_uint32 ma_sound_group_get_listener_index(const ma_sound_group* pGroup)
+    ma_vec3f ma_sound_group_get_direction_to_listener(const ma_sound_group* pGroup)
+    void ma_sound_group_set_position(ma_sound_group* pGroup, float x, float y, float z)
+    ma_vec3f ma_sound_group_get_position(const ma_sound_group* pGroup)
+    void ma_sound_group_set_direction(ma_sound_group* pGroup, float x, float y, float z)
+    ma_vec3f ma_sound_group_get_direction(const ma_sound_group* pGroup)
+    void ma_sound_group_set_velocity(ma_sound_group* pGroup, float x, float y, float z)
+    ma_vec3f ma_sound_group_get_velocity(const ma_sound_group* pGroup)
+    void ma_sound_group_set_attenuation_model(ma_sound_group* pGroup, ma_attenuation_model attenuationModel)
+    ma_attenuation_model ma_sound_group_get_attenuation_model(const ma_sound_group* pGroup)
+    void ma_sound_group_set_positioning(ma_sound_group* pGroup, ma_positioning positioning)
+    ma_positioning ma_sound_group_get_positioning(const ma_sound_group* pGroup)
+    void ma_sound_group_set_rolloff(ma_sound_group* pGroup, float rolloff)
+    float ma_sound_group_get_rolloff(const ma_sound_group* pGroup)
+    void ma_sound_group_set_min_gain(ma_sound_group* pGroup, float minGain)
+    float ma_sound_group_get_min_gain(const ma_sound_group* pGroup)
+    void ma_sound_group_set_max_gain(ma_sound_group* pGroup, float maxGain)
+    float ma_sound_group_get_max_gain(const ma_sound_group* pGroup)
+    void ma_sound_group_set_min_distance(ma_sound_group* pGroup, float minDistance)
+    float ma_sound_group_get_min_distance(const ma_sound_group* pGroup)
+    void ma_sound_group_set_max_distance(ma_sound_group* pGroup, float maxDistance)
+    float ma_sound_group_get_max_distance(const ma_sound_group* pGroup)
+    void ma_sound_group_set_cone(ma_sound_group* pGroup, float innerAngleInRadians, float outerAngleInRadians, float outerGain)
+    void ma_sound_group_get_cone(const ma_sound_group* pGroup, float* pInnerAngleInRadians, float* pOuterAngleInRadians, float* pOuterGain)
+    void ma_sound_group_set_doppler_factor(ma_sound_group* pGroup, float dopplerFactor)
+    float ma_sound_group_get_doppler_factor(const ma_sound_group* pGroup)
+    void ma_sound_group_set_directional_attenuation_factor(ma_sound_group* pGroup, float directionalAttenuationFactor)
+    float ma_sound_group_get_directional_attenuation_factor(const ma_sound_group* pGroup)
+    void ma_sound_group_set_fade_in_pcm_frames(ma_sound_group* pGroup, float volumeBeg, float volumeEnd, ma_uint64 fadeLengthInFrames)
+    void ma_sound_group_set_fade_in_milliseconds(ma_sound_group* pGroup, float volumeBeg, float volumeEnd, ma_uint64 fadeLengthInMilliseconds)
+    float ma_sound_group_get_current_fade_volume(ma_sound_group* pGroup)
+    void ma_sound_group_set_start_time_in_pcm_frames(ma_sound_group* pGroup, ma_uint64 absoluteGlobalTimeInFrames)
+    void ma_sound_group_set_start_time_in_milliseconds(ma_sound_group* pGroup, ma_uint64 absoluteGlobalTimeInMilliseconds)
+    void ma_sound_group_set_stop_time_in_pcm_frames(ma_sound_group* pGroup, ma_uint64 absoluteGlobalTimeInFrames)
+    void ma_sound_group_set_stop_time_in_milliseconds(ma_sound_group* pGroup, ma_uint64 absoluteGlobalTimeInMilliseconds)
+    ma_bool32 ma_sound_group_is_playing(const ma_sound_group* pGroup)
+    ma_uint64 ma_sound_group_get_time_in_pcm_frames(const ma_sound_group* pGroup)
+
 
 
