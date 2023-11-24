@@ -1,23 +1,24 @@
 import os
+import platform
 from distutils.core import setup
 from distutils.extension import Extension
 
 from Cython.Build import cythonize
 
-os.environ['LDFLAGS'] = " ".join([
-        # "-framework CoreServices",
-        "-framework CoreFoundation",
-        "-framework AudioUnit",
-        # "-framework AudioToolbox",
-        "-framework CoreAudio",
-])
+if platform.system() == "Darwin":
+    os.environ['LDFLAGS'] = " ".join([
+            "-framework CoreFoundation",
+            # "-framework AudioUnit",
+            "-framework AudioToolbox",
+            "-framework CoreAudio",
+    ])
+
+
 
 extensions = [
     Extension("minima", 
         sources=["minima.pyx"],
-        define_macros = [
-            # ('MINIAUDIO_IMPLEMENTATION', 1),
-        ],
+        define_macros = [],
         include_dirs=[
             "miniaudio",
         ],

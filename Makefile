@@ -17,10 +17,11 @@ inplace: miniaudio/libminiaudio.a
 	@rm -rf ./build ./minima.c	
 
 test:
-	PYTHONPATH=`pwd`/build python3 tests/test_minima.py
+	@PYTHONPATH=`pwd`/build python3 tests/test_minima.py
 
 clean:
 	@rm -f *.so
+	@rm -rf build
 
 reset: clean
 	@rm -f miniaudio/libminiaudio.a

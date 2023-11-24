@@ -2,7 +2,7 @@
 
 A basic cython wrapper of miniaudio (current version: 0.11.21)
 
-For a more complete cffi-based wrapper see Irmen de Jong's [pyminiaudio](https://github.com/irmen/pyminiaudio)
+For a more complete and usable python miniaudio wrapper see the cffi-based [pyminiaudio](https://github.com/irmen/pyminiaudio) project from Irmen de Jong
 
 
 ## Status
