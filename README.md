@@ -36,18 +36,22 @@ Options:
   -V, --version         Print version
 ```
 
-## Scope
+## Features
 
-| Dimension | Current Status |
-| --- | --- |
-| Wire formats | 3: openai-chat, openai-responses, anthropic-messages |
-| Providers | a fixed registry; `--provider` names one, or the environment picks |
-| Tools | 4: `read`, `write`, `edit`, `bash` |
-| Entry modes | 2: interactive REPL, headless `-p` (text, or JSON lines with `--json`) |
-| Config | flags, environment, and one cache file |
-| Colour | on for a terminal, off for a pipe; `--no-color` and `NO_COLOR` |
-| Persistence | model list cache, prompt history, last model per provider |
-| Test provider | 1: `mock`, replaying a JSON script |
+- **Providers:** 5 in a fixed registry, over 3 wire formats: openai-chat, openai-responses and anthropic-messages. See [Providers](#providers).
+- **Tools:** 4. `read` returns numbered lines, 2000 by default. `write` creates or replaces a file. `edit` replaces one exact string. `bash` runs a command under `bash -c`.
+- **Shell commands:** each call runs in its own process group. A timeout (120 s default, 600 s cap) or a cancel kills the group. Background jobs outlive the call and die with minima. A login-shell wrapper such as `bash -lc` is refused, because a login profile can reorder `PATH`.
+- **Modes:** an interactive REPL with history, and headless `-p`, printing text or JSON lines with `--json`.
+- **Cancellation:** Esc or Ctrl-C cancels a REPL turn, including a pending request or a retry wait. A cancelled `-p` run exits 130.
+- **Instructions:** `AGENTS.md` in the config directory, then `AGENTS.md` in the working directory, are appended to the system prompt.
+- **Skills:** `skills/<name>/SKILL.md` in the config directory. The system prompt lists each skill's path and frontmatter; the model reads the file when a task matches.
+- **Context:** the window comes from the provider's model list or `--context`. Once the last turn's token count nears the window, the next request is refused before sending. There is no compaction.
+- **Network:** up to 4 connection retries with backoff. Requests time out after 10 s to connect or 300 s without data.
+- **Persistence:** a model list cache, prompt history, and the last model per provider. See [Build](#build) for where they live.
+- **Colour:** on for a terminal, off for a pipe, `--no-color` or `NO_COLOR`.
+- **Offline runs:** `--mock` replays a scripted JSON stream instead of calling the network.
+
+### Providers
 
 Each registry entry fixes a base URL, a dialect and a key variable, so `--provider` and `--model` are the whole selection, and both have a fallback:
 
@@ -80,7 +84,7 @@ make help       # every target
 
 Plain `cargo build`, `cargo test` and `cargo clippy --all-targets -- -D warnings` work too.
 
-`scripts/test_openrouter.sh`, `test_openai.sh` and `test_anthropic.sh` run four scenarios against a real endpoint -- text, `read`, `bash`, then `write` with a read-back -- and exit non-zero if any of them misses. They take the key from the provider's usual environment variable or from `~/.config/minima/<provider>.key`, and work from a throwaway sandbox rather than the repo, because minima's tools have no path jail. The Anthropic one speaks native `anthropic-messages`.
+`scripts/test_openrouter.sh`, `test_openai.sh` and `test_anthropic.sh` run five scenarios against a real endpoint -- text, `read`, `bash`, `write` with a read-back, then a skill the prompt does not name -- and exit non-zero if any of them misses. They take the key from the provider's usual environment variable or from `~/.config/minima/<provider>.key`, and work from a throwaway sandbox rather than the repo, because minima's tools have no path jail. `XDG_CONFIG_HOME` points at a throwaway directory too, so your own `AGENTS.md` and skills stay out of the prompt. The Anthropic one speaks native `anthropic-messages`.
 
 Rust 1.88 or newer, for let-chains under edition 2024. `cargo test` also needs `python3`.
 
@@ -95,7 +99,7 @@ minima --mock mock/say-hi.json            # interactive
 
 A mock script is a JSON array of turns, each an array of steps: `{"text": ...}`, `{"tool_call": {...}}`, `{"usage": {...}}`, and `"truncated"` for a response cut off at the output token limit. One turn is consumed per provider round-trip.
 
-Configuration, in precedence order: flags, then environment, then `$XDG_CONFIG_HOME/minima/`, which also holds the model cache, `history.txt` and `state.json`. minima creates the directory 0700 and the files it owns 0600, because prompts are written verbatim.
+Configuration, in precedence order: flags, then environment, then `$XDG_CONFIG_HOME/minima/`, which also holds the model cache, `history.txt`, `state.json`, and optionally `AGENTS.md` and `skills/`. minima creates the directory 0700 and the files it owns 0600, because prompts are written verbatim.
 
 | Variable | Meaning |
 | --- | --- |

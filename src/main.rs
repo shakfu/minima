@@ -5,6 +5,7 @@ mod cache;
 mod cancel;
 mod config;
 mod frontend;
+mod prompt;
 mod provider;
 mod state;
 mod term;

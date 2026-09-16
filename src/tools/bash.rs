@@ -6,7 +6,7 @@ use std::process::Stdio;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use tokio::io::{AsyncRead, AsyncReadExt};
@@ -22,6 +22,8 @@ const MAX_TIMEOUT: Duration = Duration::from_secs(600);
 /// the pipe, and then this bounds the wait.
 const DRAIN_GRACE: Duration = Duration::from_millis(100);
 const LEFT_RUNNING: &str = "background jobs still running; minima kills them when it exits";
+const LOGIN_SHELL: &str = "not run: the command already runs under `bash -c`, and a login shell \
+reorders PATH, so programs can resolve differently; pass the inner command without the wrapper";
 
 /// Process groups that may still have members: running calls, and finished calls that left jobs.
 ///
@@ -67,6 +69,9 @@ pub struct Args {
 }
 
 pub async fn call(args: Args, cancel: &Cancel) -> Result<Outcome> {
+    if login_shell(&args.command) {
+        bail!(LOGIN_SHELL);
+    }
     let limit = args
         .timeout_ms
         .map_or(DEFAULT_TIMEOUT, Duration::from_millis)
@@ -227,6 +232,21 @@ impl Drain {
     }
 }
 
+/// A command that starts a login shell, as `bash -lc '...'`. GPT models wrap commands this way
+/// despite the tool description. On macOS the profile runs `path_helper`, which moved Homebrew's
+/// `python3` behind `/usr/bin/python3`. A plain `bash -c` wrapper is allowed: it keeps PATH.
+fn login_shell(command: &str) -> bool {
+    let mut words = command.split_whitespace();
+    let shell = words
+        .next()
+        .and_then(|w| w.rsplit('/').next())
+        .is_some_and(|w| matches!(w, "bash" | "sh" | "zsh"));
+    shell
+        && words
+            .take_while(|w| w.starts_with('-'))
+            .any(|w| w == "--login" || (!w.starts_with("--") && w.contains('l')))
+}
+
 /// The first meaningful line of stderr, kept short enough to sit on one terminal row.
 fn first_line(stderr: &str) -> Option<String> {
     let line = stderr.lines().map(str::trim).find(|l| !l.is_empty())?;
@@ -277,6 +297,41 @@ mod tests {
         let pid = std::fs::read_to_string(path).expect("pid file");
         let _ = std::fs::remove_file(path);
         pid.trim().parse().expect("a pid")
+    }
+
+    #[test]
+    fn a_login_shell_wrapper_is_detected() {
+        for command in [
+            "bash -lc 'ls'",
+            "  /bin/bash -l -c 'ls'",
+            "sh -lc ls",
+            "zsh --login -c ls",
+            "bash -el -c ls",
+        ] {
+            assert!(login_shell(command), "{command}");
+        }
+        for command in [
+            "bash -c 'ls -l'",
+            "bash -ec ls -l",
+            "ls -l",
+            "bashful -lc ls",
+            "bash --noprofile -c ls",
+            "bash script.sh -l",
+        ] {
+            assert!(!login_shell(command), "{command}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_login_shell_wrapper_is_refused_without_running() {
+        let marker = std::env::temp_dir().join(format!("minima-login-{}", std::process::id()));
+        let args = Args {
+            command: format!("bash -lc 'touch {}'", marker.display()),
+            timeout_ms: None,
+        };
+        let err = call(args, &Cancel::new()).await.expect_err("refused");
+        assert_eq!(err.to_string(), LOGIN_SHELL);
+        assert!(!marker.exists());
     }
 
     #[tokio::test]

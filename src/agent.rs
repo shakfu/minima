@@ -11,6 +11,7 @@ use futures_util::StreamExt;
 use crate::cancel::Cancel;
 use crate::config::{CONTEXT_MARGIN, Config};
 use crate::frontend::Frontend;
+use crate::prompt::system_prompt;
 use crate::provider::{Error, Message, Provider};
 use crate::tools::{self, Tool};
 use crate::turn::{Assembler, Turn};
@@ -19,34 +20,10 @@ use crate::turn::{Assembler, Turn};
 const MAX_RETRIES: u32 = 4;
 /// A server that asks for a longer wait than this is reported rather than waited out.
 const MAX_BACKOFF: Duration = Duration::from_secs(60);
-const SYSTEM: &str = "You are minima, a coding agent. Use the tools to inspect and change files. \
-Be terse. State what you did; do not narrate what you are about to do.";
 
 const CONTEXT_FULL: &str = "not run: the context window is full";
 const TRUNCATED: &str = "not run: the response hit the output token limit before the call was \
 complete; split the work into smaller calls";
-
-/// Facts about the machine, so the model does not have to guess at it. Without this it reaches
-/// for GNU flags on a BSD userland and burns a turn discovering the mistake.
-///
-/// Three fields, not hax's six: the working directory, the platform, and the shell. Home
-/// directory and model name are not worth their tokens, and a git root needs a walk up the tree.
-fn system_prompt() -> String {
-    let mut prompt = String::from(SYSTEM);
-    prompt.push_str("\n\n# Environment\n\n");
-
-    if let Ok(cwd) = std::env::current_dir() {
-        prompt.push_str(&format!("- Working directory: {}\n", cwd.display()));
-    }
-    prompt.push_str(&format!(
-        "- Operating system: {} ({})\n",
-        std::env::consts::OS,
-        std::env::consts::ARCH
-    ));
-    // The shell the bash tool runs, not the user's $SHELL: the model writes syntax for this one.
-    prompt.push_str("- Command shell: bash\n");
-    prompt
-}
 
 pub struct Agent {
     provider: Provider,
@@ -276,23 +253,6 @@ mod tests {
     use super::*;
     use crate::provider::Usage;
     use crate::tools::Scratch;
-
-    #[test]
-    fn the_system_prompt_states_the_platform_and_place() {
-        let prompt = system_prompt();
-        assert!(prompt.starts_with("You are minima"));
-        assert!(prompt.contains("# Environment"));
-        assert!(prompt.contains(std::env::consts::OS));
-        assert!(prompt.contains(std::env::consts::ARCH));
-
-        let cwd = std::env::current_dir().expect("a working directory");
-        assert!(prompt.contains(&cwd.display().to_string()));
-    }
-
-    #[test]
-    fn the_system_prompt_names_the_shell_the_tool_runs() {
-        assert!(system_prompt().contains("- Command shell: bash\n"));
-    }
 
     /// Records nothing. With `cancel`, cancels at the first text or tool start, the way Esc would.
     #[derive(Default)]

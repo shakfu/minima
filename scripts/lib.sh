@@ -40,7 +40,15 @@ resolve_key() {
 
 setup_sandbox() {
     SANDBOX=$(mktemp -d "${TMPDIR:-/tmp}/minima-live-XXXXXX") || die "could not make a sandbox"
-    trap 'rm -rf "$SANDBOX"' EXIT
+    # Outside the sandbox, so its cache files do not change what the bash scenario counts.
+    CONFIG=$(mktemp -d "${TMPDIR:-/tmp}/minima-live-config-XXXXXX") || die "could not make a config"
+    trap 'rm -rf "$SANDBOX" "$CONFIG"' EXIT
+    # The user's own AGENTS.md and skills would otherwise reach every prompt.
+    export XDG_CONFIG_HOME="$CONFIG"
+    # The marker is only in the body, so it reaches the answer only if the model read the file.
+    mkdir -p "$CONFIG/minima/skills/haiku"
+    printf -- '---\nname: haiku\ndescription: Writes a haiku. Use when the user asks for a haiku.\n---\n\nAfter the haiku, add a final line with exactly: -- kestrel-0419\n' \
+        > "$CONFIG/minima/skills/haiku/SKILL.md"
     printf 'alpha: the first line\nbeta: the second line\ngamma: the third line\n' \
         > "$SANDBOX/notes.txt"
     printf 'one\n' > "$SANDBOX/a.txt"
@@ -101,6 +109,11 @@ run_suite() {
     scenario "write, then read back" \
         "Write a file called greeting.txt containing the single word hello, then read it back and tell me what it contains." \
         'hello'
+
+    # The prompt does not mention skills: this checks that a model loads one unprompted.
+    scenario "skill, read on demand" \
+        "Write a haiku about rain." \
+        'kestrel-0419'
 
     echo "=============================================================="
     if [ -f "$SANDBOX/greeting.txt" ]; then

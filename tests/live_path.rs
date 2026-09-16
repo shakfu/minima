@@ -153,6 +153,45 @@ fn request_carries_the_cache_key_and_every_tool() {
 }
 
 #[test]
+fn instructions_and_skills_reach_the_system_prompt_user_file_first() {
+    let fixture = Fixture::start("full");
+    let dir = fixture.dir.path();
+    let skill = dir.join("minima/skills/audit");
+    std::fs::create_dir_all(&skill).unwrap();
+    std::fs::write(dir.join("minima/AGENTS.md"), "Prefer stdlib.\n").unwrap();
+    std::fs::write(
+        skill.join("SKILL.md"),
+        "---\ndescription: Check deps.\n---\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("AGENTS.md"), "Run make check.\n").unwrap();
+    let out = fixture.run(&[], "hello");
+    assert!(
+        out.status.success(),
+        "minima failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let system = &fixture.captured_request()["messages"][0];
+    assert_eq!(system["role"], "system");
+    let content = system["content"].as_str().expect("system content");
+    let user = dir.join("minima/AGENTS.md");
+    let tail = content
+        .split_once(&format!("\n# {}\n\nPrefer stdlib.\n", user.display()))
+        .unwrap_or_else(|| panic!("no user instructions: {content}"))
+        .1;
+    let skill_section = format!(
+        "\n## {}\n\ndescription: Check deps.\n",
+        skill.join("SKILL.md").display()
+    );
+    assert!(
+        tail.starts_with("\n# AGENTS.md\n\nRun make check.\n\n# Skills\n\n"),
+        "{content}"
+    );
+    assert!(tail.ends_with(&skill_section), "{content}");
+}
+
+#[test]
 fn a_gateway_without_a_model_list_still_runs_when_the_model_is_named() {
     let fixture = Fixture::start("no-models");
     let out = fixture.run(&[("MINIMA_MODEL", "m"), ("MINIMA_CONTEXT", "8000")], "hi");
