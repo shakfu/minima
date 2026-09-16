@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 0.2.2
+
+### Added
+
+- Releases also publish a macOS aarch64 binary. It is dynamically linked, since macOS supports no static binaries.
+
+### Fixed
+
+- The 0.2.1 release published no binaries. Its x86_64 check looked for "statically linked", but Rust links x86_64 musl as static-pie, which `file` reports as "static-pie linked".
+
 ## 0.2.1
 
 ### Added

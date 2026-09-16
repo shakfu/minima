@@ -1,5 +1,6 @@
-# On a version tag, build static musl binaries and publish them as a GitHub release.
-# Native runners per architecture: cross-compiling aws-lc-sys needs a cross C toolchain.
+# On a version tag, build release binaries and publish them as a GitHub release.
+# Linux binaries are static musl. Native runners per target: cross-compiling aws-lc-sys needs a
+# cross C toolchain.
 name: release
 
 on:
@@ -14,28 +15,31 @@ jobs:
     strategy:
       matrix:
         include:
-          - { runner: ubuntu-24.04, arch: x86_64 }
-          - { runner: ubuntu-24.04-arm, arch: aarch64 }
+          - { runner: ubuntu-24.04, target: x86_64-unknown-linux-musl, platform: linux-x86_64 }
+          - { runner: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl, platform: linux-aarch64 }
+          - { runner: macos-15, target: aarch64-apple-darwin, platform: macos-aarch64 }
     runs-on: ${{ matrix.runner }}
     env:
-      TARGET: ${{ matrix.arch }}-unknown-linux-musl
-      NAME: minima-${{ github.ref_name }}-linux-${{ matrix.arch }}
+      TARGET: ${{ matrix.target }}
+      NAME: minima-${{ github.ref_name }}-${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ env.TARGET }}
-      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends musl-tools cmake
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends musl-tools cmake
       - run: cargo build --release --locked --target "$TARGET"
-      - name: Check the binary is static and runs
-        run: |
-          bin="target/$TARGET/release/minima"
-          file "$bin" | grep -q 'statically linked'
-          "$bin" --version
+      # x86_64 musl links static-pie, which `file` names "static-pie linked".
+      - name: Check the binary is static
+        if: runner.os == 'Linux'
+        run: file "target/$TARGET/release/minima" | grep -Eq 'statically linked|static-pie linked'
+      - name: Check the binary runs
+        run: '"target/$TARGET/release/minima" --version'
       - name: Package
         run: |
           tar -czf "$NAME.tar.gz" -C "target/$TARGET/release" minima
-          sha256sum "$NAME.tar.gz" > "$NAME.tar.gz.sha256"
+          shasum -a 256 "$NAME.tar.gz" > "$NAME.tar.gz.sha256"
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ env.NAME }}
