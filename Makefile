@@ -4,6 +4,8 @@ INSTALL_DIR := $(HOME)/.local/bin
 # cargo's verify build shares the target dir by default. Its minima unit then takes the workspace's
 # fingerprint, with dep-info naming target/package sources, so later builds ignore edits to src/.
 PUBLISH_DIR := target/publish
+# --locked, as the release workflow builds: a version bump without its Cargo.lock fails here, not
+# after the tag is pushed.
 
 .PHONY: all build release test lint fmt check run repl live clean install package publish help
 
@@ -46,10 +48,10 @@ install: release
 	@echo "installed minima to $(INSTALL_DIR)"
 
 package:
-	CARGO_TARGET_DIR=$(PUBLISH_DIR) cargo package
+	CARGO_TARGET_DIR=$(PUBLISH_DIR) cargo package --locked
 
 publish:
-	CARGO_TARGET_DIR=$(PUBLISH_DIR) cargo publish
+	CARGO_TARGET_DIR=$(PUBLISH_DIR) cargo publish --locked
 
 clean:
 	cargo clean
