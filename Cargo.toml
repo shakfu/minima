@@ -1,6 +1,6 @@
 [package]
 name = "minima"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.88"
 license = "MIT"
@@ -53,9 +53,10 @@ thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
-# Integration tests cannot see the crate's regular dependencies.
-[dev-dependencies]
-serde_json = "1"
+# `killpg` for the bash tool's process group, which std does not expose. Already in the tree
+# through tokio.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [profile.release]
 lto = true

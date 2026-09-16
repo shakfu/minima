@@ -6,9 +6,7 @@
 
 ## Medium
 
-- [ ] **Anthropic model listing.** `src/cache.rs` sends bearer auth and parses a flat `data` array. The Messages dialect authenticates with `x-api-key` plus `anthropic-version`, and Anthropic's `/v1/models` is paged with `after_id` cursors (`anthropic_models.c:117-190` in hax). A keyless probe cannot tell whether a valid bearer is accepted there, so the auth half is unconfirmed; the paging half is certain and means only the first page is ever seen. It degrades rather than breaks: `--model` given, the fetch is skipped; `--model` omitted against Anthropic, it fails with the endpoint's own message. Fix is to pass the dialect into `Models::refresh` and follow cursors, roughly 40 lines.
-
-- [ ] **Config resolution had a disk side effect.** `resolve()` used to write `state.json`, which made its own unit tests write to the developer's real `~/.config/minima`. The write moved to `main.rs`; `tests/live_path.rs` now sets `XDG_CONFIG_HOME` per fixture. Worth remembering as a shape: a resolver that persists is a resolver whose tests persist.
+- [ ] **Anthropic model listing.** `src/cache.rs` sends bearer auth and parses a flat `data` array. The Messages dialect authenticates with `x-api-key` plus `anthropic-version`, and Anthropic's `/v1/models` is paged with `after_id` cursors (`anthropic_models.c:117-190` in hax). A keyless probe cannot tell whether a valid bearer is accepted there, so the auth half is unconfirmed; the paging half is certain and means only the first page is ever seen. It degrades rather than breaks: `--model` given, the fetch is skipped; `--model` omitted against Anthropic, it fails with the endpoint's own message. If bearer auth is rejected, the cache is never written, so every Anthropic start without `--context` repeats the failing GET. Fix is to pass the dialect into `Models::refresh` and follow cursors, roughly 40 lines.
 
 - [ ] **`message_delta` usage is a correction, not a total.** Handled in `turn.rs::merge_usage`, but the rule is a convention rather than something the wire states. A provider reporting only a total and no halves falls back to the reported figure.
 
@@ -21,4 +19,3 @@
 - [ ] **Streaming markdown**. Every live run shows it: models emit `**3 .txt files**` and minima prints the asterisks. hax spends 1,764 lines on `render/markdown.c` and `markdown_table.c`. No crate does incremental streaming render -- `termimad` renders finished documents.
 
 ## Low
-

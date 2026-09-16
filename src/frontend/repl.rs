@@ -1,7 +1,7 @@
 //! The interactive frontend, and the only place that owns the terminal.
 //!
 //! reedline reads the line in cooked mode. minima then enters raw mode for the duration of the
-//! turn so a watcher thread can see Esc, which means every write has to carry its own carriage
+//! turn so a watcher thread can see Esc and Ctrl-C, which means every write has to carry its own carriage
 //! return.
 
 use std::io::Write;
@@ -10,10 +10,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use anyhow::Result;
-use crossterm::event::{self, KeyCode, KeyEventKind};
+use crossterm::event::{self, KeyCode, KeyEventKind, KeyModifiers};
 use reedline::{DefaultPrompt, FileBackedHistory, Reedline, Signal};
 
-use super::{Frontend, one_line};
+use super::{Frontend, one_line, printable};
 use crate::agent::Agent;
 use crate::cancel::Cancel;
 use crate::provider::Usage;
@@ -23,26 +23,15 @@ use crate::theme::{self, Style};
 const POLL: Duration = Duration::from_millis(80);
 const HISTORY_CAPACITY: usize = 1000;
 
+#[derive(Default)]
 pub struct Repl {
-    /// Raw mode swallows the carriage return, so `\n` has to be rewritten on the way out.
-    raw: bool,
     line_open: bool,
 }
 
 impl Repl {
-    pub fn new(raw: bool) -> Self {
-        Self {
-            raw,
-            line_open: false,
-        }
-    }
-
+    /// Raw mode swallows the carriage return, so `\n` has to be rewritten on the way out.
     fn put(&mut self, text: &str) {
-        let out = if self.raw {
-            text.replace('\n', "\r\n")
-        } else {
-            text.to_string()
-        };
+        let out = text.replace('\n', "\r\n");
         print!("{out}");
         self.line_open = !out.ends_with('\n');
         let _ = std::io::stdout().flush();
@@ -58,7 +47,7 @@ impl Repl {
 
 impl Frontend for Repl {
     fn text(&mut self, delta: &str) {
-        self.put(delta);
+        self.put(&printable(delta));
     }
 
     fn tool_start(&mut self, name: &str, arguments: &str) {
@@ -66,7 +55,7 @@ impl Frontend for Repl {
         self.line(&theme::paint(Style::Muted, &text));
     }
 
-    fn tool_end(&mut self, _name: &str, body: &str, note: Option<&str>, ok: bool) {
+    fn tool_end(&mut self, body: &str, note: Option<&str>, ok: bool) {
         // One line per tool call. A note displaces the result preview because it says more:
         // it is the reason the model is about to try something else.
         let line = match (ok, note) {
@@ -111,15 +100,15 @@ fn editor_with_history() -> Reedline {
                     tracing::warn!("could not restrict {}: {e}", target.display());
                 }
             }
-            // "/" keeps /quit out of the recall ring; otherwise the first Up in a fresh
-            // session hands the user the exit command.
+            // Keeps /quit out of the recall ring; otherwise the first Up in a fresh session hands
+            // the user the exit command. Only /quit: a prompt can start with a path.
             Reedline::create()
                 .with_history(Box::new(history))
-                .with_history_exclusion_prefix(Some("/".into()))
+                .with_history_exclusion_prefix(Some("/quit".into()))
         }
         Err(e) => {
             tracing::warn!("history disabled, staying in memory: {e}");
-            Reedline::create().with_history_exclusion_prefix(Some("/".into()))
+            Reedline::create().with_history_exclusion_prefix(Some("/quit".into()))
         }
     }
 }
@@ -149,7 +138,7 @@ pub fn run(runtime: &tokio::runtime::Runtime, agent: &mut Agent) -> Result<()> {
         let stop = Arc::new(AtomicBool::new(false));
         let watcher = watch_for_esc(cancel.clone(), Arc::clone(&stop));
 
-        let mut frontend = Repl::new(true);
+        let mut frontend = Repl::default();
         let result = runtime.block_on(agent.run(trimmed, &mut frontend, &cancel));
 
         stop.store(true, Ordering::SeqCst);
@@ -158,12 +147,15 @@ pub fn run(runtime: &tokio::runtime::Runtime, agent: &mut Agent) -> Result<()> {
         drop(guard);
 
         if let Err(e) = result {
-            eprintln!("{}", theme::paint(Style::Error, &format!("error: {e:#}")));
+            let text = printable(&format!("error: {e:#}"));
+            eprintln!("{}", theme::paint(Style::Error, &text));
         }
     }
     Ok(())
 }
 
+/// Raw mode turns Ctrl-C into a key event rather than SIGINT, so it is matched here beside Esc.
+///
 /// A thread, not a task: `crossterm::event::read` blocks, and crossterm's async event stream
 /// would be another feature to carry for one key.
 fn watch_for_esc(cancel: Cancel, stop: Arc<AtomicBool>) -> std::thread::JoinHandle<()> {
@@ -176,7 +168,9 @@ fn watch_for_esc(cancel: Cancel, stop: Arc<AtomicBool>) -> std::thread::JoinHand
             }
             if let Ok(event::Event::Key(key)) = event::read()
                 && key.kind == KeyEventKind::Press
-                && key.code == KeyCode::Esc
+                && (key.code == KeyCode::Esc
+                    || (key.code == KeyCode::Char('c')
+                        && key.modifiers.contains(KeyModifiers::CONTROL)))
             {
                 cancel.cancel();
             }

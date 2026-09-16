@@ -34,7 +34,7 @@ pub struct Cli {
     #[arg(long, env = "MINIMA_BASE_URL", value_name = "URL")]
     pub base_url: Option<String>,
 
-    /// Overrides the provider's key variable.
+    /// Overrides the provider's key variable. Requires --provider.
     #[arg(
         long,
         env = "MINIMA_API_KEY",
@@ -106,6 +106,11 @@ impl Cli {
                 context: self.context.unwrap_or(128_000),
                 max_turns: self.max_turns,
             });
+        }
+
+        // A key does not say which vendor issued it, so autoselect could send it to another one.
+        if self.api_key.is_some() && self.provider.is_none() {
+            bail!("--api-key needs --provider: a key does not say which provider it belongs to");
         }
 
         let entry = match &self.provider {
@@ -291,6 +296,15 @@ mod tests {
         let err = c.resolve().await.expect_err("should refuse").to_string();
         assert!(err.contains("notaprovider"), "{err}");
         assert!(err.contains("openrouter"), "{err}");
+    }
+
+    /// Refused before autoselect runs, so no environment can route the key to another vendor.
+    #[tokio::test]
+    async fn a_key_without_a_named_provider_is_refused() {
+        let mut c = cli(Some("m"), Some(64), false);
+        c.provider = None;
+        let err = c.resolve().await.expect_err("should refuse").to_string();
+        assert!(err.contains("--provider"), "{err}");
     }
 
     #[tokio::test]

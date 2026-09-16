@@ -1,4 +1,3 @@
-BUDGET      := 4000
 PROVIDER    ?= openrouter
 BIN         := target/debug/minima
 INSTALL_DIR := $(HOME)/.local/bin

@@ -23,6 +23,9 @@ pub fn build_body(cfg: &Config, messages: &[Message], tools: &[Value], cache_key
             let mut out = json!({ "role": role(m.role) });
             if let Some(content) = &m.content {
                 out["content"] = json!(content);
+            } else if m.role == Role::Assistant && m.tool_calls.is_empty() {
+                // An assistant message needs content or tool calls, and an empty turn has neither.
+                out["content"] = json!("");
             }
             if !m.tool_calls.is_empty() {
                 out["tool_calls"] = Value::Array(
@@ -84,12 +87,17 @@ struct Chunk {
     choices: Vec<Choice>,
     #[serde(default)]
     usage: Option<WireUsage>,
+    /// Some gateways, OpenRouter among them, report a failure mid-stream this way.
+    #[serde(default)]
+    error: Option<Value>,
 }
 
 #[derive(Deserialize)]
 struct Choice {
     #[serde(default)]
     delta: Delta,
+    #[serde(default)]
+    finish_reason: Option<String>,
 }
 
 #[derive(Deserialize, Default)]
@@ -103,7 +111,7 @@ struct Delta {
 #[derive(Deserialize)]
 struct CallDelta {
     #[serde(default)]
-    index: usize,
+    index: Option<usize>,
     #[serde(default)]
     id: Option<String>,
     #[serde(default)]
@@ -130,6 +138,12 @@ struct WireUsage {
 
 impl Chunk {
     fn into_events(self) -> Vec<Result<Event, Error>> {
+        if let Some(error) = self.error {
+            let message = error["message"]
+                .as_str()
+                .map_or_else(|| error.to_string(), str::to_string);
+            return vec![Err(Error::Other(anyhow!("{message}")))];
+        }
         let mut out = Vec::new();
         for choice in self.choices {
             if let Some(text) = choice.delta.content.filter(|t| !t.is_empty()) {
@@ -140,12 +154,22 @@ impl Chunk {
                     Some(f) => (f.name, f.arguments),
                     None => (None, None),
                 };
+                // Some servers omit the index. The id then tells calls apart, and a fragment with
+                // neither gets an empty key, which continues the call opened last.
+                let key = call
+                    .index
+                    .map(|i| i.to_string())
+                    .or_else(|| call.id.clone())
+                    .unwrap_or_default();
                 out.push(Ok(Event::ToolCallDelta {
-                    key: call.index.to_string(),
+                    key,
                     id: call.id,
                     name,
                     arguments,
                 }));
+            }
+            if choice.finish_reason.as_deref() == Some("length") {
+                out.push(Ok(Event::Truncated));
             }
         }
         if let Some(u) = self.usage {
@@ -185,6 +209,43 @@ mod tests {
                 arguments: Some("{\"p".into()),
             }
         );
+    }
+
+    #[test]
+    fn a_length_stop_is_reported_as_truncation() {
+        let events = parse_frame(r#"{"choices":[{"delta":{},"finish_reason":"length"}]}"#);
+        assert_eq!(events[0].as_ref().unwrap(), &Event::Truncated);
+    }
+
+    #[test]
+    fn calls_without_an_index_are_keyed_by_id() {
+        let events = parse_frame(
+            r#"{"choices":[{"delta":{"tool_calls":[
+               {"id":"a","function":{"name":"read","arguments":"{}"}},
+               {"id":"b","function":{"name":"read","arguments":"{}"}}]}}]}"#,
+        );
+        let keys: Vec<_> = events
+            .iter()
+            .map(|e| match e.as_ref().unwrap() {
+                Event::ToolCallDelta { key, .. } => key.clone(),
+                other => panic!("expected a tool fragment, got {other:?}"),
+            })
+            .collect();
+        assert_eq!(keys, ["a", "b"]);
+    }
+
+    #[test]
+    fn a_mid_stream_error_is_an_error() {
+        let events = parse_frame(r#"{"error":{"message":"upstream overloaded"}}"#);
+        let err = events[0].as_ref().unwrap_err().to_string();
+        assert!(err.contains("upstream overloaded"), "{err}");
+    }
+
+    #[test]
+    fn an_empty_assistant_turn_still_has_content() {
+        let cfg = Config::for_test("m");
+        let body = build_body(&cfg, &[Message::assistant(None, vec![])], &[], "k");
+        assert_eq!(body["messages"][0]["content"], "");
     }
 
     #[test]

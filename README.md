@@ -2,7 +2,9 @@
 
 A minimal coding agent harness with a tiny feature set.
 
-`minima` was created to test whether a usable agent harness can fit into 3,000 lines when the ecosystem carries the capabilities. It was inspired by by [hax](https://github.com/OleksandrChekhovskyi/hax).
+`minima` tests how small a usable agent harness can be when the ecosystem carries the capabilities. It was inspired by [hax](https://github.com/OleksandrChekhovskyi/hax).
+
+**No approval gate.** minima runs every tool call without asking. The model can run any `bash` command and write any file your user can. Text in a file it reads, or in command output, can instruct it to do so. Run it only where that is acceptable, such as a container or a disposable checkout, such as our sibling project, [sanduk](https://github.com/shakfu/sanduk), or similar.
 
 ```sh
 % minima --help
@@ -15,7 +17,7 @@ Options:
       --provider <ID>   Which provider to talk to: fixes the endpoint, the wire format and the key variable. Left out, minima takes the first provider whose key variable is set [env: MINIMA_PROVIDER=]
       --model <ID>      Left out, minima reuses the model last used with this provider [env: MINIMA_MODEL=]
       --base-url <URL>  Override the provider's endpoint, for a local server or a gateway. Never changes the wire format: a different shape is a different provider, not a different address [env: MINIMA_BASE_URL=]
-      --api-key <KEY>   Overrides the provider's key variable [env: MINIMA_API_KEY]
+      --api-key <KEY>   Overrides the provider's key variable. Requires --provider [env: MINIMA_API_KEY]
       --no-color        Print without colour. Colour is off anyway when stdout is not a terminal, or when NO_COLOR is set
       --context <N>     Context window in tokens. Falls back to the cached value for the model [env: MINIMA_CONTEXT=]
       --mock <PATH>     Replay a scripted JSON stream instead of calling the network
@@ -24,7 +26,6 @@ Options:
   -h, --help            Print help
   -V, --version         Print version
 ```
-
 
 ## Scope
 
@@ -57,7 +58,6 @@ Listed in autoselect order.
 | `ollama` | openai-chat | none |
 | `llamacpp` | openai-chat | none |
 
-
 ## Build
 
 ```sh
@@ -70,11 +70,11 @@ make help       # every target
 
 Plain `cargo build`, `cargo test` and `cargo clippy --all-targets -- -D warnings` work too.
 
-`scripts/test_openrouter.sh`, `test_openai.sh` and `test_anthropic.sh` run four scenarios against a real endpoint -- text, `read`, `bash`, then `write` with a read-back -- and exit non-zero if any of them misses. They take the key from the provider's usual environment variable or from `~/.config/minima/<provider>.key`, and work from a throwaway sandbox rather than the repo, because minima's tools have no path jail. The Anthropic one uses that vendor's OpenAI-compatibility endpoint; native `anthropic-messages` is the deferred amendment in [TODO.md](TODO.md).
+`scripts/test_openrouter.sh`, `test_openai.sh` and `test_anthropic.sh` run four scenarios against a real endpoint -- text, `read`, `bash`, then `write` with a read-back -- and exit non-zero if any of them misses. They take the key from the provider's usual environment variable or from `~/.config/minima/<provider>.key`, and work from a throwaway sandbox rather than the repo, because minima's tools have no path jail. The Anthropic one speaks native `anthropic-messages`.
 
 Rust 1.88 or newer, for let-chains under edition 2024. `cargo test` also needs `python3`.
 
-Unit tests live beside the module they exercise. `tests/live_path.rs` covers only what the in-process mock cannot reach -- the request body minima actually sends, and what it does against a gateway that serves no model list -- by driving the built binary against `tests/fixtures/fake_provider.py`. Behaviour that a unit test can already pin does not get a second assertion there.
+Unit tests live beside the module they exercise. `tests/live_path.rs` covers only what the in-process mock cannot reach -- the request body minima actually sends, and what it does against a gateway that serves no model list -- by driving the built binary against `tests/fixtures/fake_provider.py`. Behaviour that a unit test can already pin does not get a second assertion there. `tests/headless.rs` checks `-p` exit codes and that background jobs die with minima.
 
 Run without a network or an API key by replaying a scripted stream:
 
@@ -83,7 +83,7 @@ minima --mock mock/read-then-answer.json -p "what is this package?"
 minima --mock mock/say-hi.json            # interactive
 ```
 
-A mock script is a JSON array of turns, each an array of steps: `{"text": ...}`, `{"tool_call": {...}}`, `{"usage": {...}}`. One turn is consumed per provider round-trip.
+A mock script is a JSON array of turns, each an array of steps: `{"text": ...}`, `{"tool_call": {...}}`, `{"usage": {...}}`, and `"truncated"` for a response cut off at the output token limit. One turn is consumed per provider round-trip.
 
 Configuration, in precedence order: flags, then environment, then `$XDG_CONFIG_HOME/minima/`, which also holds the model cache, `history.txt` and `state.json`. minima creates the directory 0700 and the files it owns 0600, because prompts are written verbatim.
 
@@ -92,7 +92,8 @@ Configuration, in precedence order: flags, then environment, then `$XDG_CONFIG_H
 | `MINIMA_PROVIDER` | registry id; unset, the first key variable set decides |
 | `MINIMA_MODEL` | model id; unset, the one last used with it |
 | `MINIMA_BASE_URL` | override the endpoint, never the dialect |
-| `MINIMA_API_KEY` | overrides the provider's own key variable |
+| `MINIMA_API_KEY` | overrides the provider's own key variable; requires a named provider |
+| `MINIMA_CONTEXT` | context window in tokens; unset, the cached value for the model |
 | `NO_COLOR` | any value turns colour off |
 | `RUST_LOG` | `tracing` filter; `minima=debug` logs requests with auth redacted |
 

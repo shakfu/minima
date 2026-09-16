@@ -11,10 +11,16 @@ static ENABLED: AtomicBool = AtomicBool::new(false);
 /// `stdout` decides, because that is where assistant text goes; notices follow it so both halves
 /// of a run agree.
 pub fn init(disabled_by_flag: bool) {
-    let on = !disabled_by_flag
-        && std::env::var_os("NO_COLOR").is_none()
-        && std::io::stdout().is_terminal();
+    let on = decide(
+        disabled_by_flag,
+        std::env::var_os("NO_COLOR").is_some(),
+        std::io::stdout().is_terminal(),
+    );
     ENABLED.store(on, Ordering::Relaxed);
+}
+
+fn decide(disabled_by_flag: bool, no_color: bool, terminal: bool) -> bool {
+    !disabled_by_flag && !no_color && terminal
 }
 
 pub fn enabled() -> bool {
@@ -46,7 +52,12 @@ const RESET: &str = "\x1b[0m";
 
 /// Wraps `text` when colour is on, and returns it untouched when it is off.
 pub fn paint(style: Style, text: &str) -> String {
-    if enabled() {
+    paint_if(enabled(), style, text)
+}
+
+/// Takes the switch as an argument, so tests need not write the process-wide flag.
+fn paint_if(on: bool, style: Style, text: &str) -> String {
+    if on {
         format!("{}{text}{RESET}", style.code())
     } else {
         text.to_string()
@@ -57,34 +68,24 @@ pub fn paint(style: Style, text: &str) -> String {
 mod tests {
     use super::*;
 
-    /// The tests share a process, so drive the flag directly rather than through init().
-    fn with_colour<T>(on: bool, f: impl FnOnce() -> T) -> T {
-        let previous = ENABLED.swap(on, Ordering::Relaxed);
-        let out = f();
-        ENABLED.store(previous, Ordering::Relaxed);
-        out
-    }
-
     #[test]
     fn colour_off_leaves_text_untouched() {
-        with_colour(false, || {
-            assert_eq!(paint(Style::Error, "boom"), "boom");
-        });
+        assert_eq!(paint_if(false, Style::Error, "boom"), "boom");
     }
 
     #[test]
     fn colour_on_wraps_and_always_resets() {
-        with_colour(true, || {
-            let painted = paint(Style::Muted, "hi");
-            assert!(painted.starts_with("\x1b[2m"));
-            assert!(painted.ends_with(RESET));
-            assert!(painted.contains("hi"));
-        });
+        let painted = paint_if(true, Style::Muted, "hi");
+        assert!(painted.starts_with("\x1b[2m"));
+        assert!(painted.ends_with(RESET));
+        assert!(painted.contains("hi"));
     }
 
     #[test]
-    fn the_flag_beats_a_terminal() {
-        init(true);
-        assert!(!enabled());
+    fn a_terminal_gets_colour_unless_the_flag_or_no_color_says_otherwise() {
+        assert!(decide(false, false, true));
+        assert!(!decide(true, false, true));
+        assert!(!decide(false, true, true));
+        assert!(!decide(false, false, false));
     }
 }

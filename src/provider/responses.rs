@@ -132,10 +132,17 @@ pub fn parse_frame(data: &str) -> Vec<Result<Event, Error>> {
             out
         }
 
+        "response.incomplete"
+            if root["response"]["incomplete_details"]["reason"] == "max_output_tokens" =>
+        {
+            vec![Ok(Event::Truncated), Ok(Event::Done)]
+        }
+
         "response.failed" | "response.incomplete" | "error" => {
             let message = root["response"]["error"]["message"]
                 .as_str()
                 .or_else(|| root["message"].as_str())
+                .or_else(|| root["response"]["incomplete_details"]["reason"].as_str())
                 .unwrap_or("the response failed");
             vec![Err(Error::Other(anyhow!("{message}")))]
         }
@@ -204,6 +211,23 @@ mod tests {
             &Event::Usage(Usage::from_parts(10, 5))
         );
         assert_eq!(events[1].as_ref().unwrap(), &Event::Done);
+    }
+
+    #[test]
+    fn incomplete_at_the_output_limit_is_truncation_and_otherwise_an_error() {
+        let limit = parse_frame(
+            r#"{"type":"response.incomplete",
+                "response":{"incomplete_details":{"reason":"max_output_tokens"}}}"#,
+        );
+        assert_eq!(limit[0].as_ref().unwrap(), &Event::Truncated);
+        assert_eq!(limit[1].as_ref().unwrap(), &Event::Done);
+
+        let filtered = parse_frame(
+            r#"{"type":"response.incomplete",
+                "response":{"incomplete_details":{"reason":"content_filter"}}}"#,
+        );
+        let err = filtered[0].as_ref().unwrap_err().to_string();
+        assert!(err.contains("content_filter"), "{err}");
     }
 
     #[test]

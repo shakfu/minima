@@ -24,3 +24,25 @@ pub async fn call(args: Args) -> Result<String> {
         .with_context(|| format!("writing {}", args.path))?;
     Ok(format!("wrote {bytes} bytes to {}", args.path))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tools::Scratch;
+
+    #[tokio::test]
+    async fn creates_missing_parents_and_replaces_existing_content() {
+        let dir = Scratch::new("write");
+        let path = dir.file("a/b/f.txt");
+
+        for content in ["first", "second"] {
+            call(Args {
+                path: path.clone(),
+                content: content.into(),
+            })
+            .await
+            .unwrap();
+        }
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "second");
+    }
+}

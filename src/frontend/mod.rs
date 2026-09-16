@@ -18,7 +18,7 @@ pub trait Frontend {
 
     /// `note` is set when the tool ran but reported a problem, such as a non-zero exit. `ok` is
     /// false only when the tool itself failed.
-    fn tool_end(&mut self, name: &str, body: &str, note: Option<&str>, ok: bool);
+    fn tool_end(&mut self, body: &str, note: Option<&str>, ok: bool);
 
     fn retry(&mut self, attempt: u32, delay: Duration);
 
@@ -27,8 +27,16 @@ pub trait Frontend {
     fn cancelled(&mut self);
 }
 
-/// Tool arguments and results are echoed as one line. The full text is in the transcript the
-/// model sees; the frontend only has to show that something ran.
+/// Drops control characters except newline and tab. Text a model echoes from a file it read can
+/// carry escape sequences that retitle the terminal or write to the clipboard.
+pub fn printable(text: &str) -> String {
+    text.chars()
+        .filter(|c| !c.is_control() || matches!(c, '\n' | '\t'))
+        .collect()
+}
+
+/// Tool arguments and results are echoed as one line, with control characters flattened. The full
+/// text is in the transcript the model sees; the frontend only has to show that something ran.
 pub fn one_line(text: &str, width: usize) -> String {
     let flat: String = text
         .chars()
@@ -44,7 +52,15 @@ pub fn one_line(text: &str, width: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::one_line;
+    use super::{one_line, printable};
+
+    #[test]
+    fn printable_strips_escapes_but_keeps_layout() {
+        assert_eq!(
+            printable("a\x1b]52;c;aGk=\x07b\r\n\tc\u{9b}d"),
+            "a]52;c;aGk=b\n\tcd"
+        );
+    }
 
     #[test]
     fn collapses_control_characters() {

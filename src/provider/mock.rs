@@ -6,8 +6,11 @@
 //! ```json
 //! [{"text": "on it"},
 //!  {"tool_call": {"index": 0, "id": "c1", "name": "read", "arguments": "{\"path\":\"x\"}"}},
-//!  {"usage": {"prompt_tokens": 12, "completion_tokens": 4}}]
+//!  {"usage": {"prompt_tokens": 12, "completion_tokens": 4}},
+//!  "truncated"]
 //! ```
+//!
+//! `"truncated"` replays a response cut off at the output token limit.
 
 use std::path::Path;
 use std::sync::Mutex;
@@ -40,6 +43,7 @@ enum Step {
         arguments: String,
     },
     Usage(ScriptUsage),
+    Truncated,
 }
 
 pub struct Mock {
@@ -52,8 +56,11 @@ impl Mock {
     pub fn load(path: &Path) -> Result<Self> {
         let raw = std::fs::read_to_string(path)
             .with_context(|| format!("reading the mock script {}", path.display()))?;
-        let turns: Vec<Vec<Step>> =
-            serde_json::from_str(&raw).with_context(|| format!("parsing {}", path.display()))?;
+        Self::from_script(&raw).with_context(|| format!("parsing {}", path.display()))
+    }
+
+    pub fn from_script(raw: &str) -> Result<Self> {
+        let turns: Vec<Vec<Step>> = serde_json::from_str(raw)?;
         Ok(Self {
             turns: Mutex::new(turns.into_iter()),
         })
@@ -72,6 +79,7 @@ impl Mock {
             .map(|step| {
                 Ok(match step {
                     Step::Text(t) => Event::Text(t),
+                    Step::Truncated => Event::Truncated,
                     Step::Usage(u) => Event::Usage(Usage {
                         prompt_tokens: u.prompt_tokens,
                         completion_tokens: u.completion_tokens,

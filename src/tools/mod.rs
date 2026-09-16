@@ -1,13 +1,14 @@
 //! Four tools, dispatched by enum rather than `dyn Tool`.
 //!
 //! The freeze pays for itself here: with the set closed at four, an enum removes the trait
-//! object, the `async-trait` dependency, and the registry. Adding a fifth tool is three lines,
-//! and the README says what that costs.
+//! object, the `async-trait` dependency, and the registry. Adding a fifth tool is three lines.
 
 mod bash;
 mod edit;
 mod read;
 mod write;
+
+pub use bash::kill_background;
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
@@ -15,6 +16,9 @@ use serde::Deserialize;
 use crate::cancel::Cancel;
 use crate::config::TOOL_OUTPUT_CAP;
 use crate::provider::{Dialect, anthropic, chat, responses};
+
+/// The result recorded for a call the user cancelled or that never ran because of a cancel.
+pub const CANCELLED: &str = "cancelled by the user";
 
 /// What a tool produced. `note` is set when the tool ran but the work it did reported a problem,
 /// such as a command exiting non-zero. That is not a tool failure -- the model needs the output
@@ -60,7 +64,10 @@ impl Tool {
             Tool::Read => "Read a UTF-8 text file, returned as numbered lines.",
             Tool::Write => "Write a file, creating or replacing it.",
             Tool::Edit => "Replace an exact string in a file. Fails if it is absent or ambiguous.",
-            Tool::Bash => "Run a shell command and return its combined output.",
+            Tool::Bash => {
+                "Run a shell command and return its combined output. The command already runs \
+                 under `bash -c`; do not wrap it in another shell."
+            }
         }
     }
 
@@ -152,6 +159,32 @@ fn schema_of<T: schemars::JsonSchema>() -> serde_json::Value {
         obj.remove("title");
     }
     schema.to_value()
+}
+
+/// A fresh directory for one test that removes itself, so tool tests never touch the repo.
+#[cfg(test)]
+pub struct Scratch(std::path::PathBuf);
+
+#[cfg(test)]
+impl Scratch {
+    pub fn new(name: &str) -> Self {
+        let dir = std::env::temp_dir().join(format!("minima-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch directory");
+        Self(dir)
+    }
+
+    /// A path inside the directory, as the string a tool argument carries.
+    pub fn file(&self, name: &str) -> String {
+        self.0.join(name).display().to_string()
+    }
+}
+
+#[cfg(test)]
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
 }
 
 #[cfg(test)]

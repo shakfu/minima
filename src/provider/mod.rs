@@ -114,6 +114,8 @@ pub enum Event {
         arguments: Option<String>,
     },
     Usage(Usage),
+    /// The response stopped at the output token limit, so the text or the last call is cut off.
+    Truncated,
     Done,
 }
 

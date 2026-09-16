@@ -7,12 +7,7 @@ pub struct Turn {
     pub text: String,
     pub calls: Vec<ToolCall>,
     pub usage: Usage,
-}
-
-impl Turn {
-    pub fn wants_tools(&self) -> bool {
-        !self.calls.is_empty()
-    }
+    pub truncated: bool,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -31,6 +26,7 @@ pub struct Assembler {
     /// own, and a turn has a handful of calls at most.
     calls: Vec<Partial>,
     usage: Usage,
+    truncated: bool,
     done: bool,
 }
 
@@ -47,6 +43,7 @@ impl Assembler {
         match event {
             Event::Text(t) => self.text.push_str(&t),
             Event::Usage(u) => self.usage = merge_usage(self.usage, u),
+            Event::Truncated => self.truncated = true,
             Event::Done => self.done = true,
             Event::ToolCallDelta {
                 key,
@@ -54,7 +51,13 @@ impl Assembler {
                 name,
                 arguments,
             } => {
-                let slot = match self.calls.iter_mut().position(|c| c.key == key) {
+                // An empty key names no call, so the fragment continues the one opened last.
+                let found = if key.is_empty() {
+                    self.calls.len().checked_sub(1)
+                } else {
+                    self.calls.iter().position(|c| c.key == key)
+                };
+                let slot = match found {
                     Some(i) => &mut self.calls[i],
                     None => {
                         self.calls.push(Partial {
@@ -92,6 +95,7 @@ impl Assembler {
             text: self.text,
             calls,
             usage: self.usage,
+            truncated: self.truncated,
         }
     }
 }
@@ -181,6 +185,17 @@ mod tests {
         assert_eq!(usage.prompt_tokens, 120);
         assert_eq!(usage.completion_tokens, 45);
         assert_eq!(usage.total_tokens, 165);
+    }
+
+    #[test]
+    fn a_fragment_with_no_key_continues_the_last_call() {
+        let mut a = Assembler::new();
+        a.push(delta("a", Some("a"), Some("read"), Some("{}")));
+        a.push(delta("b", Some("b"), Some("write"), Some("{\"pa")));
+        a.push(delta("", None, None, Some("th\":1}")));
+        let turn = a.finish();
+        assert_eq!(turn.calls.len(), 2);
+        assert_eq!(turn.calls[1].arguments, "{\"path\":1}");
     }
 
     #[test]

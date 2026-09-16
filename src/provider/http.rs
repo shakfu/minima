@@ -15,6 +15,19 @@ use crate::config::Config;
 /// The version Anthropic requires on every native Messages request.
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// Per read, not per request, so it bounds silence rather than stream length. Generous, because a
+/// reasoning model can send nothing for minutes before its first token.
+const READ_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// Without timeouts a stalled stream hangs `-p` for good, and nothing in CI sends Ctrl-C.
+pub fn client() -> reqwest::Result<reqwest::Client> {
+    reqwest::Client::builder()
+        .connect_timeout(CONNECT_TIMEOUT)
+        .read_timeout(READ_TIMEOUT)
+        .build()
+}
+
 pub struct Http {
     client: reqwest::Client,
     /// Improves the provider's prompt-cache hit rate across the turns of one conversation, since
@@ -26,7 +39,7 @@ pub struct Http {
 impl Http {
     pub fn new() -> anyhow::Result<Self> {
         Ok(Self {
-            client: reqwest::Client::builder().build()?,
+            client: client()?,
             cache_key: session_cache_key(),
         })
     }

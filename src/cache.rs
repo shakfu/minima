@@ -1,7 +1,6 @@
-//! The model list, cached on disk. This is the only thing minima persists.
+//! The model list, cached on disk, one file per endpoint.
 //!
-//! Persistence starts here. Session resume would reuse this file's atomic-write and
-//! schema-version handling, so adding it later is cheap; see the amendment rules in README.md.
+//! Session resume would reuse this file's atomic-write and schema-version handling.
 
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -76,7 +75,7 @@ impl Models {
         }
 
         let url = format!("{}/models", base_url.trim_end_matches('/'));
-        let list: List = reqwest::Client::new()
+        let list: List = crate::provider::http::client()?
             .get(&url)
             .bearer_auth(api_key)
             .send()

@@ -21,10 +21,11 @@ pub struct State {
 
 impl State {
     pub fn load() -> Self {
-        let Some(path) = Self::path() else {
-            return Self::default();
-        };
-        let Ok(raw) = std::fs::read_to_string(&path) else {
+        Self::path().map_or_else(Self::default, |path| Self::load_from(&path))
+    }
+
+    fn load_from(path: &std::path::Path) -> Self {
+        let Ok(raw) = std::fs::read_to_string(path) else {
             return Self::default();
         };
         match serde_json::from_str::<Self>(&raw) {
@@ -98,10 +99,14 @@ mod tests {
 
     #[test]
     fn a_file_from_another_schema_is_discarded_not_misread() {
-        let raw = r#"{"schema":99,"last_model":{"openai":"gpt-4"}}"#;
-        let parsed: State = serde_json::from_str(raw).expect("parses");
-        assert_ne!(parsed.schema, SCHEMA);
-        // load() applies the same rule; parsing alone does not enforce it.
-        assert_eq!(State::default().last_model("openai"), None);
+        let dir = crate::tools::Scratch::new("state-schema");
+        let path = dir.file("state.json");
+
+        std::fs::write(&path, r#"{"schema":1,"last_model":{"openai":"gpt-5"}}"#).unwrap();
+        let current = State::load_from(path.as_ref());
+        assert_eq!(current.last_model("openai").as_deref(), Some("gpt-5"));
+
+        std::fs::write(&path, r#"{"schema":99,"last_model":{"openai":"gpt-4"}}"#).unwrap();
+        assert_eq!(State::load_from(path.as_ref()).last_model("openai"), None);
     }
 }

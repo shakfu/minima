@@ -6,7 +6,7 @@
     { "usage": { "prompt_tokens": 412, "completion_tokens": 27, "total_tokens": 439 } }
   ],
   [
-    { "text": "The package is minima 0.1.0 on edition 2024.\n" },
+    { "text": "The package is minima 0.2.0 on edition 2024.\n" },
     { "usage": { "prompt_tokens": 655, "completion_tokens": 14, "total_tokens": 669 } }
   ]
 ]

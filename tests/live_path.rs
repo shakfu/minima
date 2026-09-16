@@ -59,7 +59,9 @@ impl Fixture {
 
     fn run(&self, extra_env: &[(&str, &str)], prompt: &str) -> std::process::Output {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_minima"));
-        cmd.env("XDG_CONFIG_HOME", self.dir.path())
+        // Tools the fixture streams run here, never in the repo.
+        cmd.current_dir(self.dir.path())
+            .env("XDG_CONFIG_HOME", self.dir.path())
             .env(
                 "MINIMA_BASE_URL",
                 format!("http://127.0.0.1:{}/v1", self.port),
@@ -77,7 +79,8 @@ impl Fixture {
 
     fn run_as(&self, provider: &str, prompt: &str) -> std::process::Output {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_minima"));
-        cmd.env("XDG_CONFIG_HOME", self.dir.path())
+        cmd.current_dir(self.dir.path())
+            .env("XDG_CONFIG_HOME", self.dir.path())
             .env(
                 "MINIMA_BASE_URL",
                 format!("http://127.0.0.1:{}/v1", self.port),
@@ -292,6 +295,7 @@ fn an_unset_provider_is_chosen_from_the_environment() {
 
     let run_with = |var: &str| {
         Command::new(env!("CARGO_BIN_EXE_minima"))
+            .current_dir(fixture.dir.path())
             .env("XDG_CONFIG_HOME", fixture.dir.path())
             .env("MINIMA_BASE_URL", &endpoint)
             .env_remove("MINIMA_PROVIDER")
@@ -307,8 +311,7 @@ fn an_unset_provider_is_chosen_from_the_environment() {
             .expect("running minima")
     };
 
-    // The fixture speaks chat, so only the openrouter entry can succeed against it. The other
-    // two prove a different provider was selected: they fail on shape, not on credentials.
+    // The captured request shows which dialect, and so which entry, each key selected.
     let chosen = run_with("OPENROUTER_API_KEY");
     assert!(
         chosen.status.success(),
@@ -316,11 +319,18 @@ fn an_unset_provider_is_chosen_from_the_environment() {
         String::from_utf8_lossy(&chosen.stderr)
     );
 
+    assert!(fixture.captured_request().get("messages").is_some());
+    assert!(fixture.captured_request().get("max_tokens").is_none());
+
     let other = run_with("ANTHROPIC_API_KEY");
     let stderr = String::from_utf8_lossy(&other.stderr);
     assert!(
         !stderr.contains("no provider key found"),
         "a set key should still select a provider: {stderr}"
+    );
+    assert!(
+        fixture.captured_request().get("max_tokens").is_some(),
+        "ANTHROPIC_API_KEY did not select the messages dialect"
     );
 }
 
@@ -328,6 +338,7 @@ fn an_unset_provider_is_chosen_from_the_environment() {
 fn no_key_anywhere_names_every_variable_it_looked_at() {
     let dir = tempdir::Dir::new();
     let out = Command::new(env!("CARGO_BIN_EXE_minima"))
+        .current_dir(dir.path())
         .env("XDG_CONFIG_HOME", dir.path())
         .env_remove("MINIMA_PROVIDER")
         .env_remove("MINIMA_API_KEY")

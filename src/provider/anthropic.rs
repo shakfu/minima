@@ -55,7 +55,8 @@ pub fn build_body(cfg: &Config, messages: &[Message], tools: &[Value]) -> Value 
                     "tool_use_id": m.tool_call_id.clone().unwrap_or_default(),
                     "content": m.content.clone().unwrap_or_default(),
                 });
-                // Anthropic rejects two consecutive user messages, and every tool result is one.
+                // One user message holds every result for an assistant turn, as Anthropic documents.
+                // The API also combines consecutive user turns, so a prompt after a cancel is valid.
                 match wire.last_mut() {
                     Some(last) if last["role"] == "user" => {
                         if let Some(content) = last["content"].as_array_mut() {
@@ -148,10 +149,17 @@ pub fn parse_frame(event: &str, data: &str) -> Vec<Result<Event, Error>> {
 
         // The final output count arrives here, but the input count only ever appeared in
         // message_start, so this is a correction rather than a whole figure.
-        "message_delta" => root["usage"]["output_tokens"]
-            .as_u64()
-            .map(|output| vec![Ok(Event::Usage(Usage::from_parts(0, output as u32)))])
-            .unwrap_or_default(),
+        "message_delta" => {
+            let mut out: Vec<_> = root["usage"]["output_tokens"]
+                .as_u64()
+                .map(|output| Ok(Event::Usage(Usage::from_parts(0, output as u32))))
+                .into_iter()
+                .collect();
+            if root["delta"]["stop_reason"] == "max_tokens" {
+                out.push(Ok(Event::Truncated));
+            }
+            out
+        }
 
         "message_stop" => vec![Ok(Event::Done)],
 
@@ -254,5 +262,18 @@ mod tests {
             &Event::Done
         );
         assert!(parse_frame("ping", "{}").is_empty());
+    }
+
+    #[test]
+    fn a_max_tokens_stop_is_reported_as_truncation() {
+        let events = parse_frame(
+            "message_delta",
+            r#"{"delta":{"stop_reason":"max_tokens"},"usage":{"output_tokens":8192}}"#,
+        );
+        assert_eq!(
+            events[0].as_ref().unwrap(),
+            &Event::Usage(Usage::from_parts(0, 8192))
+        );
+        assert_eq!(events[1].as_ref().unwrap(), &Event::Truncated);
     }
 }
