@@ -1,4 +1,4 @@
-//! minima: a minimal agent harness with a frozen feature set. See README.md before adding anything.
+//! minima: a minimal agent harness. See README.md before adding anything.
 
 mod agent;
 mod cache;

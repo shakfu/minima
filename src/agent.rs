@@ -184,7 +184,7 @@ impl Agent {
         }
     }
 
-    /// minima reports and refuses. Compaction is outside the frozen scope.
+    /// minima reports and refuses. Compaction is not implemented.
     fn check_context(&self, usage: Usage) -> Result<()> {
         let used = usage.total_tokens;
         if used > 0 && used + CONTEXT_MARGIN >= self.config.context {

@@ -2,11 +2,11 @@
 
 A minimal coding agent harness with a tiny feature set.
 
-`minima` was created to test whether a usable agent harness can fits into 3,000 lines when the ecosystem carries the capabilities. It was inspired by by [hax](https://github.com/OleksandrChekhovskyi/hax).
+`minima` was created to test whether a usable agent harness can fit into 3,000 lines when the ecosystem carries the capabilities. It was inspired by by [hax](https://github.com/OleksandrChekhovskyi/hax).
 
 ```sh
 % minima --help
-A minimal coding agent for the terminal, with a frozen feature set
+A minimal coding agent for the terminal
 
 Usage: minima [OPTIONS]
 
@@ -62,13 +62,13 @@ Listed in autoselect order.
 
 ```sh
 make            # build
-make check      # lint + test + budget; the full gate
+make check      # lint + test; the full gate
 make run        # one-shot against the mock provider
 make repl       # interactive against the mock provider
 make help       # every target
 ```
 
-Plain `cargo build`, `cargo test` and `cargo clippy --all-targets -- -D warnings` work too; the Makefile only adds the budget gate and the smoke targets.
+Plain `cargo build`, `cargo test` and `cargo clippy --all-targets -- -D warnings` work too.
 
 `scripts/test_openrouter.sh`, `test_openai.sh` and `test_anthropic.sh` run four scenarios against a real endpoint -- text, `read`, `bash`, then `write` with a read-back -- and exit non-zero if any of them misses. They take the key from the provider's usual environment variable or from `~/.config/minima/<provider>.key`, and work from a throwaway sandbox rather than the repo, because minima's tools have no path jail. The Anthropic one uses that vendor's OpenAI-compatibility endpoint; native `anthropic-messages` is the deferred amendment in [TODO.md](TODO.md).
 

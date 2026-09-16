@@ -1,4 +1,4 @@
-//! Scripted provider. Inside the frozen scope on purpose: without it there is no way to test
+//! Scripted provider, without it there is no way to test
 //! the agent loop without a network and an API key.
 //!
 //! The script is a JSON array of `Event`-shaped objects, replayed in order:
