@@ -2,9 +2,9 @@
 
 A minimal coding agent harness with a tiny feature set.
 
-`minima` tests how small a usable agent harness can be when the ecosystem carries the capabilities. It was inspired by [hax](https://github.com/OleksandrChekhovskyi/hax).
+`minima` tests how small a usable agent harness can be when the ecosystem carries its capabilities. It was inspired by Oleksandr Chekhovskyi's [hax](https://github.com/OleksandrChekhovskyi/hax).
 
-**No approval gate.** minima runs every tool call without asking. The model can run any `bash` command and write any file your user can. Text in a file it reads, or in command output, can instruct it to do so. Run it only where that is acceptable, such as a container or a disposable checkout, such as our sibling project, [sanduk](https://github.com/shakfu/sanduk), or similar.
+**IMPORTANT** minima runs every tool call **without asking**. It **has no approval gate**. The model can run any `bash` command and write any file your user can. Run it only where this is acceptable, such as a container or a disposable checkout. Our sibling project, [sanduk](https://github.com/shakfu/sanduk), has builtin support for running minima (and other agents) in sandboxed mode using apple container or docker containers.
 
 ## Install
 
@@ -39,16 +39,27 @@ Options:
 ## Features
 
 - **Providers:** 5 in a fixed registry, over 3 wire formats: openai-chat, openai-responses and anthropic-messages. See [Providers](#providers).
+
 - **Tools:** 4. `read` returns numbered lines, 2000 by default. `write` creates or replaces a file. `edit` replaces one exact string. `bash` runs a command under `bash -c`.
+
 - **Shell commands:** each call runs in its own process group. A timeout (120 s default, 600 s cap) or a cancel kills the group. Background jobs outlive the call and die with minima. A login-shell wrapper such as `bash -lc` is refused, because a login profile can reorder `PATH`.
+
 - **Modes:** an interactive REPL with history, and headless `-p`, printing text or JSON lines with `--json`.
+
 - **Cancellation:** Esc or Ctrl-C cancels a REPL turn, including a pending request or a retry wait. A cancelled `-p` run exits 130.
+
 - **Instructions:** `AGENTS.md` in the config directory, then `AGENTS.md` in the working directory, are appended to the system prompt.
+
 - **Skills:** `skills/<name>/SKILL.md` in the config directory. The system prompt lists each skill's path and frontmatter; the model reads the file when a task matches.
+
 - **Context:** the window comes from the provider's model list or `--context`. Once the last turn's token count nears the window, the next request is refused before sending. There is no compaction.
+
 - **Network:** up to 4 connection retries with backoff. Requests time out after 10 s to connect or 300 s without data.
+
 - **Persistence:** a model list cache, prompt history, and the last model per provider. See [Build](#build) for where they live.
+
 - **Colour:** on for a terminal, off for a pipe, `--no-color` or `NO_COLOR`.
+
 - **Offline runs:** `--mock` replays a scripted JSON stream instead of calling the network.
 
 ### Providers
