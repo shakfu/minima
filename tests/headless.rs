@@ -162,3 +162,37 @@ fn sigterm_kills_background_jobs_and_the_running_call() {
     assert!(gone(job), "the background job outlived minima");
     assert!(group_gone(call), "the running call outlived minima");
 }
+
+/// `--json` output as a caller reads it: the last stdout line is the result, the exit code agrees
+/// with it, and an error is not repeated on stderr.
+#[test]
+fn json_ends_in_a_result_matching_the_exit_code() {
+    for (name, script, code, outcome) in [
+        ("json-ok", bash_turns(&["true"]), 0, "complete"),
+        ("json-error", "[]".to_string(), 1, "error"),
+    ] {
+        let dir = std::env::temp_dir().join(format!("minima-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch directory");
+        let path = dir.join("script.json");
+        std::fs::write(&path, script).expect("writing the mock script");
+
+        let out = Command::new(env!("CARGO_BIN_EXE_minima"))
+            .env("XDG_CONFIG_HOME", &dir)
+            .current_dir(&dir)
+            .arg("--mock")
+            .arg(&path)
+            .args(["--json", "-p", "go"])
+            .output()
+            .expect("running minima");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert_eq!(out.status.code(), Some(code), "{name}");
+        assert!(out.stderr.is_empty(), "{name}: {:?}", out.stderr);
+        let stdout = String::from_utf8(out.stdout).expect("utf-8");
+        let last: serde_json::Value =
+            serde_json::from_str(stdout.lines().last().expect("a line")).expect("JSON");
+        assert_eq!(last["type"], "result", "{name}");
+        assert_eq!(last["outcome"], outcome, "{name}");
+    }
+}

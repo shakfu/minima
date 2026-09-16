@@ -4,6 +4,7 @@
 //! would buy nothing and cost object safety.
 
 pub mod headless;
+pub mod json;
 pub mod repl;
 
 use std::time::Duration;

@@ -1,8 +1,11 @@
 PROVIDER    ?= openrouter
 BIN         := target/debug/minima
 INSTALL_DIR := $(HOME)/.local/bin
+# cargo's verify build shares the target dir by default. Its minima unit then takes the workspace's
+# fingerprint, with dep-info naming target/package sources, so later builds ignore edits to src/.
+PUBLISH_DIR := target/publish
 
-.PHONY: all build release test lint fmt check run repl live clean install help
+.PHONY: all build release test lint fmt check run repl live clean install package publish help
 
 all: build
 
@@ -42,6 +45,12 @@ install: release
 	@install -m 755 target/release/minima $(INSTALL_DIR)/minima
 	@echo "installed minima to $(INSTALL_DIR)"
 
+package:
+	CARGO_TARGET_DIR=$(PUBLISH_DIR) cargo package
+
+publish:
+	CARGO_TARGET_DIR=$(PUBLISH_DIR) cargo publish
+
 clean:
 	cargo clean
 
@@ -56,4 +65,6 @@ help:
 	@echo "live      live suite; PROVIDER=openrouter|openai|anthropic"
 	@echo "release   optimised build"
 	@echo "install   release build, copied to $(INSTALL_DIR)"
+	@echo "package   cargo package, verified in $(PUBLISH_DIR)"
+	@echo "publish   cargo publish, verified in $(PUBLISH_DIR); never plain cargo publish"
 	@echo "clean     remove target/"

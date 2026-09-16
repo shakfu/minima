@@ -2,7 +2,9 @@
 
 Two modes, because the two things worth testing are a working gateway and a broken one:
 
-  full       /models serves a one-entry list; the completion route streams a reply
+  full       /models serves a one-entry list; the completion route streams a reply. With
+             --dialect messages, /models wants x-api-key, as Anthropic's gateway does, and serves
+             two pages linked by after_id
   no-models  /models returns 404; the completion route still streams a reply
 
 --dialect picks the wire format of the streamed response: chat, responses or messages. Each
@@ -16,6 +18,7 @@ to guess a port or poll for readiness. Request bodies go to --capture, GET paths
 import argparse
 import json
 import sys
+from urllib.parse import parse_qs, urlsplit
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 REPLY = "live path works"
@@ -111,9 +114,22 @@ def handler(args):
                 self.send_header("content-length", "0")
                 self.end_headers()
                 return
-            body = json.dumps(
-                {"data": [{"id": "fake-model", "context_length": 32000}]}
-            ).encode()
+            if args.dialect == "messages":
+                if not self.headers.get("x-api-key"):
+                    self.send_response(401)
+                    self.send_header("content-length", "0")
+                    self.end_headers()
+                    return
+                after = parse_qs(urlsplit(self.path).query).get("after_id")
+                page = (
+                    {"data": [{"id": "other-model"}], "has_more": False}
+                    if after == ["fake-model"]
+                    else {"data": [{"id": "fake-model", "max_input_tokens": 32000}],
+                          "has_more": True, "last_id": "fake-model"}
+                )
+            else:
+                page = {"data": [{"id": "fake-model", "context_length": 32000}]}
+            body = json.dumps(page).encode()
             self.send_response(200)
             self.send_header("content-type", "application/json")
             self.send_header("content-length", str(len(body)))

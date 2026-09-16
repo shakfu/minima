@@ -20,6 +20,10 @@ pub struct Cli {
     #[arg(short = 'p', long, value_name = "TEXT")]
     pub prompt: Option<String>,
 
+    /// With -p: print one JSON record per line on stdout, ending in a `result` record.
+    #[arg(long, requires = "prompt")]
+    pub json: bool,
+
     /// Which provider to talk to: fixes the endpoint, the wire format and the key variable.
     /// Left out, minima takes the first provider whose key variable is set.
     #[arg(long, env = "MINIMA_PROVIDER", value_name = "ID")]
@@ -158,7 +162,7 @@ impl Cli {
 
         let mut cache = crate::cache::Models::load(&base_url);
         if self.wants_model_list(cache.is_stale())
-            && let Err(e) = cache.refresh(&base_url, &api_key).await
+            && let Err(e) = cache.refresh(&base_url, &api_key, entry.dialect).await
         {
             // Plenty of endpoints do not serve /models. That must not stop minima when the user
             // already named the model.
@@ -240,6 +244,7 @@ mod tests {
     fn cli(model: Option<&str>, context: Option<u32>, refresh: bool) -> Cli {
         Cli {
             prompt: None,
+            json: false,
             provider: Some("openrouter".into()),
             model: model.map(String::from),
             base_url: None,

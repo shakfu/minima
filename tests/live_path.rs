@@ -181,6 +181,57 @@ fn a_gateway_without_a_model_list_fails_clearly_when_the_model_is_not_named() {
     assert!(stderr.contains("/v1/models"), "unhelpful failure: {stderr}");
 }
 
+/// Anthropic's list is paged and authenticated like its completions. A bearer token was refused by
+/// any gateway that checks `x-api-key`, and only the first page was ever read.
+#[test]
+fn the_messages_model_list_uses_its_own_auth_and_follows_the_cursor() {
+    let fixture = Fixture::start_with("full", "messages");
+    let out = Command::new(env!("CARGO_BIN_EXE_minima"))
+        .current_dir(fixture.dir.path())
+        .env("XDG_CONFIG_HOME", fixture.dir.path())
+        .env(
+            "MINIMA_BASE_URL",
+            format!("http://127.0.0.1:{}/v1", fixture.port),
+        )
+        .env("MINIMA_API_KEY", "test")
+        .env_remove("MINIMA_CONTEXT")
+        // A failed list is fatal only when a refresh is asked for.
+        .args(["--provider", "anthropic", "--model", "fake-model"])
+        .args(["--refresh-models", "--max-turns", "1", "-p", "hi"])
+        .output()
+        .expect("running minima");
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("live path works"),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    assert_eq!(
+        fixture.get_paths(),
+        [
+            "/v1/models?limit=1000",
+            "/v1/models?limit=1000&after_id=fake-model"
+        ]
+    );
+    let cache = std::fs::read_dir(fixture.dir.path().join("minima"))
+        .expect("config directory")
+        .map(|e| e.expect("entry").path())
+        .find(|p| {
+            p.file_name()
+                .is_some_and(|n| n.to_string_lossy().starts_with("models-"))
+        })
+        .expect("a model cache");
+    let cache: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(cache).expect("reading the cache")).expect("JSON");
+    assert_eq!(
+        cache["entries"],
+        serde_json::json!([
+            {"id": "fake-model", "context_length": 32000},
+            {"id": "other-model"},
+        ])
+    );
+}
+
 /// A scratch directory that removes itself, so the fixtures never collide or leak.
 mod tempdir {
     use std::path::{Path, PathBuf};

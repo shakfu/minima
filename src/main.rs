@@ -21,7 +21,9 @@ use tracing_subscriber::EnvFilter;
 use crate::agent::Agent;
 use crate::cancel::Cancel;
 use crate::config::Cli;
+use crate::frontend::Frontend;
 use crate::frontend::headless::Headless;
+use crate::frontend::json::Json;
 use crate::provider::{Provider, http::Http, mock::Mock};
 
 fn main() -> ExitCode {
@@ -66,7 +68,7 @@ fn start() -> Result<ExitCode> {
     }
 
     match cli.prompt.as_deref() {
-        Some(prompt) => runtime.block_on(headless(&mut agent, prompt)),
+        Some(prompt) => runtime.block_on(headless(&mut agent, prompt, cli.json)),
         None => frontend::repl::run(&runtime, &mut agent).map(|()| ExitCode::SUCCESS),
     }
 }
@@ -106,7 +108,7 @@ fn exit_on_hangup_or_terminate(runtime: &tokio::runtime::Runtime) -> Result<()> 
 }
 
 /// Ctrl-C latches the same flag Esc does in the REPL, so the loop samples one thing either way.
-async fn headless(agent: &mut Agent, prompt: &str) -> Result<ExitCode> {
+async fn headless(agent: &mut Agent, prompt: &str, as_json: bool) -> Result<ExitCode> {
     let cancel = Cancel::new();
     let watcher = tokio::spawn({
         let cancel = cancel.clone();
@@ -117,13 +119,23 @@ async fn headless(agent: &mut Agent, prompt: &str) -> Result<ExitCode> {
         }
     });
 
-    let mut frontend = Headless::default();
-    let result = agent.run(prompt, &mut frontend, &cancel).await;
+    let mut plain = Headless::default();
+    let mut json = Json::default();
+    let frontend: &mut dyn Frontend = if as_json { &mut json } else { &mut plain };
+    let result = agent.run(prompt, frontend, &cancel).await;
     watcher.abort();
-    println!();
+    if as_json {
+        json.result(&result, cancel.is_cancelled());
+    } else {
+        println!();
+    }
     // 128 + SIGINT, so a script can tell a cancelled run from a finished one.
     if cancel.is_cancelled() {
         return Ok(ExitCode::from(130));
     }
-    result.map(|()| ExitCode::SUCCESS)
+    match result {
+        // The result record already carries the error; stderr would repeat it.
+        Err(_) if as_json => Ok(ExitCode::FAILURE),
+        result => result.map(|()| ExitCode::SUCCESS),
+    }
 }

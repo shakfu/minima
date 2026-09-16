@@ -28,6 +28,21 @@ pub fn client() -> reqwest::Result<reqwest::Client> {
         .build()
 }
 
+/// Native Messages authenticates by header, not bearer, and versions every request. Shared by the
+/// completion and the model list, so a gateway that checks one header sees it on both.
+pub fn authorize(
+    request: reqwest::RequestBuilder,
+    dialect: Dialect,
+    key: &str,
+) -> reqwest::RequestBuilder {
+    match dialect {
+        Dialect::Messages => request
+            .header("x-api-key", key)
+            .header("anthropic-version", ANTHROPIC_VERSION),
+        Dialect::Chat | Dialect::Responses => request.bearer_auth(key),
+    }
+}
+
 pub struct Http {
     client: reqwest::Client,
     /// Improves the provider's prompt-cache hit rate across the turns of one conversation, since
@@ -56,14 +71,7 @@ impl Http {
 
         tracing::debug!(%url, model = %cfg.model, messages = messages.len(), ?dialect, "request");
 
-        let mut request = self.client.post(&url).json(&body);
-        request = match dialect {
-            // Native Messages authenticates by header, not bearer, and versions every request.
-            Dialect::Messages => request
-                .header("x-api-key", &cfg.api_key)
-                .header("anthropic-version", ANTHROPIC_VERSION),
-            Dialect::Chat | Dialect::Responses => request.bearer_auth(&cfg.api_key),
-        };
+        let request = authorize(self.client.post(&url).json(&body), dialect, &cfg.api_key);
 
         let response = request
             .send()

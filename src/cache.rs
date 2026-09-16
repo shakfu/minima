@@ -8,7 +8,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
+use crate::provider::Dialect;
+use crate::provider::http::{authorize, client};
+
 const TTL_SECS: u64 = 24 * 60 * 60;
+/// Bounds the cursor walk, so a gateway that always answers `has_more` cannot loop it forever.
+const MAX_PAGES: usize = 20;
 const SCHEMA: u32 = 1;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -17,6 +22,9 @@ pub struct Entry {
     /// Present only when the endpoint reports it; OpenAI's /models does not.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_length: Option<u32>,
+    /// Anthropic's name for the context window. Folded into `context_length` on fetch.
+    #[serde(default, skip_serializing)]
+    max_input_tokens: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -68,25 +76,49 @@ impl Models {
         self.entries.iter().find(|e| e.id == model)?.context_length
     }
 
-    pub async fn refresh(&mut self, base_url: &str, api_key: &str) -> Result<()> {
+    pub async fn refresh(&mut self, base_url: &str, api_key: &str, dialect: Dialect) -> Result<()> {
         #[derive(Deserialize)]
-        struct List {
+        struct Page {
             data: Vec<Entry>,
+            /// Only Anthropic pages the list; OpenAI-shaped endpoints return it whole.
+            #[serde(default)]
+            has_more: bool,
+            last_id: Option<String>,
         }
 
-        let url = format!("{}/models", base_url.trim_end_matches('/'));
-        let list: List = crate::provider::http::client()?
-            .get(&url)
-            .bearer_auth(api_key)
-            .send()
-            .await
-            .with_context(|| format!("GET {url}"))?
-            .error_for_status()?
-            .json()
-            .await
-            .context("parsing the model list")?;
+        let client = client()?;
+        let base = format!("{}/models", base_url.trim_end_matches('/'));
+        let mut entries = Vec::new();
+        let mut after: Option<String> = None;
+        for _ in 0..MAX_PAGES {
+            let mut url = reqwest::Url::parse(&base).with_context(|| format!("parsing {base}"))?;
+            if dialect == Dialect::Messages {
+                // Anthropic's page size defaults to 20; 1000 is its maximum.
+                url.query_pairs_mut().append_pair("limit", "1000");
+            }
+            if let Some(id) = &after {
+                url.query_pairs_mut().append_pair("after_id", id);
+            }
+            let page: Page = authorize(client.get(url.clone()), dialect, api_key)
+                .send()
+                .await
+                .with_context(|| format!("GET {url}"))?
+                .error_for_status()?
+                .json()
+                .await
+                .context("parsing the model list")?;
 
-        self.entries = list.data;
+            entries.extend(page.data);
+            match page.last_id {
+                Some(id) if page.has_more && after.as_ref() != Some(&id) => after = Some(id),
+                _ => break,
+            }
+        }
+
+        for entry in &mut entries {
+            entry.context_length = entry.context_length.or(entry.max_input_tokens.take());
+        }
+        self.entries = entries;
         self.fetched_at = now();
         self.endpoint = base_url.to_string();
         self.store();

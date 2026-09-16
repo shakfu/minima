@@ -1,0 +1,55 @@
+# On a version tag, build static musl binaries and publish them as a GitHub release.
+# Native runners per architecture: cross-compiling aws-lc-sys needs a cross C toolchain.
+name: release
+
+on:
+  push:
+    tags: ["[0-9]+.[0-9]+.[0-9]+"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - { runner: ubuntu-24.04, arch: x86_64 }
+          - { runner: ubuntu-24.04-arm, arch: aarch64 }
+    runs-on: ${{ matrix.runner }}
+    env:
+      TARGET: ${{ matrix.arch }}-unknown-linux-musl
+      NAME: minima-${{ github.ref_name }}-linux-${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ env.TARGET }}
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends musl-tools cmake
+      - run: cargo build --release --locked --target "$TARGET"
+      - name: Check the binary is static and runs
+        run: |
+          bin="target/$TARGET/release/minima"
+          file "$bin" | grep -q 'statically linked'
+          "$bin" --version
+      - name: Package
+        run: |
+          tar -czf "$NAME.tar.gz" -C "target/$TARGET/release" minima
+          sha256sum "$NAME.tar.gz" > "$NAME.tar.gz.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.NAME }}
+          path: ${{ env.NAME }}.tar.gz*
+
+  release:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      - run: gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --notes "See CHANGELOG.md." minima-*
+        env:
+          GH_TOKEN: ${{ github.token }}

@@ -6,8 +6,6 @@
 
 ## Medium
 
-- [ ] **Anthropic model listing.** `src/cache.rs` sends bearer auth and parses a flat `data` array. The Messages dialect authenticates with `x-api-key` plus `anthropic-version`, and Anthropic's `/v1/models` is paged with `after_id` cursors (`anthropic_models.c:117-190` in hax). A keyless probe cannot tell whether a valid bearer is accepted there, so the auth half is unconfirmed; the paging half is certain and means only the first page is ever seen. It degrades rather than breaks: `--model` given, the fetch is skipped; `--model` omitted against Anthropic, it fails with the endpoint's own message. If bearer auth is rejected, the cache is never written, so every Anthropic start without `--context` repeats the failing GET. Fix is to pass the dialect into `Models::refresh` and follow cursors, roughly 40 lines.
-
 - [ ] **`message_delta` usage is a correction, not a total.** Handled in `turn.rs::merge_usage`, but the rule is a convention rather than something the wire states. A provider reporting only a total and no halves falls back to the reported figure.
 
 - [ ] **Session resume**. Note `src/cache.rs` has an XDG path, a schema version, an endpoint-keyed filename and a tmp-plus-rename atomic write, and `config::restrict_to_owner` already sets 0700/0600 for the history file. Persistence is open; this widens what is stored, not whether anything is. (Estimated 120-180 lines.)

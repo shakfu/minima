@@ -6,6 +6,14 @@ A minimal coding agent harness with a tiny feature set.
 
 **No approval gate.** minima runs every tool call without asking. The model can run any `bash` command and write any file your user can. Text in a file it reads, or in command output, can instruct it to do so. Run it only where that is acceptable, such as a container or a disposable checkout, such as our sibling project, [sanduk](https://github.com/shakfu/sanduk), or similar.
 
+## Install
+
+```sh
+cargo install minima
+```
+
+Requires Rust 1.88 or newer. To build from a checkout, see [Build](#build).
+
 ```sh
 % minima --help
 A minimal coding agent for the terminal
@@ -14,6 +22,7 @@ Usage: minima [OPTIONS]
 
 Options:
   -p, --prompt <TEXT>   Headless: answer this prompt, print the result, exit
+      --json            With -p: print one JSON record per line on stdout, ending in a `result` record
       --provider <ID>   Which provider to talk to: fixes the endpoint, the wire format and the key variable. Left out, minima takes the first provider whose key variable is set [env: MINIMA_PROVIDER=]
       --model <ID>      Left out, minima reuses the model last used with this provider [env: MINIMA_MODEL=]
       --base-url <URL>  Override the provider's endpoint, for a local server or a gateway. Never changes the wire format: a different shape is a different provider, not a different address [env: MINIMA_BASE_URL=]
@@ -34,7 +43,7 @@ Options:
 | Wire formats | 3: openai-chat, openai-responses, anthropic-messages |
 | Providers | a fixed registry; `--provider` names one, or the environment picks |
 | Tools | 4: `read`, `write`, `edit`, `bash` |
-| Entry modes | 2: interactive REPL, headless `-p` |
+| Entry modes | 2: interactive REPL, headless `-p` (text, or JSON lines with `--json`) |
 | Config | flags, environment, and one cache file |
 | Colour | on for a terminal, off for a pipe; `--no-color` and `NO_COLOR` |
 | Persistence | model list cache, prompt history, last model per provider |
@@ -65,6 +74,7 @@ make            # build
 make check      # lint + test; the full gate
 make run        # one-shot against the mock provider
 make repl       # interactive against the mock provider
+make publish    # cargo publish, verified in its own target dir
 make help       # every target
 ```
 
