@@ -2,6 +2,7 @@
 //! exit leaves background jobs running, so a server can serve the next call, and minima kills
 //! them when it exits. A job that writes to stdout or stderr after its call returns gets SIGPIPE.
 
+use std::collections::VecDeque;
 use std::process::Stdio;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
@@ -15,12 +16,17 @@ use tokio::task::JoinHandle;
 
 use super::Outcome;
 use crate::cancel::Cancel;
+use crate::config::TOOL_OUTPUT_CAP;
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
 const MAX_TIMEOUT: Duration = Duration::from_secs(600);
 /// How long to keep reading after bash exits. EOF arrives at once unless a background job holds
 /// the pipe, and then this bounds the wait.
 const DRAIN_GRACE: Duration = Duration::from_millis(100);
+/// Bytes kept per stream while the command runs. `tools::cap` also trims the finished body, but
+/// only once the whole of it is in memory: a command that writes without stopping would be gone
+/// by then. Matching the context cap means a command that stays under it is captured whole.
+const CAPTURE_CAP: usize = TOOL_OUTPUT_CAP;
 const LEFT_RUNNING: &str = "background jobs still running; minima kills them when it exits";
 const LOGIN_SHELL: &str = "not run: the command already runs under `bash -c`, and a login shell \
 reorders PATH, so programs can resolve differently; pass the inner command without the wrapper";
@@ -149,8 +155,8 @@ pub async fn call(args: Args, cancel: &Cancel) -> Result<Outcome> {
 /// Stdout followed by stderr as one body, plus stderr alone for the note.
 async fn output(stdout: Drain, stderr: Drain) -> (String, String) {
     let (stdout, stderr) = tokio::join!(stdout.finish(), stderr.finish());
-    let stderr = String::from_utf8_lossy(&stderr).into_owned();
-    let mut body = String::from_utf8_lossy(&stdout).into_owned();
+    let stderr = stderr.render();
+    let mut body = stdout.render();
     if !body.is_empty() && !body.ends_with('\n') && !stderr.is_empty() {
         body.push('\n');
     }
@@ -201,31 +207,67 @@ fn forget(id: u32) {
     groups().retain(|&g| g != id);
 }
 
-/// Reads a pipe in the background into a buffer that can be taken before EOF.
+/// The head and tail of a stream within a fixed budget, and how many bytes went through it.
+/// Everything between the two ends is counted and dropped as it arrives, so `yes` costs
+/// `CAPTURE_CAP` bytes rather than a killed process.
+#[derive(Default)]
+struct Capture {
+    head: Vec<u8>,
+    tail: VecDeque<u8>,
+    total: usize,
+}
+
+impl Capture {
+    fn push(&mut self, bytes: &[u8]) {
+        self.total += bytes.len();
+        let half = CAPTURE_CAP / 2;
+        let room = half - self.head.len();
+        let take = room.min(bytes.len());
+        self.head.extend_from_slice(&bytes[..take]);
+        self.tail.extend(&bytes[take..]);
+        while self.tail.len() > half {
+            self.tail.pop_front();
+        }
+    }
+
+    /// Same shape as `tools::cap`, which trims the body again once stderr is appended to it.
+    fn render(self) -> String {
+        let dropped = self.total - self.head.len() - self.tail.len();
+        let tail: Vec<u8> = self.tail.into();
+        let (head, tail) = (
+            String::from_utf8_lossy(&self.head),
+            String::from_utf8_lossy(&tail),
+        );
+        if dropped == 0 {
+            return format!("{head}{tail}");
+        }
+        format!("{head}\n... {dropped} bytes elided ...\n{tail}")
+    }
+}
+
+/// Reads a pipe in the background into a capture that can be taken before EOF.
 struct Drain {
-    buf: Arc<Mutex<Vec<u8>>>,
+    buf: Arc<Mutex<Capture>>,
     task: JoinHandle<()>,
 }
 
 impl Drain {
     fn start(pipe: Option<impl AsyncRead + Unpin + Send + 'static>) -> Self {
-        let buf = Arc::new(Mutex::new(Vec::new()));
+        let buf = Arc::new(Mutex::new(Capture::default()));
         let task = tokio::spawn({
             let buf = Arc::clone(&buf);
             async move {
                 let Some(mut pipe) = pipe else { return };
                 let mut chunk = [0u8; 8192];
                 while let Ok(n @ 1..) = pipe.read(&mut chunk).await {
-                    buf.lock()
-                        .expect("drain buffer")
-                        .extend_from_slice(&chunk[..n]);
+                    buf.lock().expect("drain buffer").push(&chunk[..n]);
                 }
             }
         });
         Self { buf, task }
     }
 
-    async fn finish(mut self) -> Vec<u8> {
+    async fn finish(mut self) -> Capture {
         let _ = tokio::time::timeout(DRAIN_GRACE, &mut self.task).await;
         self.task.abort();
         std::mem::take(&mut *self.buf.lock().expect("drain buffer"))
@@ -367,6 +409,25 @@ mod tests {
     async fn stderr_is_reported_even_when_the_pipeline_exits_zero() {
         let out = run("echo 'unknown primary' >&2 | wc -c").await;
         assert_eq!(out.note.as_deref(), Some("stderr: unknown primary"));
+    }
+
+    /// Capture is bounded while the command runs, not after it returns: by then a command that
+    /// writes without stopping has already had the memory.
+    #[tokio::test]
+    async fn output_past_the_cap_is_bounded_and_keeps_both_ends() {
+        let out = run("echo START; yes 0123456789 | head -c 2000000; echo END").await;
+
+        assert!(
+            out.body.len() < CAPTURE_CAP + 128,
+            "captured {} bytes",
+            out.body.len()
+        );
+        assert!(out.body.starts_with("START\n"), "{:?}", &out.body[..32]);
+        assert!(out.body.trim_end().ends_with("END"), "the tail was lost");
+        assert!(
+            out.body.contains("bytes elided"),
+            "the gap was not reported"
+        );
     }
 
     #[cfg(unix)]

@@ -35,6 +35,8 @@ impl Assembler {
         Self::default()
     }
 
+    /// A terminal event arrived, so the response is whole. The stream closing on its own says
+    /// nothing: a dropped connection looks the same as a finished one.
     pub fn is_done(&self) -> bool {
         self.done
     }
@@ -44,7 +46,7 @@ impl Assembler {
             Event::Text(t) => self.text.push_str(&t),
             Event::Usage(u) => self.usage = merge_usage(self.usage, u),
             Event::Truncated => self.truncated = true,
-            Event::Done => self.done = true,
+            Event::Stop | Event::Done => self.done = true,
             Event::ToolCallDelta {
                 key,
                 id,

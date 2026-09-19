@@ -10,7 +10,8 @@
 //!  "truncated"]
 //! ```
 //!
-//! `"truncated"` replays a response cut off at the output token limit.
+//! `"truncated"` replays a response cut off at the output token limit, and `"cut"` a stream that
+//! closes without one: no terminal event follows the steps before it.
 
 use std::path::Path;
 use std::sync::Mutex;
@@ -44,6 +45,8 @@ enum Step {
     },
     Usage(ScriptUsage),
     Truncated,
+    /// Replays a dropped connection: the turn ends here with no terminal event.
+    Cut,
 }
 
 pub struct Mock {
@@ -74,36 +77,41 @@ impl Mock {
             .next()
             .ok_or_else(|| Error::Other(anyhow!("mock script ran out of turns")))?;
 
-        let mut events: Vec<Result<Event, Error>> = steps
-            .into_iter()
-            .map(|step| {
-                Ok(match step {
-                    Step::Text(t) => Event::Text(t),
-                    Step::Truncated => Event::Truncated,
-                    Step::Usage(u) => Event::Usage(Usage {
-                        prompt_tokens: u.prompt_tokens,
-                        completion_tokens: u.completion_tokens,
-                        total_tokens: if u.total_tokens > 0 {
-                            u.total_tokens
-                        } else {
-                            u.prompt_tokens + u.completion_tokens
-                        },
-                    }),
-                    Step::ToolCall {
-                        index,
-                        id,
-                        name,
-                        arguments,
-                    } => Event::ToolCallDelta {
-                        key: index.to_string(),
-                        id: Some(id),
-                        name: Some(name),
-                        arguments: Some(arguments),
+        let mut cut = false;
+        let mut events: Vec<Result<Event, Error>> = Vec::new();
+        for step in steps {
+            events.push(Ok(match step {
+                Step::Cut => {
+                    cut = true;
+                    continue;
+                }
+                Step::Text(t) => Event::Text(t),
+                Step::Truncated => Event::Truncated,
+                Step::Usage(u) => Event::Usage(Usage {
+                    prompt_tokens: u.prompt_tokens,
+                    completion_tokens: u.completion_tokens,
+                    total_tokens: if u.total_tokens > 0 {
+                        u.total_tokens
+                    } else {
+                        u.prompt_tokens + u.completion_tokens
                     },
-                })
-            })
-            .collect();
-        events.push(Ok(Event::Done));
+                }),
+                Step::ToolCall {
+                    index,
+                    id,
+                    name,
+                    arguments,
+                } => Event::ToolCallDelta {
+                    key: index.to_string(),
+                    id: Some(id),
+                    name: Some(name),
+                    arguments: Some(arguments),
+                },
+            }));
+        }
+        if !cut {
+            events.push(Ok(Event::Done));
+        }
 
         Ok(Box::pin(futures_util::stream::iter(events)))
     }

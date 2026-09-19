@@ -1,6 +1,8 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use schemars::JsonSchema;
 use serde::Deserialize;
+
+use super::atomic;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct Args {
@@ -11,17 +13,8 @@ pub struct Args {
 }
 
 pub async fn call(args: Args) -> Result<String> {
-    if let Some(parent) = std::path::Path::new(&args.path).parent()
-        && !parent.as_os_str().is_empty()
-    {
-        tokio::fs::create_dir_all(parent)
-            .await
-            .with_context(|| format!("creating {}", parent.display()))?;
-    }
     let bytes = args.content.len();
-    tokio::fs::write(&args.path, &args.content)
-        .await
-        .with_context(|| format!("writing {}", args.path))?;
+    atomic::replace(&args.path, args.content.as_bytes()).await?;
     Ok(format!("wrote {bytes} bytes to {}", args.path))
 }
 

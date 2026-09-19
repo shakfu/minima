@@ -116,6 +116,10 @@ pub enum Event {
     Usage(Usage),
     /// The response stopped at the output token limit, so the text or the last call is cut off.
     Truncated,
+    /// A stop reason arrived: the model finished the turn. Only Chat reports this apart from the
+    /// stream's end, because its usage frame follows the stop reason.
+    Stop,
+    /// The stream is over. Reading stops here rather than waiting for the connection to close.
     Done,
 }
 

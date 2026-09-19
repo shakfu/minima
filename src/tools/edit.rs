@@ -5,6 +5,8 @@ use anyhow::{Context, Result, bail};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
+use super::atomic;
+
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct Args {
     /// Path to the file to edit.
@@ -55,9 +57,7 @@ pub async fn call(args: Args) -> Result<String> {
         (_, false) => text.replacen(&old, &new, 1),
     };
 
-    tokio::fs::write(&args.path, &updated)
-        .await
-        .with_context(|| format!("writing {}", args.path))?;
+    atomic::replace(&args.path, updated.as_bytes()).await?;
     Ok(format!("replaced {hits} occurrence(s) in {}", args.path))
 }
 

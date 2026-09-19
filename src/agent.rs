@@ -179,14 +179,23 @@ impl Agent {
                     assembler.push(crate::provider::Event::Text(text));
                 }
                 event => {
+                    // Only the stream's own terminator ends the read. A stop reason does not:
+                    // Chat sends its usage frame after it.
+                    let last = event == crate::provider::Event::Done;
                     assembler.push(event);
-                    if assembler.is_done() {
+                    if last {
                         break;
                     }
                 }
             }
         }
 
+        // EOF is not an ending. A proxy or a dropped connection can close the stream after a
+        // complete-looking tool call, and running it would act on a request the model never
+        // finished making.
+        if !assembler.is_done() {
+            bail!("the provider closed the stream before the response was complete");
+        }
         Ok(Some(assembler.finish()))
     }
 
@@ -473,6 +482,34 @@ mod tests {
         let mut agent = agent_with(r#"[[{"text": "half an ans"}, "truncated"]]"#);
         let err = run(&mut agent).await.expect_err("incomplete");
         assert!(err.to_string().contains("output token limit"), "{err}");
+    }
+
+    /// A stream that ends without a terminal event is a dropped connection, not an answer. The
+    /// text has already been shown, but it must not be recorded as the model's reply.
+    #[tokio::test]
+    async fn a_stream_that_ends_without_a_terminal_event_is_an_error() {
+        let mut agent = agent_with(r#"[[{"text": "half an ans"}, "cut"]]"#);
+        let err = run(&mut agent).await.expect_err("incomplete");
+        assert!(err.to_string().contains("before the response"), "{err}");
+        assert_eq!(agent.messages.len(), 2, "only the system and user messages");
+    }
+
+    /// The worse half: a call can look complete and still be the front of a longer list.
+    #[tokio::test]
+    async fn a_tool_call_cut_off_by_a_dropped_stream_is_not_run() {
+        let dir = Scratch::new("agent-cut");
+        let path = dir.file("never.txt");
+        let mut agent = agent_with(&format!(
+            r#"[[{}, "cut"]]"#,
+            call(
+                "c1",
+                "write",
+                serde_json::json!({ "path": path, "content": "x" })
+            )
+        ));
+
+        assert!(run(&mut agent).await.is_err());
+        assert!(!std::path::Path::new(&path).exists(), "the call ran");
     }
 
     #[tokio::test]

@@ -168,8 +168,14 @@ impl Chunk {
                     arguments,
                 }));
             }
-            if choice.finish_reason.as_deref() == Some("length") {
-                out.push(Ok(Event::Truncated));
+            // Not `Done`: usage arrives in a later frame, and a reader that stopped here would
+            // lose it. `[DONE]` ends the stream; this only marks the turn complete, so a server
+            // that omits the sentinel is still distinguishable from a dropped connection.
+            if let Some(reason) = choice.finish_reason.as_deref() {
+                if reason == "length" {
+                    out.push(Ok(Event::Truncated));
+                }
+                out.push(Ok(Event::Stop));
             }
         }
         if let Some(u) = self.usage {
@@ -215,6 +221,15 @@ mod tests {
     fn a_length_stop_is_reported_as_truncation() {
         let events = parse_frame(r#"{"choices":[{"delta":{},"finish_reason":"length"}]}"#);
         assert_eq!(events[0].as_ref().unwrap(), &Event::Truncated);
+        assert_eq!(events[1].as_ref().unwrap(), &Event::Stop);
+    }
+
+    /// Not every OpenAI-compatible server sends `[DONE]`. The stop reason is the other mark of a
+    /// complete turn, and without one the agent cannot tell a finished stream from a dropped one.
+    #[test]
+    fn a_stop_reason_marks_the_turn_complete() {
+        let events = parse_frame(r#"{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}"#);
+        assert_eq!(events[0].as_ref().unwrap(), &Event::Stop);
     }
 
     #[test]

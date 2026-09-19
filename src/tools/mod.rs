@@ -3,6 +3,7 @@
 //! The freeze pays for itself here: with the set closed at four, an enum removes the trait
 //! object, the `async-trait` dependency, and the registry. Adding a fifth tool is three lines.
 
+mod atomic;
 mod bash;
 mod edit;
 mod read;
