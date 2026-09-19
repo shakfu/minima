@@ -14,6 +14,9 @@ use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Command;
 use tokio::task::JoinHandle;
 
+#[cfg(target_os = "linux")]
+use std::os::unix::process::CommandExt;
+
 use super::Outcome;
 use crate::cancel::Cancel;
 use crate::config::TOOL_OUTPUT_CAP;
@@ -74,7 +77,7 @@ pub struct Args {
     pub timeout_ms: Option<u64>,
 }
 
-pub async fn call(args: Args, cancel: &Cancel) -> Result<Outcome> {
+pub async fn call(args: Args, cancel: &Cancel, root: Option<&std::path::Path>) -> Result<Outcome> {
     if login_shell(&args.command) {
         bail!(LOGIN_SHELL);
     }
@@ -83,10 +86,12 @@ pub async fn call(args: Args, cancel: &Cancel) -> Result<Outcome> {
         .map_or(DEFAULT_TIMEOUT, Duration::from_millis)
         .min(MAX_TIMEOUT);
 
-    let mut command = Command::new("bash");
+    let mut command = match root {
+        Some(root) => sandbox_command(root, &args.command)?,
+        None => plain_command(&args.command),
+    };
     command
-        .arg("-c")
-        .arg(&args.command)
+        .current_dir(root.unwrap_or_else(|| std::path::Path::new(".")))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -150,6 +155,85 @@ pub async fn call(args: Args, cancel: &Cancel) -> Result<Outcome> {
         body.push_str(&format!("\n({note})"));
     }
     Ok(Outcome { body, note })
+}
+
+fn plain_command(command: &str) -> Command {
+    let mut process = Command::new("bash");
+    process.arg("-c").arg(command);
+    process
+}
+
+#[cfg(target_os = "linux")]
+fn sandbox_command(root: &std::path::Path, command: &str) -> Result<Command> {
+    use landlock::{
+        ABI, Access, AccessFs, CompatLevel, Compatible, PathBeneath, PathFd, Ruleset, RulesetAttr,
+        RulesetCreatedAttr,
+    };
+
+    let abi = ABI::V3;
+    let access = AccessFs::from_all(abi);
+    let read = AccessFs::from_read(abi);
+    let mut ruleset = Ruleset::default()
+        .set_compatibility(CompatLevel::HardRequirement)
+        .handle_access(access)
+        .context("configuring the Linux filesystem sandbox")?
+        .create()
+        .context("creating the Linux filesystem sandbox")?;
+    ruleset = ruleset
+        .add_rule(PathBeneath::new(
+            PathFd::new(root).context("opening the sandbox root")?,
+            access,
+        ))
+        .context("allowing the sandbox root")?;
+
+    // The shell and its dynamic loader must be readable and executable. These are runtime support
+    // files, not agent data; user-writable locations remain denied by the ruleset.
+    for path in ["/bin", "/usr", "/lib", "/lib64", "/etc", "/dev"] {
+        let path = std::path::Path::new(path);
+        if path.exists() {
+            ruleset = ruleset
+                .add_rule(PathBeneath::new(PathFd::new(path)?, read))
+                .with_context(|| format!("allowing sandbox runtime path {}", path.display()))?;
+        }
+    }
+    let mut created = Some(ruleset);
+    let mut process = Command::new("bash");
+    process.arg("-c").arg(command);
+    // SAFETY: the closure only consumes the prebuilt ruleset and performs syscalls in the child.
+    unsafe {
+        process.as_std_mut().pre_exec(move || {
+            let status = created
+                .take()
+                .expect("sandbox pre-exec called once")
+                .restrict_self()
+                .map_err(std::io::Error::other)?;
+            if status.ruleset != landlock::RulesetStatus::FullyEnforced {
+                return Err(std::io::Error::other(
+                    "Linux filesystem sandbox was not fully enforced",
+                ));
+            }
+            Ok(())
+        });
+    }
+    Ok(process)
+}
+
+#[cfg(target_os = "macos")]
+fn sandbox_command(root: &std::path::Path, command: &str) -> Result<Command> {
+    let root = root.display().to_string().replace('"', "\\\"");
+    let profile = format!(
+        "(version 1) (deny default) (allow process*) (allow file-read* (subpath \"/usr\")) \
+         (allow file-read* (subpath \"/bin\")) (allow file-read* (subpath \"/System\")) \
+         (allow file-read* (subpath \"{root}\")) (allow file-write* (subpath \"{root}\"))"
+    );
+    let mut command_line = Command::new("sandbox-exec");
+    command_line.args(["-p", &profile, "bash", "-c", command]);
+    Ok(command_line)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn sandbox_command(_root: &std::path::Path, _command: &str) -> Result<Command> {
+    bail!("--root requires an OS filesystem sandbox on this platform")
 }
 
 /// Stdout followed by stderr as one body, plus stderr alone for the note.
@@ -308,7 +392,13 @@ mod tests {
             command: command.to_string(),
             timeout_ms: Some(timeout_ms),
         };
-        call(args, &Cancel::new()).await.expect("bash tool")
+        call(
+            args,
+            &Cancel::new(),
+            Some(&std::env::current_dir().unwrap()),
+        )
+        .await
+        .expect("bash tool")
     }
 
     #[cfg(unix)]
@@ -331,7 +421,9 @@ mod tests {
 
     #[cfg(unix)]
     fn pid_file(name: &str) -> std::path::PathBuf {
-        std::env::temp_dir().join(format!("minima-bash-{name}-{}", std::process::id()))
+        std::env::current_dir()
+            .unwrap()
+            .join(format!(".minima-bash-{name}-{}", std::process::id()))
     }
 
     #[cfg(unix)]
@@ -371,7 +463,13 @@ mod tests {
             command: format!("bash -lc 'touch {}'", marker.display()),
             timeout_ms: None,
         };
-        let err = call(args, &Cancel::new()).await.expect_err("refused");
+        let err = call(
+            args,
+            &Cancel::new(),
+            Some(&std::env::current_dir().unwrap()),
+        )
+        .await
+        .expect_err("refused");
         assert_eq!(err.to_string(), LOGIN_SHELL);
         assert!(!marker.exists());
     }
@@ -465,7 +563,9 @@ mod tests {
             }
         });
 
-        let out = call(args, &cancel).await.expect("bash tool");
+        let out = call(args, &cancel, Some(&std::env::current_dir().unwrap()))
+            .await
+            .expect("bash tool");
         trigger.await.expect("trigger");
         assert_eq!(out.body, crate::tools::CANCELLED);
         assert!(gone(read_pid(&pids)).await, "the background sleep survived");

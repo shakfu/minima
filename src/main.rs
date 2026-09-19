@@ -15,7 +15,7 @@ mod turn;
 
 use std::process::ExitCode;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
@@ -47,6 +47,12 @@ fn main() -> ExitCode {
 
 fn start() -> Result<ExitCode> {
     let cli = Cli::parse();
+    let root = cli.resolve_root()?;
+    std::env::set_current_dir(&root)
+        .with_context(|| format!("changing to root {}", root.display()))?;
+    if cli.no_sandbox {
+        eprintln!("minima: warning: filesystem sandbox disabled");
+    }
     theme::init(cli.no_color);
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -60,7 +66,7 @@ fn start() -> Result<ExitCode> {
         Some(path) => Provider::Mock(Mock::load(path)?),
         None => Provider::Http(Http::new()?),
     };
-    let mut agent = Agent::new(provider, config);
+    let mut agent = Agent::with_sandbox(provider, config, root, !cli.no_sandbox);
     // Recorded once a turn streams, so a model the provider rejects is never remembered. Not in
     // resolve(), so config resolution has no disk side effect and its tests write nothing.
     if cli.mock.is_none() {

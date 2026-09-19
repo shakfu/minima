@@ -4,7 +4,7 @@ A minimal coding agent harness with a tiny feature set.
 
 `minima` tests how small a usable agent harness can be when the ecosystem carries its capabilities. It was inspired by Oleksandr Chekhovskyi's [hax](https://github.com/OleksandrChekhovskyi/hax).
 
-**IMPORTANT** minima runs every tool call **without asking**. It **has no approval gate**. The model can run any `bash` command and write any file your user can. Run it only where this is acceptable, such as a container or a disposable checkout. Our sibling project, [sanduk](https://github.com/shakfu/sanduk), has builtin support for running minima (and other agents) in sandboxed mode using apple container or docker containers.
+**IMPORTANT** minima runs every tool call **without asking**. It **has no approval gate**. The default filesystem sandbox confines the model to the current directory; pass `--root DIR` to select another project. Runtime files such as system binaries remain readable so commands can execute. Network access is not restricted. `--no-sandbox` restores unrestricted tool access and should be used only with trusted prompts.
 
 ## Install
 
@@ -21,6 +21,8 @@ A minimal coding agent for the terminal
 Usage: minima [OPTIONS]
 
 Options:
+      --root <DIR>       Directory in which the agent operates; defaults to the current directory
+      --no-sandbox       Disable the filesystem sandbox and root path checks
   -p, --prompt <TEXT>   Headless: answer this prompt, print the result, exit
       --json            With -p: print one JSON record per line on stdout, ending in a `result` record
       --provider <ID>   Which provider to talk to: fixes the endpoint, the wire format and the key variable. Left out, minima takes the first provider whose key variable is set [env: MINIMA_PROVIDER=]
@@ -43,6 +45,10 @@ Options:
 - **Tools:** 4. `read` returns numbered lines, 2000 by default. `write` creates or replaces a file. `edit` replaces one exact string. `bash` runs a command under `bash -c`.
 
 - **Shell commands:** each call runs in its own process group. A timeout (120 s default, 600 s cap) or a cancel kills the group. Background jobs outlive the call and die with minima. A login-shell wrapper such as `bash -lc` is refused, because a login profile can reorder `PATH`.
+
+- **Root boundary:** `--root DIR` changes to `DIR`, rejects file-tool paths outside it, and confines `bash` with Landlock on Linux or Seatbelt on macOS. It fails rather than running unconfined when the platform sandbox cannot be installed.
+
+- **Unsafe mode:** `--no-sandbox` keeps the selected working directory but disables filesystem confinement and root path checks.
 
 - **Modes:** an interactive REPL with history, and headless `-p`, printing text or JSON lines with `--json`.
 
@@ -95,7 +101,7 @@ make help       # every target
 
 Plain `cargo build`, `cargo test` and `cargo clippy --all-targets -- -D warnings` work too.
 
-`scripts/test_openrouter.sh`, `test_openai.sh` and `test_anthropic.sh` run five scenarios against a real endpoint -- text, `read`, `bash`, `write` with a read-back, then a skill the prompt does not name -- and exit non-zero if any of them misses. They take the key from the provider's usual environment variable or from `~/.config/minima/<provider>.key`, and work from a throwaway sandbox rather than the repo, because minima's tools have no path jail. `XDG_CONFIG_HOME` points at a throwaway directory too, so your own `AGENTS.md` and skills stay out of the prompt. The Anthropic one speaks native `anthropic-messages`.
+`scripts/test_openrouter.sh`, `test_openai.sh` and `test_anthropic.sh` run five scenarios against a real endpoint -- text, `read`, `bash`, `write` with a read-back, then a skill the prompt does not name -- and exit non-zero if any of them misses. They take the key from the provider's usual environment variable or from `~/.config/minima/<provider>.key`, and work from a throwaway directory rather than the repo. `XDG_CONFIG_HOME` points at a throwaway directory too, so your own `AGENTS.md` and skills stay out of the prompt. The Anthropic one speaks native `anthropic-messages`.
 
 Rust 1.88 or newer, for let-chains under edition 2024. `cargo test` also needs `python3`.
 

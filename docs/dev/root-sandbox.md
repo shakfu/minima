@@ -1,8 +1,8 @@
 # Confining the bash tool
 
-Whether `bash` can be confined to one directory, and whether a path guard on the other tools is worth having without it. Written 2026-09-19 against minima 0.3.0. Both were implemented, measured and rejected. No code from either remains.
+Whether `bash` can be confined to one directory, and whether a path guard on the other tools is worth having without it. Written 2026-09-19 against minima 0.3.0. The implementation now uses both: structured tools enforce the path policy, and `bash` uses the platform sandbox.
 
-The rejected guard added `--root DIR`, defaulting to the working directory, refusing `write` and `edit` outside it. 145 lines, no dependency.
+`--root DIR` defaults to the working directory. `read`, `write`, and `edit` reject paths outside it. `bash` applies Landlock on Linux and Seatbelt on macOS.
 
 ## The problem
 
@@ -170,15 +170,13 @@ For scale, `src/tools/bash.rs` is 446 lines and the whole of `src/` is about 5,5
 
 Reads need no decision. The policy above does not bound them.
 
-## Recommendation
+## Current implementation
 
-Implement neither. Keep the README warning and leave containment to sanduk.
+`--root` combines the path guard and the platform sandbox. The path guard covers structured file
+tools. Landlock or Seatbelt covers `bash` and its descendants. Network remains available, so this
+is a filesystem boundary rather than a complete containment mechanism.
 
-The path guard was rejected because the operations that destroy work are `bash`-only, so bounding
-`write` and `edit` is tidiness rather than safety, and a partial guard invites the belief that
-minima is confined when it is not.
-
-The sandbox was rejected for four reasons:
+The following records why the original sandbox-only proposal was rejected:
 
 1. **It does not retire the warning.** Network stays open, so an adversarial model still exfiltrates. A container remains necessary for untrusted prompts. The README gains a platform table and loses nothing.
 

@@ -3,6 +3,7 @@
 //! Presentation and cancellation arrive through `Frontend` and `Cancel`, so the REPL and the
 //! headless path cannot drift apart by each growing their own copy of this loop.
 
+use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{Result, bail};
@@ -28,6 +29,8 @@ complete; split the work into smaller calls";
 pub struct Agent {
     provider: Provider,
     config: Config,
+    root: PathBuf,
+    sandbox: bool,
     messages: Vec<Message>,
     tools: Vec<serde_json::Value>,
     /// Total tokens the last turn reported. Checked before each send once it nears the window.
@@ -38,11 +41,13 @@ pub struct Agent {
 type FirstTurn = Box<dyn FnOnce(&Config)>;
 
 impl Agent {
-    pub fn new(provider: Provider, config: Config) -> Self {
+    pub fn with_sandbox(provider: Provider, config: Config, root: PathBuf, sandbox: bool) -> Self {
         Self {
             provider,
             tools: tools::specs(config.dialect),
             config,
+            root,
+            sandbox,
             messages: vec![Message::system(system_prompt())],
             used: 0,
             on_first_turn: None,
@@ -131,7 +136,14 @@ impl Agent {
                 frontend.tool_start(name, &call.arguments);
 
                 let outcome = match Tool::from_name(name) {
-                    Some(tool) => tool.call(&call.arguments, cancel).await,
+                    Some(tool) => {
+                        tool.call(
+                            &call.arguments,
+                            cancel,
+                            self.sandbox.then_some(self.root.as_path()),
+                        )
+                        .await
+                    }
                     None => Err(anyhow::anyhow!("no such tool: {name}")),
                 };
                 let (ok, body, note) = match outcome {
@@ -288,8 +300,12 @@ mod tests {
 
     /// The script holds only the turns a test expects, so any further request fails the run.
     fn agent_with(script: &str) -> Agent {
+        agent_with_root(script, std::env::current_dir().unwrap())
+    }
+
+    fn agent_with_root(script: &str, root: std::path::PathBuf) -> Agent {
         let mock = crate::provider::mock::Mock::from_script(script).expect("script");
-        Agent::new(Provider::Mock(mock), Config::for_test("m"))
+        Agent::with_sandbox(Provider::Mock(mock), Config::for_test("m"), root, true)
     }
 
     fn call(id: &str, name: &str, arguments: serde_json::Value) -> String {
@@ -374,7 +390,12 @@ mod tests {
         let mut config = Config::for_test("m");
         config.base_url = format!("http://{}/v1", listener.local_addr().unwrap());
         let http = crate::provider::http::Http::new().unwrap();
-        let mut agent = Agent::new(Provider::Http(http), config);
+        let mut agent = Agent::with_sandbox(
+            Provider::Http(http),
+            config,
+            std::env::current_dir().unwrap(),
+            true,
+        );
 
         let cancel = Cancel::new();
         tokio::spawn({
@@ -399,11 +420,14 @@ mod tests {
         let dir = Scratch::new("agent-dispatch");
         let path = dir.file("notes.txt");
         std::fs::write(&path, "hello from disk\n").unwrap();
-        let mut agent = agent_with(&format!(
-            r#"[[{}, {}], [{{"text": "done"}}]]"#,
-            call("c1", "read", serde_json::json!({ "path": path })),
-            call("c2", "grep", serde_json::json!({})).replace("\"index\":0", "\"index\":1")
-        ));
+        let mut agent = agent_with_root(
+            &format!(
+                r#"[[{}, {}], [{{"text": "done"}}]]"#,
+                call("c1", "read", serde_json::json!({ "path": path })),
+                call("c2", "grep", serde_json::json!({})).replace("\"index\":0", "\"index\":1")
+            ),
+            std::path::Path::new(&path).parent().unwrap().to_path_buf(),
+        );
 
         run(&mut agent).await.expect("two turns");
 

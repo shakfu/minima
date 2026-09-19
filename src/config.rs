@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use clap::Parser;
 
 use crate::provider::{Dialect, registry};
@@ -16,6 +16,14 @@ pub const CONTEXT_MARGIN: u32 = 2048;
 #[derive(Parser, Debug, Clone)]
 #[command(name = "minima", version, about)]
 pub struct Cli {
+    /// Directory in which the agent operates. Defaults to the current directory.
+    #[arg(long, value_name = "DIR")]
+    pub root: Option<PathBuf>,
+
+    /// Disable the filesystem sandbox and root path checks.
+    #[arg(long)]
+    pub no_sandbox: bool,
+
     /// Headless: answer this prompt, print the result, exit.
     #[arg(short = 'p', long, value_name = "TEXT")]
     pub prompt: Option<String>,
@@ -67,6 +75,24 @@ pub struct Cli {
     /// Re-fetch the model list even if the cache is fresh.
     #[arg(long)]
     pub refresh_models: bool,
+}
+
+impl Cli {
+    /// Resolve the root before loading prompts or starting the agent.
+    pub fn resolve_root(&self) -> Result<PathBuf> {
+        let root = self
+            .root
+            .clone()
+            .unwrap_or(std::env::current_dir().context("getting the current directory")?);
+        let root = std::fs::canonicalize(&root)
+            .with_context(|| format!("resolving root {}", root.display()))?;
+        let metadata =
+            std::fs::metadata(&root).with_context(|| format!("reading root {}", root.display()))?;
+        if !metadata.is_dir() {
+            bail!("root {} is not a directory", root.display());
+        }
+        Ok(root)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -243,6 +269,8 @@ mod tests {
 
     fn cli(model: Option<&str>, context: Option<u32>, refresh: bool) -> Cli {
         Cli {
+            root: None,
+            no_sandbox: false,
             prompt: None,
             json: false,
             provider: Some("openrouter".into()),
@@ -255,6 +283,12 @@ mod tests {
             max_turns: 32,
             refresh_models: refresh,
         }
+    }
+
+    #[test]
+    fn root_defaults_to_and_resolves_the_current_directory() {
+        let root = cli(None, None, false).resolve_root().unwrap();
+        assert_eq!(root, std::env::current_dir().unwrap());
     }
 
     #[test]

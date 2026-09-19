@@ -10,6 +10,10 @@
 
 - `write` and `edit` replace a file by renaming a temporary file beside it, carrying over the destination's mode and following a symlink to its target. Writing in place truncates first, so a kill -- including SIGTERM and SIGHUP, which exit through `process::exit` -- or a full disk could leave half a file where the user's only copy was.
 
+### Added
+
+- Filesystem confinement is enabled by default. The working directory, or `--root DIR`, bounds the structured file tools and the `bash` tool uses Landlock on Linux or Seatbelt on macOS. `--no-sandbox` explicitly restores unrestricted tool access for trusted workflows; network access remains unrestricted.
+
 ## 0.3.0
 
 ### Added
