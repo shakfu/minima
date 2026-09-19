@@ -50,9 +50,6 @@ fn start() -> Result<ExitCode> {
     let root = cli.resolve_root()?;
     std::env::set_current_dir(&root)
         .with_context(|| format!("changing to root {}", root.display()))?;
-    if cli.no_sandbox {
-        eprintln!("minima: warning: filesystem sandbox disabled");
-    }
     theme::init(cli.no_color);
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -60,6 +57,12 @@ fn start() -> Result<ExitCode> {
 
     #[cfg(unix)]
     exit_on_hangup_or_terminate(&runtime)?;
+
+    if cli.no_sandbox {
+        eprintln!("minima: warning: filesystem sandbox disabled");
+    } else {
+        runtime.block_on(tools::preflight(&root))?;
+    }
 
     let config = runtime.block_on(cli.resolve())?;
     let provider = match &cli.mock {

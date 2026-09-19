@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Added
+
+- `.github/workflows/ci.yml` runs `make lint` and `make test` on every push and pull request, on `ubuntu-24.04` and `macos-15`. The macOS runner is what makes the Seatbelt half of the sandbox a tested claim rather than an asserted one.
+
+- A filesystem sandbox, on by default. `bash` and everything it starts may write only under the working directory -- or `--root DIR` -- the temp directory, `/dev/null` and the ecosystem caches; `write` and `edit` are bounded by the root alone. Linux uses Landlock, macOS uses Seatbelt, and one confined command runs at startup so an unsupported platform fails there rather than on the model's first tool call. `--no-sandbox` turns it off.
+
+  Reads are deliberately not bounded. The network is open either way, so denying reads would hide headers, toolchains and dependency sources without closing exfiltration. The caches are writable because an offline `cargo build` opens `$CARGO_HOME/.package-cache` on every run, and a lost cache costs a re-download rather than work. Landlock needs kernel 6.2: below it `Truncate` is unhandled, and a read grant would still permit truncating any file on the system.
+
 ### Fixed
 
 - A stream that ends without a terminal event is an error, not a finished turn. A proxy or a dropped connection can close an SSE stream after partial text or a complete-looking tool call, and minima took the text as the answer or ran the call. The Chat dialect now reports `finish_reason` as a terminal event of its own, separate from `[DONE]`: a server that omits the sentinel would otherwise fail every turn, and treating the stop reason as the end of the stream would stop the read before the usage frame that follows it.
@@ -9,10 +17,6 @@
 - `bash` bounds what it captures while the command runs, keeping the first and last 16 KiB of each stream. The 32 KiB cap on a tool result was applied only after the tool returned, so a command that writes without stopping grew the buffer until the process died. `read` caps a single line the same way, and refuses anything but a regular file: `/dev/zero` has neither a newline nor an end.
 
 - `write` and `edit` replace a file by renaming a temporary file beside it, carrying over the destination's mode and following a symlink to its target. Writing in place truncates first, so a kill -- including SIGTERM and SIGHUP, which exit through `process::exit` -- or a full disk could leave half a file where the user's only copy was.
-
-### Added
-
-- Filesystem confinement is enabled by default. The working directory, or `--root DIR`, bounds the structured file tools and the `bash` tool uses Landlock on Linux or Seatbelt on macOS. `--no-sandbox` explicitly restores unrestricted tool access for trusted workflows; network access remains unrestricted.
 
 ## 0.3.0
 

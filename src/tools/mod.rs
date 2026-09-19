@@ -9,7 +9,7 @@ mod edit;
 mod read;
 mod write;
 
-pub use bash::kill_background;
+pub use bash::{kill_background, preflight};
 
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
@@ -106,13 +106,10 @@ impl Tool {
             arguments
         };
         let out: Outcome = match self {
-            Tool::Read => {
-                let mut args: read::Args = parse(raw)?;
-                if let Some(root) = root {
-                    args.path = confine_path(root, &args.path)?.display().to_string();
-                }
-                read::call(args).await?.into()
-            }
+            // Not confined: `bash` reads the whole filesystem, so a jail here would only push
+            // the model through `cat`. `write` and `edit` are confined, because they are
+            // otherwise the way around the sandbox's write policy.
+            Tool::Read => read::call(parse(raw)?).await?.into(),
             Tool::Write => {
                 let mut args: write::Args = parse(raw)?;
                 if let Some(root) = root {
@@ -138,6 +135,10 @@ impl Tool {
 
 /// Resolve an existing path, or the nearest existing parent of a new path, before a tool opens it.
 /// This follows symlinks and removes `..`, so the check is about the filesystem location.
+///
+/// The bound is the root alone, not the wider set of paths `bash` may write: nothing needs the
+/// `write` tool to reach a build cache. Enforced in minima's own process, so unlike the kernel
+/// policy it has a window between this check and the open.
 fn confine_path(root: &std::path::Path, raw: &str) -> Result<std::path::PathBuf> {
     let requested = std::path::Path::new(raw);
     let requested = if requested.is_absolute() {
@@ -305,22 +306,57 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn no_root_allows_a_path_outside_the_working_root() {
-        let root = Scratch::new("no-sandbox-root");
+    async fn no_root_allows_a_write_outside_the_working_root() {
         let outside = Scratch::new("no-sandbox-outside");
-        let path = outside.file("secret.txt");
-        std::fs::write(&path, "secret\n").unwrap();
+        let path = outside.file("written.txt");
 
-        let out = Tool::Read
+        Tool::Write
             .call(
-                &serde_json::json!({ "path": path }).to_string(),
+                &serde_json::json!({ "path": path, "content": "x" }).to_string(),
                 &Cancel::new(),
                 None,
             )
             .await
             .unwrap();
-        assert!(out.body.contains("secret"));
-        drop(root);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "x");
+    }
+
+    #[tokio::test]
+    async fn a_write_outside_the_root_is_refused() {
+        let root = Scratch::new("write-boundary-root");
+        let outside = Scratch::new("write-boundary-outside");
+        let path = outside.file("kept.txt");
+        std::fs::write(&path, "kept").unwrap();
+
+        let err = Tool::Write
+            .call(
+                &serde_json::json!({ "path": path, "content": "x" }).to_string(),
+                &Cancel::new(),
+                Some(std::path::Path::new(&root.file("."))),
+            )
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("outside root"), "{err}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "kept");
+    }
+
+    /// The sandbox bounds writes, not reads, and `bash` reads everything regardless.
+    #[tokio::test]
+    async fn a_read_outside_the_root_is_allowed() {
+        let root = Scratch::new("read-boundary-root");
+        let outside = Scratch::new("read-boundary-outside");
+        let path = outside.file("notes.txt");
+        std::fs::write(&path, "visible\n").unwrap();
+
+        let out = Tool::Read
+            .call(
+                &serde_json::json!({ "path": path }).to_string(),
+                &Cancel::new(),
+                Some(std::path::Path::new(&root.file("."))),
+            )
+            .await
+            .unwrap();
+        assert!(out.body.contains("visible"), "{out:?}");
     }
 
     #[cfg(unix)]

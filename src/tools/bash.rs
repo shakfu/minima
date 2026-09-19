@@ -163,51 +163,87 @@ fn plain_command(command: &str) -> Command {
     process
 }
 
+/// Paths outside the root that stay writable. A shell needs the temp directory and `/dev/null`;
+/// a build needs the ecosystem caches. Measured 2026-09-19: an offline `cargo build` opens
+/// `$CARGO_HOME/.package-cache` with `O_RDWR|O_CREAT` on every run, so a policy without the
+/// caches denies the build, not just the dependency fetch. A lost cache costs a re-download
+/// rather than work, which is why they sit on the permissive side of the line.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn writable_outside_root() -> Vec<std::path::PathBuf> {
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+    let named = |var: &str, under_home: &str| {
+        std::env::var_os(var)
+            .map(std::path::PathBuf::from)
+            .or_else(|| home.as_ref().map(|h| h.join(under_home)))
+    };
+    [
+        // Reads TMPDIR, which on macOS is a per-user path under /var/folders rather than /tmp.
+        Some(std::env::temp_dir()),
+        Some(std::path::PathBuf::from("/dev/null")),
+        named("CARGO_HOME", ".cargo"),
+        named("XDG_CACHE_HOME", ".cache"),
+        named("GOPATH", "go"),
+        home.as_ref().map(|h| h.join(".npm")),
+    ]
+    .into_iter()
+    .flatten()
+    // Canonical, because Seatbelt matches a profile against the resolved path: on macOS `/tmp` is
+    // a symlink to `/private/tmp`, and `$TMPDIR` carries a trailing slash that `subpath` will not
+    // match. Dropping what does not resolve also drops what does not exist.
+    .filter_map(|path| std::fs::canonicalize(path).ok())
+    .collect()
+}
+
+/// Reads are allowed everywhere; writes only under the root and `writable_outside_root`. The
+/// policy bounds what a command can destroy, not what it can see. Headers, toolchains and
+/// dependency sources sit outside the root, and the network is open either way, so denying reads
+/// would cost capability without closing exfiltration.
 #[cfg(target_os = "linux")]
 fn sandbox_command(root: &std::path::Path, command: &str) -> Result<Command> {
     use landlock::{
         ABI, Access, AccessFs, CompatLevel, Compatible, PathBeneath, PathFd, Ruleset, RulesetAttr,
-        RulesetCreatedAttr,
+        RulesetCreatedAttr, RulesetStatus, path_beneath_rules,
     };
 
+    // V3 is the floor. V1 denies every rename across directories, which would break `mv` inside
+    // the root, and without V3's `Truncate` a read-only grant still permits truncating any file
+    // on the system. `IoctlDev` arrives in V5 and is not handled, so ioctls on device files the
+    // command can open stay unrestricted.
     let abi = ABI::V3;
-    let access = AccessFs::from_all(abi);
-    let read = AccessFs::from_read(abi);
-    let mut ruleset = Ruleset::default()
+    let write = AccessFs::from_all(abi);
+    let ruleset = Ruleset::default()
         .set_compatibility(CompatLevel::HardRequirement)
-        .handle_access(access)
+        .handle_access(write)
         .context("configuring the Linux filesystem sandbox")?
         .create()
-        .context("creating the Linux filesystem sandbox")?;
-    ruleset = ruleset
+        .context("creating the Linux filesystem sandbox")?
+        .add_rule(PathBeneath::new(
+            PathFd::new("/").context("opening /")?,
+            AccessFs::from_read(abi),
+        ))
+        .context("allowing reads")?
         .add_rule(PathBeneath::new(
             PathFd::new(root).context("opening the sandbox root")?,
-            access,
+            write,
         ))
-        .context("allowing the sandbox root")?;
+        .context("allowing the sandbox root")?
+        // Drops a path that does not open, and masks the directory-only rights that would be
+        // rejected on a file, which `/dev/null` is.
+        .add_rules(path_beneath_rules(writable_outside_root(), write))
+        .context("allowing the writable paths outside the root")?;
 
-    // The shell and its dynamic loader must be readable and executable. These are runtime support
-    // files, not agent data; user-writable locations remain denied by the ruleset.
-    for path in ["/bin", "/usr", "/lib", "/lib64", "/etc", "/dev"] {
-        let path = std::path::Path::new(path);
-        if path.exists() {
-            ruleset = ruleset
-                .add_rule(PathBeneath::new(PathFd::new(path)?, read))
-                .with_context(|| format!("allowing sandbox runtime path {}", path.display()))?;
-        }
-    }
-    let mut created = Some(ruleset);
+    let mut ruleset = Some(ruleset);
     let mut process = Command::new("bash");
     process.arg("-c").arg(command);
     // SAFETY: the closure only consumes the prebuilt ruleset and performs syscalls in the child.
     unsafe {
         process.as_std_mut().pre_exec(move || {
-            let status = created
+            let status = ruleset
                 .take()
-                .expect("sandbox pre-exec called once")
+                .ok_or_else(|| std::io::Error::other("sandbox pre-exec ran twice"))?
                 .restrict_self()
                 .map_err(std::io::Error::other)?;
-            if status.ruleset != landlock::RulesetStatus::FullyEnforced {
+            if status.ruleset != RulesetStatus::FullyEnforced {
                 return Err(std::io::Error::other(
                     "Linux filesystem sandbox was not fully enforced",
                 ));
@@ -218,22 +254,47 @@ fn sandbox_command(root: &std::path::Path, command: &str) -> Result<Command> {
     Ok(process)
 }
 
+/// The Linux policy in SBPL. Allow-default with writes denied, rather than deny-default: a
+/// deny-default profile has to name every path a toolchain reads, and a missing one fails the
+/// command outright. `.github/workflows/ci.yml` runs the suite on macOS, so the profile is
+/// tested, but an allow-default profile is the shape whose mistakes are recoverable.
 #[cfg(target_os = "macos")]
 fn sandbox_command(root: &std::path::Path, command: &str) -> Result<Command> {
-    let root = root.display().to_string().replace('"', "\\\"");
-    let profile = format!(
-        "(version 1) (deny default) (allow process*) (allow file-read* (subpath \"/usr\")) \
-         (allow file-read* (subpath \"/bin\")) (allow file-read* (subpath \"/System\")) \
-         (allow file-read* (subpath \"{root}\")) (allow file-write* (subpath \"{root}\"))"
-    );
-    let mut command_line = Command::new("sandbox-exec");
-    command_line.args(["-p", &profile, "bash", "-c", command]);
-    Ok(command_line)
+    let mut profile =
+        String::from("(version 1) (allow default) (deny file-write*) (allow file-write*");
+    for path in std::iter::once(root.to_path_buf()).chain(writable_outside_root()) {
+        let form = if path.is_dir() { "subpath" } else { "literal" };
+        // The backslash is replaced first, or it would escape the quote that follows it.
+        let quoted = path
+            .display()
+            .to_string()
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"");
+        profile.push_str(&format!(" ({form} \"{quoted}\")"));
+    }
+    profile.push(')');
+
+    let mut process = Command::new("sandbox-exec");
+    process.args(["-p", &profile, "bash", "-c", command]);
+    Ok(process)
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn sandbox_command(_root: &std::path::Path, _command: &str) -> Result<Command> {
-    bail!("--root requires an OS filesystem sandbox on this platform")
+    bail!("this platform has no filesystem sandbox; --no-sandbox runs without one")
+}
+
+/// One confined command before the agent starts. A kernel without Landlock, or a macOS without
+/// `sandbox-exec`, fails here rather than on whichever tool call the model makes first.
+pub async fn preflight(root: &std::path::Path) -> Result<()> {
+    let args = Args {
+        command: "exit 0".into(),
+        timeout_ms: Some(10_000),
+    };
+    call(args, &Cancel::new(), Some(root))
+        .await
+        .context("the filesystem sandbox could not be installed; --no-sandbox runs without it")?;
+    Ok(())
 }
 
 /// Stdout followed by stderr as one body, plus stderr alone for the note.
@@ -387,6 +448,21 @@ mod tests {
         run_for(command, 10_000).await
     }
 
+    /// A path under `$HOME`: the one place outside the root that is neither the temp directory
+    /// nor a build cache, and the place the policy exists to protect. `None` when `$HOME` is
+    /// unset, which leaves the sandbox tests with nothing to aim at.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn outside_root(name: &str) -> Option<std::path::PathBuf> {
+        let home = std::path::PathBuf::from(std::env::var_os("HOME")?);
+        home.is_dir()
+            .then(|| home.join(format!(".minima-sandbox-{name}-{}", std::process::id())))
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn quoted(path: &std::path::Path) -> String {
+        format!("'{}'", path.display().to_string().replace('\'', r"'\''"))
+    }
+
     async fn run_for(command: &str, timeout_ms: u64) -> Outcome {
         let args = Args {
             command: command.to_string(),
@@ -421,9 +497,7 @@ mod tests {
 
     #[cfg(unix)]
     fn pid_file(name: &str) -> std::path::PathBuf {
-        std::env::current_dir()
-            .unwrap()
-            .join(format!(".minima-bash-{name}-{}", std::process::id()))
+        std::env::temp_dir().join(format!("minima-bash-{name}-{}", std::process::id()))
     }
 
     #[cfg(unix)]
@@ -603,5 +677,73 @@ mod tests {
             .parse()
             .expect("bash's pid, which is its group id");
         assert!(!groups().contains(&group));
+    }
+
+    /// The policy bounds writes, not reads. A toolchain, its headers and its dependency sources
+    /// all sit outside the root.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[tokio::test]
+    async fn reads_outside_the_root_are_allowed() {
+        let out = run("ls /usr >/dev/null && echo READABLE").await;
+        assert!(out.body.contains("READABLE"), "{out:?}");
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[tokio::test]
+    async fn the_temp_directory_and_dev_null_stay_writable() {
+        let out = run(
+            "f=$(mktemp) && echo x >\"$f\" && echo y >/dev/null && rm \"$f\" \
+                       && echo WRITABLE",
+        )
+        .await;
+        assert!(out.body.contains("WRITABLE"), "{out:?}");
+    }
+
+    /// Landlock denies every rename across directories below ABI 2, so `mv` is how a floor that
+    /// slipped to V1 would show itself.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[tokio::test]
+    async fn a_rename_across_directories_is_allowed() {
+        let out = run(
+            "d=$(mktemp -d) && mkdir \"$d/a\" \"$d/b\" && touch \"$d/a/x\" \
+                       && mv \"$d/a/x\" \"$d/b/x\" && rm -rf \"$d\" && echo RENAMED",
+        )
+        .await;
+        assert!(out.body.contains("RENAMED"), "{out:?}");
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[tokio::test]
+    async fn writes_outside_the_root_are_denied() {
+        let Some(path) = outside_root("write") else {
+            return;
+        };
+        let out = run(&format!("touch {} && echo WROTE", quoted(&path))).await;
+        let created = path.exists();
+        let _ = std::fs::remove_file(&path);
+        assert!(!created, "a write reached {}", path.display());
+        assert!(!out.body.contains("WROTE"), "{out:?}");
+    }
+
+    /// Landlock handles `Truncate` only from ABI 3. Below it the read grant on `/` still permits
+    /// `: > file` anywhere, which destroys the file without ever writing to it.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[tokio::test]
+    async fn truncating_a_file_outside_the_root_is_denied() {
+        let Some(path) = outside_root("truncate") else {
+            return;
+        };
+        std::fs::write(&path, "kept").unwrap();
+        let out = run(&format!(": > {}", quoted(&path))).await;
+        let after = std::fs::read_to_string(&path).unwrap_or_default();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(after, "kept", "a truncate reached the file: {out:?}");
+    }
+
+    #[tokio::test]
+    async fn preflight_installs_the_sandbox() {
+        preflight(&std::env::current_dir().unwrap())
+            .await
+            .expect("the sandbox should install on a supported platform");
     }
 }

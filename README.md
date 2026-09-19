@@ -4,7 +4,7 @@ A minimal coding agent harness with a tiny feature set.
 
 `minima` tests how small a usable agent harness can be when the ecosystem carries its capabilities. It was inspired by Oleksandr Chekhovskyi's [hax](https://github.com/OleksandrChekhovskyi/hax).
 
-**IMPORTANT** minima runs every tool call **without asking**. It **has no approval gate**. The default filesystem sandbox confines the model to the current directory; pass `--root DIR` to select another project. Runtime files such as system binaries remain readable so commands can execute. Network access is not restricted. `--no-sandbox` restores unrestricted tool access and should be used only with trusted prompts.
+**IMPORTANT** minima runs every tool call **without asking**. It **has no approval gate**. The default sandbox bounds what a tool call can *change*: the working directory, or `--root DIR`, plus the temp directory, `/dev/null` and the build caches. Reads are not bounded and neither is the network, so an adversarial model can still read and send whatever the user can. The sandbox stops accidents outside the project; it does not contain an untrusted prompt. Run minima in a container for that. `--no-sandbox` turns it off.
 
 ## Install
 
@@ -14,6 +14,8 @@ cargo install minima
 
 Requires Rust 1.88 or newer. To build from a checkout, see [Build](#build).
 
+The default sandbox needs Linux 6.2 or newer, or macOS. Below that floor minima refuses to start, and `--no-sandbox` is the way past it. See [Features](#features) for what the sandbox bounds.
+
 ```sh
 % minima --help
 A minimal coding agent for the terminal
@@ -21,8 +23,8 @@ A minimal coding agent for the terminal
 Usage: minima [OPTIONS]
 
 Options:
-      --root <DIR>       Directory in which the agent operates; defaults to the current directory
-      --no-sandbox       Disable the filesystem sandbox and root path checks
+      --root <DIR>      Directory in which the agent operates. Defaults to the current directory
+      --no-sandbox      Disable the filesystem sandbox and root path checks
   -p, --prompt <TEXT>   Headless: answer this prompt, print the result, exit
       --json            With -p: print one JSON record per line on stdout, ending in a `result` record
       --provider <ID>   Which provider to talk to: fixes the endpoint, the wire format and the key variable. Left out, minima takes the first provider whose key variable is set [env: MINIMA_PROVIDER=]
@@ -46,9 +48,17 @@ Options:
 
 - **Shell commands:** each call runs in its own process group. A timeout (120 s default, 600 s cap) or a cancel kills the group. Background jobs outlive the call and die with minima. A login-shell wrapper such as `bash -lc` is refused, because a login profile can reorder `PATH`.
 
-- **Root boundary:** `--root DIR` changes to `DIR`, rejects file-tool paths outside it, and confines `bash` with Landlock on Linux or Seatbelt on macOS. It fails rather than running unconfined when the platform sandbox cannot be installed.
+- **Sandbox:** on by default. `bash` and its descendants may write only under the root, `$TMPDIR`, `/dev/null` and the ecosystem caches (`$CARGO_HOME`, `$XDG_CACHE_HOME`, `$GOPATH`, `~/.npm`); reads are unrestricted. `write` and `edit` are bounded by the root alone. One confined command runs at startup, so a platform that cannot install the sandbox fails there rather than mid-turn.
 
-- **Unsafe mode:** `--no-sandbox` keeps the selected working directory but disables filesystem confinement and root path checks.
+  | Platform | Mechanism | Requires |
+  |-|-|-|
+  | Linux | Landlock | kernel 6.2 (ABI 3) |
+  | macOS | Seatbelt, via `sandbox-exec` | -- |
+  | other | none | `--no-sandbox` |
+
+  Debian 12, RHEL 9 and Ubuntu 22.04 on its 5.15 GA kernel sit below the Linux floor, and minima refuses to start there. Ubuntu's `linux-generic-hwe-22.04` clears it; `--no-sandbox` skips it.
+
+- **Unsafe mode:** `--no-sandbox` keeps the selected working directory but disables the sandbox and the root path checks.
 
 - **Modes:** an interactive REPL with history, and headless `-p`, printing text or JSON lines with `--json`.
 

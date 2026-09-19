@@ -1,4 +1,5 @@
-//! No path jail. `bash` is unrestricted, so restricting the file tools would only be theatre.
+//! No path jail. The sandbox bounds writes, not reads, and `bash` reads the whole filesystem,
+//! so a jail here would only push the model through `cat`.
 
 use anyhow::{Context, Result, anyhow, bail};
 use schemars::JsonSchema;

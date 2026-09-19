@@ -1,0 +1,43 @@
+# The gate for every push and pull request. `make check` is what runs locally, so a green run here
+# and a green run on a laptop mean the same thing.
+name: ci
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: make lint
+
+  test:
+    # Both platforms, because the filesystem sandbox has a backend per platform and a profile that
+    # no CI runs is a security claim nobody has checked.
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, macos-15]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # The sandbox tests need Landlock ABI 3, so a runner image without it should fail loudly
+      # rather than skip.
+      - if: runner.os == 'Linux'
+        run: cat /sys/kernel/security/lsm
+      - run: make test

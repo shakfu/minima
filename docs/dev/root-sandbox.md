@@ -1,8 +1,8 @@
 # Confining the bash tool
 
-Whether `bash` can be confined to one directory, and whether a path guard on the other tools is worth having without it. Written 2026-09-19 against minima 0.3.0. The implementation now uses both: structured tools enforce the path policy, and `bash` uses the platform sandbox.
+Whether `bash` can be confined to one directory, and whether a path guard on the other tools is worth having without it. Written 2026-09-19 against minima 0.3.0, which rejected both. Reversed 2026-09-20: both shipped. The rejection reasoning is kept below, because three of its four points still hold and only the fourth was answered.
 
-`--root DIR` defaults to the working directory. `read`, `write`, and `edit` reject paths outside it. `bash` applies Landlock on Linux and Seatbelt on macOS.
+`--root DIR` defaults to the working directory. `write` and `edit` reject paths outside it. `bash` applies Landlock on Linux and Seatbelt on macOS.
 
 ## The problem
 
@@ -18,22 +18,16 @@ Only an operating system facility closes case 2 for `bash`.
 
 ## Why a path guard on the other tools is not worth having alone
 
-minima has four tools (`src/tools/mod.rs`), and the freeze at four is what buys the enum over
-`dyn Tool`. None of them renames, deletes or creates a directory. So `rm`, `mv`, `mkdir`,
-`git checkout` and `git apply` can only go through `bash`. That is forced by the tool set, not a
-model habit.
+minima has four tools (`src/tools/mod.rs`), and the freeze at four is what buys the enum over `dyn Tool`. None of them renames, deletes or creates a directory. So `rm`, `mv`, `mkdir`, `git checkout` and `git apply` can only go through `bash`. That is forced by the tool set, not a model habit.
 
-A guard on `write` and `edit` therefore prevents a file being created in the wrong place. It does
-not prevent `rm -rf ~/notes`. The destructive operations are exactly the ones it cannot see.
+A guard on `write` and `edit` therefore prevents a file being created in the wrong place. It does not prevent `rm -rf ~/notes`. The destructive operations are exactly the ones it cannot see.
 
-Constraining what the model generates does not help either, because the constraint is semantic
-rather than syntactic. Where a path resolves is a runtime fact.
+Constraining what the model generates does not help either, because the constraint is semantic rather than syntactic. Where a path resolves is a runtime fact.
 
-- Prompt and tool-description steering is probabilistic. Measured in this project on an easier
-  rule: GPT models wrapped commands in `bash -lc` despite the tool description, in 2 of 7 live
-  runs of `gpt-5-nano` (CHANGELOG, 0.3.0).
-- Constrained decoding needs logit access, which no provider API exposes. A grammar constrains
-  syntax; it cannot express "this path resolves inside the root".
+- Prompt and tool-description steering is probabilistic. Measured in this project on an easier rule: GPT models wrapped commands in `bash -lc` despite the tool description, in 2 of 7 live runs of `gpt-5-nano` (CHANGELOG, 0.3.0).
+
+- Constrained decoding needs logit access, which no provider API exposes. A grammar constrains syntax; it cannot express "this path resolves inside the root".
+
 - Validating the generated string is the analysis the next section shows is defeated.
 
 ## Why wrapping the command string cannot work
@@ -139,14 +133,9 @@ The file tools keep their userspace check. minima's own process must stay unconf
 
 - The README warning. A container is still required for untrusted prompts. The warning does not shrink; it gains a platform table.
 
-The policy is also wider than the root. Toolchains keep state outside any project. Measured on one
-developer machine, 2026-09-19: `~/.cargo/registry` 2.2G, `~/.cache` 7.9G, `~/.rustup` 2.6G,
-`~/.local/share` 1.8G, `~/go/pkg` 873M, `~/.npm` 140M. A ruleset allowing only the root breaks the
-first build that fetches a dependency, so it must also allow `$TMPDIR` and the per-ecosystem
-caches. The sandbox would prevent `rm -rf ~/documents` and permit `rm -rf ~/.cargo`.
+The policy is also wider than the root. Toolchains keep state outside any project. Measured on one developer machine, 2026-09-19: `~/.cargo/registry` 2.2G, `~/.cache` 7.9G, `~/.rustup` 2.6G, `~/.local/share` 1.8G, `~/go/pkg` 873M, `~/.npm` 140M. A ruleset allowing only the root breaks the first build that fetches a dependency, so it must also allow `$TMPDIR` and the per-ecosystem caches. The sandbox would prevent `rm -rf ~/documents` and permit `rm -rf ~/.cargo`.
 
-Measured and worth recording: a `cargo build` with dependencies already fetched wrote 0 files under
-`~/.cargo`. Writes outside the project happen on dependency fetch, not on every build.
+Measured and worth recording: a `cargo build` with dependencies already fetched wrote 0 files under `~/.cargo`. Writes outside the project happen on dependency fetch, not on every build.
 
 ## Cost
 
@@ -172,11 +161,19 @@ Reads need no decision. The policy above does not bound them.
 
 ## Current implementation
 
-`--root` combines the path guard and the platform sandbox. The path guard covers structured file
-tools. Landlock or Seatbelt covers `bash` and its descendants. Network remains available, so this
-is a filesystem boundary rather than a complete containment mechanism.
+Shipped 2026-09-20. The intersection policy above, unchanged: reads everywhere, writes under the root, `$TMPDIR`, `/dev/null` and the ecosystem caches. `write` and `edit` keep the userspace check, bounded by the root alone, because nothing needs them to reach a cache. `read` has no check, since `bash` reads everything regardless. Network stays open, so this is a filesystem boundary and not containment.
 
-The following records why the original sandbox-only proposal was rejected:
+Landlock is pinned to ABI 3 as a hard requirement, which means kernel 6.2. ABI 1 denies every rename across directories, breaking `mv` inside the root; ABI 2 leaves `Truncate` unhandled, so the read grant on `/` would still permit `: > file` anywhere, which destroys a file without writing to it. `IoctlDev` arrives in ABI 5 and is not handled, so ioctls on device files the command can open are unrestricted. Debian 12, RHEL 9 and Ubuntu 22.04 GA sit below the floor and need `--no-sandbox`.
+
+Degradation is open decision 1, answered as it was written: `tools::preflight` runs one confined command at startup and fails the run if the sandbox cannot be installed.
+
+Measured 2026-09-20, correcting the measurement below: an offline `cargo build` opens
+`$CARGO_HOME/.package-cache`, `.global-cache` and `.package-cache-mutate` with `O_RDWR|O_CREAT` on
+every invocation. The earlier note that a build "wrote 0 files" under `~/.cargo` counted content writes, not opens. Cache writes are therefore required for any build, not only for a dependency fetch, which is what moved the caches onto the permissive side of the policy.
+
+## Why it was rejected first
+
+Recorded as written on 2026-09-19. Reason 2 was answered: `.github/workflows/ci.yml` runs the suite on `ubuntu-24.04` and `macos-15`, so the Seatbelt profile is tested. Reasons 1, 3 and 4 still hold, and the feature was taken anyway on a narrower claim: sanduk contains an adversarial prompt, and this contains an accident. They are different products.
 
 1. **It does not retire the warning.** Network stays open, so an adversarial model still exfiltrates. A container remains necessary for untrusted prompts. The README gains a platform table and loses nothing.
 
@@ -186,15 +183,4 @@ The following records why the original sandbox-only proposal was rejected:
 
 4. **It contradicts the project's thesis.** The README states minima "tests how small a usable agent harness can be when the ecosystem carries its capabilities". Sandboxing is such a capability, and the sibling project carries it.
 
-The strongest argument on the other side, recorded so it is not lost: with no `rm` or `mv` tool,
-every destructive operation already reaches `bash`, so a kernel policy is the only thing that could
-prevent `rm -rf` outside the root. It is not enough, given the caches above and reason 2.
-
-### What would reverse this
-
-- Users report `bash` accidents outside the working directory. The gap above says they are
-  possible; nothing here says how often they happen.
-
-- A CI job runs the test suite on `macos-15`, so the Seatbelt profile can be verified.
-
-- Network denial becomes expressible on both platforms, at which point the README warning could actually be retired rather than extended.
+The strongest argument on the other side, recorded so it is not lost: with no `rm` or `mv` tool, every destructive operation already reaches `bash`, so a kernel policy is the only thing that could prevent `rm -rf` outside the root. It is not enough, given the caches above and reason 2.
