@@ -254,7 +254,12 @@ fn sandbox_command(root: &std::path::Path, command: &str) -> Result<Command> {
     Ok(process)
 }
 
-/// The Linux policy in SBPL. Allow-default with writes denied, rather than deny-default: a
+/// Absolute, not `sandbox-exec` on `PATH`: a shim earlier in the search path would exec its
+/// argument unconfined, and `preflight` would take its exit 0 as a working sandbox.
+#[cfg(target_os = "macos")]
+const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
+
+/// The macOS policy in SBPL. Allow-default with writes denied, rather than deny-default: a
 /// deny-default profile has to name every path a toolchain reads, and a missing one fails the
 /// command outright. `.github/workflows/ci.yml` runs the suite on macOS, so the profile is
 /// tested, but an allow-default profile is the shape whose mistakes are recoverable.
@@ -274,7 +279,7 @@ fn sandbox_command(root: &std::path::Path, command: &str) -> Result<Command> {
     }
     profile.push(')');
 
-    let mut process = Command::new("sandbox-exec");
+    let mut process = Command::new(SANDBOX_EXEC);
     process.args(["-p", &profile, "bash", "-c", command]);
     Ok(process)
 }
@@ -738,6 +743,20 @@ mod tests {
         let after = std::fs::read_to_string(&path).unwrap_or_default();
         let _ = std::fs::remove_file(&path);
         assert_eq!(after, "kept", "a truncate reached the file: {out:?}");
+    }
+
+    /// Resolution through `PATH` would let a shim named `sandbox-exec` run the command
+    /// unconfined, with `preflight` reading its exit 0 as a working sandbox.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_sandbox_is_spawned_by_absolute_path() {
+        let command = sandbox_command(std::path::Path::new("/"), "exit 0").unwrap();
+        let program = command.as_std().get_program();
+        assert_eq!(program, SANDBOX_EXEC);
+        assert!(
+            std::path::Path::new(SANDBOX_EXEC).is_file(),
+            "{SANDBOX_EXEC} is missing"
+        );
     }
 
     #[tokio::test]

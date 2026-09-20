@@ -4,7 +4,7 @@ A minimal coding agent harness with a tiny feature set.
 
 `minima` tests how small a usable agent harness can be when the ecosystem carries its capabilities. It was inspired by Oleksandr Chekhovskyi's [hax](https://github.com/OleksandrChekhovskyi/hax).
 
-**IMPORTANT** minima runs every tool call **without asking**. It **has no approval gate**. The default sandbox bounds what a tool call can *change*: the working directory, or `--root DIR`, plus the temp directory, `/dev/null` and the build caches. Reads are not bounded and neither is the network, so an adversarial model can still read and send whatever the user can. The sandbox stops accidents outside the project; it does not contain an untrusted prompt. Run minima in a container for that. `--no-sandbox` turns it off.
+**IMPORTANT** minima runs every tool call **without asking**. It **has no approval gate**. The default sandbox bounds what a tool call can *change*: the working directory, or `--root DIR`, plus `$TMPDIR`, `/dev/null` and the build caches. Reads are not bounded and neither is the network, so an adversarial model can still read and send whatever the user can. The sandbox stops accidents outside the project; it does not contain an untrusted prompt. Run minima in a container for that. `--no-sandbox` turns it off.
 
 ## Install
 

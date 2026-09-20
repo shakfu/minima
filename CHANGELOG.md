@@ -6,7 +6,7 @@
 
 - `.github/workflows/ci.yml` runs `make lint` and `make test` on every push and pull request, on `ubuntu-24.04` and `macos-15`. The macOS runner is what makes the Seatbelt half of the sandbox a tested claim rather than an asserted one.
 
-- A filesystem sandbox, on by default. `bash` and everything it starts may write only under the working directory -- or `--root DIR` -- the temp directory, `/dev/null` and the ecosystem caches; `write` and `edit` are bounded by the root alone. Linux uses Landlock, macOS uses Seatbelt, and one confined command runs at startup so an unsupported platform fails there rather than on the model's first tool call. `--no-sandbox` turns it off.
+- A filesystem sandbox, on by default. `bash` and everything it starts may write only under the working directory -- or `--root DIR` -- `$TMPDIR`, `/dev/null` and the ecosystem caches; `write` and `edit` are bounded by the root alone. Linux uses Landlock, macOS uses Seatbelt, and one confined command runs at startup so an unsupported platform fails there rather than on the model's first tool call. `--no-sandbox` turns it off.
 
   Reads are deliberately not bounded. The network is open either way, so denying reads would hide headers, toolchains and dependency sources without closing exfiltration. The caches are writable because an offline `cargo build` opens `$CARGO_HOME/.package-cache` on every run, and a lost cache costs a re-download rather than work. Landlock needs kernel 6.2: below it `Truncate` is unhandled, and a read grant would still permit truncating any file on the system.
 
