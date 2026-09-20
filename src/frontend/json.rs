@@ -10,10 +10,14 @@ use std::time::Duration;
 use serde_json::{Value, json};
 
 use super::Frontend;
+use crate::config::Bounds;
 use crate::provider::Usage;
 
 pub struct Json<W: Write = std::io::Stdout> {
     out: W,
+    /// Reported once, in the result record. A program driving minima cannot see the flags the
+    /// run was started with, and whether `bash` was bounded changes what a failed call means.
+    bounds: Bounds,
     /// Assistant text of the provider round-trip in progress.
     text: String,
     /// Text of the last completed round-trip. When the run ends, this is the answer.
@@ -23,16 +27,11 @@ pub struct Json<W: Write = std::io::Stdout> {
     output: u64,
 }
 
-impl Default for Json {
-    fn default() -> Self {
-        Self::new(std::io::stdout())
-    }
-}
-
 impl<W: Write> Json<W> {
-    pub fn new(out: W) -> Self {
+    pub fn new(out: W, bounds: &Bounds) -> Self {
         Self {
             out,
+            bounds: bounds.clone(),
             text: String::new(),
             last: String::new(),
             turns: 0,
@@ -56,6 +55,13 @@ impl<W: Write> Json<W> {
         let record = json!({
             "type": "result",
             "outcome": outcome,
+            "confine": self.bounds.confine.name(),
+            "writable": self
+                .bounds
+                .writable
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect::<Vec<_>>(),
             "text": self.last,
             "error": error,
             "turns": self.turns,
@@ -107,6 +113,18 @@ impl<W: Write> Frontend for Json<W> {
 mod tests {
     use super::*;
 
+    use crate::config::Confine;
+
+    fn paths() -> Bounds {
+        Bounds::new(Confine::Paths, "/tmp".into())
+    }
+
+    fn fs_with_writable() -> Bounds {
+        let mut bounds = Bounds::new(Confine::Fs, "/tmp".into());
+        bounds.writable.push("/tmp/cache".into());
+        bounds
+    }
+
     fn records(json: &Json<Vec<u8>>) -> Vec<Value> {
         String::from_utf8(json.out.clone())
             .unwrap()
@@ -117,7 +135,7 @@ mod tests {
 
     #[test]
     fn a_run_ends_in_a_result_carrying_the_last_turn_and_the_totals() {
-        let mut json = Json::new(Vec::new());
+        let mut json = Json::new(Vec::new(), &paths());
         json.text("look");
         json.turn_end(Usage::from_parts(10, 2));
         json.tool_start("bash", r#"{"command":"ls"}"#);
@@ -140,15 +158,27 @@ mod tests {
         assert_eq!(
             records[4],
             json!({
-                "type": "result", "outcome": "complete", "text": "the answer", "error": null,
+                "type": "result", "outcome": "complete", "confine": "paths", "writable": [],
+                "text": "the answer", "error": null,
                 "turns": 2, "input_tokens": 40, "output_tokens": 7,
             })
         );
     }
 
+    /// The bounds are the one thing in the record a caller cannot recover from its own
+    /// arguments once minima has resolved the defaults.
+    #[test]
+    fn the_result_reports_the_bounds_the_run_used() {
+        let mut json = Json::new(Vec::new(), &fs_with_writable());
+        json.result(&Ok(()), false);
+        let result = &records(&json)[0];
+        assert_eq!(result["confine"], "fs");
+        assert_eq!(result["writable"], json!(["/tmp/cache"]));
+    }
+
     #[test]
     fn an_error_is_reported_in_the_result() {
-        let mut json = Json::new(Vec::new());
+        let mut json = Json::new(Vec::new(), &paths());
         json.result(&Err(anyhow::anyhow!("stopped after 3 turns")), false);
         let result = &records(&json)[0];
         assert_eq!(result["outcome"], "error");
@@ -157,7 +187,7 @@ mod tests {
 
     #[test]
     fn a_cancel_drops_the_partial_text() {
-        let mut json = Json::new(Vec::new());
+        let mut json = Json::new(Vec::new(), &paths());
         json.text("half");
         json.cancelled();
         json.result(&Ok(()), true);
@@ -168,7 +198,7 @@ mod tests {
 
     #[test]
     fn escape_sequences_stay_escaped() {
-        let mut json = Json::new(Vec::new());
+        let mut json = Json::new(Vec::new(), &paths());
         json.text("a\x1b]52;c;aGk=\x07b");
         json.turn_end(Usage::default());
         let raw = String::from_utf8(json.out.clone()).unwrap();

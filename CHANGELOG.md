@@ -4,11 +4,25 @@
 
 ### Added
 
+- `--confine none|paths|fs` bounds what a tool call can change. The default `paths` bounds `write` and `edit` by the working directory -- or `--root DIR` -- in minima's own process. `fs` adds a kernel policy to `bash` and everything it starts: Landlock on Linux, Seatbelt on macOS, writes permitted under the root, `$TMPDIR`, `/dev/null` and the ecosystem caches, and one confined command at startup so an unsupported platform fails there rather than on the model's first tool call.
+
+  `fs` is not the default because Landlock needs kernel 6.2 and the preflight refuses to start below it. Debian 12, RHEL 9 and Ubuntu 22.04 GA all sit under that floor, and a default that refuses to start on the common server distributions is worse than one the user asks for. Falling back quietly instead was the other option and is worse still: the user then believes there is a boundary. One ordered flag rather than a `--sandbox` and a `--path-protection` switch, so the two bounds sit on one axis and neither implies anything about the other.
+
+  Reads are not bounded in any mode. The network is open either way, so denying reads would hide headers, toolchains and dependency sources without closing exfiltration. The caches are writable so that fetching a dependency works: measured on macOS, compilation itself survives a denied cache, but `cargo add`, `go get` and `npm install` do not, and a lost cache costs a re-download rather than work. `~/Library/Caches` is the macOS half of the `$XDG_CACHE_HOME` entry, where Go keeps its build cache.
+
 - `.github/workflows/ci.yml` runs `make lint` and `make test` on every push and pull request, on `ubuntu-24.04` and `macos-15`. The macOS runner is what makes the Seatbelt half of the sandbox a tested claim rather than an asserted one.
 
-- A filesystem sandbox, on by default. `bash` and everything it starts may write only under the working directory -- or `--root DIR` -- `$TMPDIR`, `/dev/null` and the ecosystem caches; `write` and `edit` are bounded by the root alone. Linux uses Landlock, macOS uses Seatbelt, and one confined command runs at startup so an unsupported platform fails there rather than on the model's first tool call. `--no-sandbox` turns it off.
+- A command that fails under `--confine fs` with text that looks like a denied write gets a note naming the policy and `--writable`. The kernel returns `EPERM` or `EACCES` and the program prints its own message, which never mentions minima, so a model reads `Operation not permitted` and retries the command or reaches for `sudo`. Matching the message is a heuristic: an ordinary permission error gets the note too, and a translated system gets nothing, which is cheaper than the retry loop it replaces.
 
-  Reads are deliberately not bounded. The network is open either way, so denying reads would hide headers, toolchains and dependency sources without closing exfiltration. The caches are writable because an offline `cargo build` opens `$CARGO_HOME/.package-cache` on every run, and a lost cache costs a re-download rather than work. Landlock needs kernel 6.2: below it `Truncate` is unhandled, and a read grant would still permit truncating any file on the system.
+- `--writable DIR`, repeatable, adds a directory to the set `--confine fs` leaves writable for `bash`. The built-in set covers the caches a dependency fetch needs, and cannot cover every ecosystem: R, OCaml, Haskell and Stack keep installed packages in a user-level store, and enumerating them in minima would be a list that drifts. The flag is what makes an incomplete built-in set safe, so the person who knows they use `~/.opam` says so.
+
+  Refused under `none` and `paths`, where nothing bounds `bash` for it to widen, rather than accepted as a no-op the user would read as a grant. It never widens `write` or `edit`: those stay inside the root in every mode, which keeps one sentence true of the file tools with no exceptions. Paths resolve at startup and a missing one fails there, because a typo that is dropped quietly leaves the user believing they granted access, and the sandbox preflight then runs against the real policy.
+
+- The `--json` result record carries `confine` and `writable`, naming the bounds the run used. A program driving minima cannot see the flags it was started with, and whether `bash` was bounded changes what a failed tool call means. Reported once at the end rather than in a record of its own, since the result is already the summary a caller reads.
+
+- `write` and `edit` refuse a path under the root whose resolved form has a `.git` component or one beginning `.env`. Losing an object store or a secret costs work that no later turn can rebuild, and the file tools have no reason to reach either. `.envrc` and the `.env` templates are exempt: they are committed, hold no secret, and are the file an agent edits when a feature adds a config variable.
+
+  The check is resolved-path and component-wise, unlike the substring test the feature is modelled on, so `.github/`, `.gitignore` and `env.sample` are untouched and `../x/.env` is not. It is not a boundary: `bash` ignores it on both platforms. Landlock grants an access if any rule met while walking the path grants it, so no hole can be cut in the rule that grants the root, and enumerating the root's children instead would cost the ability to create a file at the top level of the project. Seatbelt does take a trailing deny, but a boundary that held only on macOS would be trusted on Linux.
 
 ### Fixed
 

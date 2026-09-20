@@ -4,7 +4,7 @@ A minimal coding agent harness with a tiny feature set.
 
 `minima` tests how small a usable agent harness can be when the ecosystem carries its capabilities. It was inspired by Oleksandr Chekhovskyi's [hax](https://github.com/OleksandrChekhovskyi/hax).
 
-**IMPORTANT** minima runs every tool call **without asking**. It **has no approval gate**. The default sandbox bounds what a tool call can *change*: the working directory, or `--root DIR`, plus `$TMPDIR`, `/dev/null` and the build caches. Reads are not bounded and neither is the network, so an adversarial model can still read and send whatever the user can. The sandbox stops accidents outside the project; it does not contain an untrusted prompt. Run minima in a container for that. `--no-sandbox` turns it off.
+**IMPORTANT** minima runs every tool call **without asking**. It **has no approval gate**. By default, `--confine paths` bounds `write` and `edit` to the working directory -- or `--root DIR` -- and refuses the protected paths under it. `bash` is not bounded in that mode and reaches the whole filesystem; `--confine fs` adds a kernel policy that bounds it. Reads are never bounded and neither is the network, so an adversarial model can still read and send whatever the user can. Confinement stops accidents outside the project; it does not contain an untrusted prompt. Run minima in a container for that.
 
 ## Install
 
@@ -14,17 +14,18 @@ cargo install minima
 
 Requires Rust 1.88 or newer. To build from a checkout, see [Build](#build).
 
-The default sandbox needs Linux 6.2 or newer, or macOS. Below that floor minima refuses to start, and `--no-sandbox` is the way past it. See [Features](#features) for what the sandbox bounds.
+`--confine fs` needs Linux 6.2 or newer, or macOS. Below that floor it refuses to start; the default `--confine paths` has no such requirement. See [Features](#features) for what each mode bounds.
 
 ```sh
-% minima --help
+% minima -h
 A minimal coding agent for the terminal
 
 Usage: minima [OPTIONS]
 
 Options:
-      --root <DIR>      Directory in which the agent operates. Defaults to the current directory
-      --no-sandbox      Disable the filesystem sandbox and root path checks
+      --root <DIR>      Directory in which the agent operates, and the boundary `--confine` applies. Defaults to the current directory
+      --confine <MODE>  How much a tool call is bounded [default: paths] [possible values: none, paths, fs]
+      --writable <DIR>  Directory `--confine fs` leaves writable for `bash`, beyond the root and the build caches. Repeat for more than one. Never widens `write` or `edit`, which stay inside the root
   -p, --prompt <TEXT>   Headless: answer this prompt, print the result, exit
       --json            With -p: print one JSON record per line on stdout, ending in a `result` record
       --provider <ID>   Which provider to talk to: fixes the endpoint, the wire format and the key variable. Left out, minima takes the first provider whose key variable is set [env: MINIMA_PROVIDER=]
@@ -36,7 +37,7 @@ Options:
       --mock <PATH>     Replay a scripted JSON stream instead of calling the network
       --max-turns <N>   Refuse to keep going after this many provider round-trips in one user turn [default: 32]
       --refresh-models  Re-fetch the model list even if the cache is fresh
-  -h, --help            Print help
+  -h, --help            Print help (see more with '--help')
   -V, --version         Print version
 ```
 
@@ -48,17 +49,21 @@ Options:
 
 - **Shell commands:** each call runs in its own process group. A timeout (120 s default, 600 s cap) or a cancel kills the group. Background jobs outlive the call and die with minima. A login-shell wrapper such as `bash -lc` is refused, because a login profile can reorder `PATH`.
 
-- **Sandbox:** on by default. `bash` and its descendants may write only under the root, `$TMPDIR`, `/dev/null` and the ecosystem caches (`$CARGO_HOME`, `$XDG_CACHE_HOME`, `$GOPATH`, `~/.npm`); reads are unrestricted. `write` and `edit` are bounded by the root alone. One confined command runs at startup, so a platform that cannot install the sandbox fails there rather than mid-turn.
+- **Confinement:** `--confine` takes one of three modes. `none` bounds nothing. `paths`, the default, bounds `write` and `edit` by the root and refuses the protected paths under it, leaving `bash` unbounded. `fs` adds the platform's filesystem sandbox to `bash` and its descendants, which may then write only under the root, `$TMPDIR`, `/dev/null` and the ecosystem caches (`$CARGO_HOME`, `$XDG_CACHE_HOME`, `$GOPATH`, `~/.npm`, and `~/Library/Caches` on macOS). So `fs` is not `paths` applied to `bash`: it is a wider set for `bash`, because no build works without the caches, and the same narrow set for the file tools. Reads are unrestricted in every mode. Under `fs` one confined command runs at startup, so a platform that cannot install the sandbox fails there rather than mid-turn, and a command whose output looks like a denied write gets a note naming the policy, since `Operation not permitted` on its own tells the model nothing.
 
   | Platform | Mechanism | Requires |
   |-|-|-|
   | Linux | Landlock | kernel 6.2 (ABI 3) |
   | macOS | Seatbelt, via `sandbox-exec` | -- |
-  | other | none | `--no-sandbox` |
+  | other | none | a mode below `fs` |
 
-  Debian 12, RHEL 9 and Ubuntu 22.04 on its 5.15 GA kernel sit below the Linux floor, and minima refuses to start there. Ubuntu's `linux-generic-hwe-22.04` clears it; `--no-sandbox` skips it.
+  Debian 12, RHEL 9 and Ubuntu 22.04 on its 5.15 GA kernel sit below the Linux floor, so `--confine fs` refuses to start there. Ubuntu's `linux-generic-hwe-22.04` clears it. This is why `fs` is not the default: a default that refuses to start on the common server distributions is worse than one the user opts into.
 
-- **Unsafe mode:** `--no-sandbox` keeps the selected working directory but disables the sandbox and the root path checks.
+- **Protected paths:** `write` and `edit` refuse any path under the root with a `.git` component, or one beginning `.env`, matched on the resolved path. `.envrc` and the templates -- `.env.example`, `.env.sample`, `.env.template` -- are committed files and stay writable. `bash` is not bound by this and neither is `read`. It stops a misdirected `write`, not a command that means to remove the file.
+
+- **Writable paths:** `--writable DIR`, repeatable, adds a directory to what `bash` may write under `--confine fs`. For a toolchain whose store sits outside the project: `~/.opam`, `~/.stack`, an R library. It never widens `write` or `edit`, which stay inside the root in every mode, and it is refused under `none` and `paths`, where nothing bounds `bash` for it to widen. Paths are resolved at startup, and one that does not exist is an error rather than a silent skip.
+
+- **Unsafe mode:** `--confine none` keeps the selected working directory and bounds nothing. It prints a warning at startup.
 
 - **Modes:** an interactive REPL with history, and headless `-p`, printing text or JSON lines with `--json`.
 

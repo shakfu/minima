@@ -21,7 +21,7 @@ use tracing_subscriber::EnvFilter;
 
 use crate::agent::Agent;
 use crate::cancel::Cancel;
-use crate::config::Cli;
+use crate::config::{Bounds, Cli, Confine};
 use crate::frontend::Frontend;
 use crate::frontend::headless::Headless;
 use crate::frontend::json::Json;
@@ -58,10 +58,14 @@ fn start() -> Result<ExitCode> {
     #[cfg(unix)]
     exit_on_hangup_or_terminate(&runtime)?;
 
-    if cli.no_sandbox {
-        eprintln!("minima: warning: filesystem sandbox disabled");
-    } else {
-        runtime.block_on(tools::preflight(&root))?;
+    let bounds = cli.bounds(root)?;
+    match bounds.confine {
+        Confine::None => eprintln!("minima: warning: unconfined; every tool may write anywhere"),
+        // The kernel policy is the only mode with an install that can fail, so it is the only one
+        // with a preflight. It runs against the real bounds, so a `--writable` path the policy
+        // will not take fails here rather than on the model's first command.
+        Confine::Paths => {}
+        Confine::Fs => runtime.block_on(tools::preflight(&bounds))?,
     }
 
     let config = runtime.block_on(cli.resolve())?;
@@ -69,7 +73,7 @@ fn start() -> Result<ExitCode> {
         Some(path) => Provider::Mock(Mock::load(path)?),
         None => Provider::Http(Http::new()?),
     };
-    let mut agent = Agent::with_sandbox(provider, config, root, !cli.no_sandbox);
+    let mut agent = Agent::with_bounds(provider, config, bounds.clone());
     // Recorded once a turn streams, so a model the provider rejects is never remembered. Not in
     // resolve(), so config resolution has no disk side effect and its tests write nothing.
     if cli.mock.is_none() {
@@ -78,7 +82,7 @@ fn start() -> Result<ExitCode> {
     }
 
     match cli.prompt.as_deref() {
-        Some(prompt) => runtime.block_on(headless(&mut agent, prompt, cli.json)),
+        Some(prompt) => runtime.block_on(headless(&mut agent, prompt, cli.json, &bounds)),
         None => frontend::repl::run(&runtime, &mut agent).map(|()| ExitCode::SUCCESS),
     }
 }
@@ -118,7 +122,12 @@ fn exit_on_hangup_or_terminate(runtime: &tokio::runtime::Runtime) -> Result<()> 
 }
 
 /// Ctrl-C latches the same flag Esc does in the REPL, so the loop samples one thing either way.
-async fn headless(agent: &mut Agent, prompt: &str, as_json: bool) -> Result<ExitCode> {
+async fn headless(
+    agent: &mut Agent,
+    prompt: &str,
+    as_json: bool,
+    bounds: &Bounds,
+) -> Result<ExitCode> {
     let cancel = Cancel::new();
     let watcher = tokio::spawn({
         let cancel = cancel.clone();
@@ -130,7 +139,7 @@ async fn headless(agent: &mut Agent, prompt: &str, as_json: bool) -> Result<Exit
     });
 
     let mut plain = Headless::default();
-    let mut json = Json::default();
+    let mut json = Json::new(std::io::stdout(), bounds);
     let frontend: &mut dyn Frontend = if as_json { &mut json } else { &mut plain };
     let result = agent.run(prompt, frontend, &cancel).await;
     watcher.abort();

@@ -2,7 +2,7 @@
 
 Whether `bash` can be confined to one directory, and whether a path guard on the other tools is worth having without it. Written 2026-09-19 against minima 0.3.0, which rejected both. Reversed 2026-09-20: both shipped. The rejection reasoning is kept below, because three of its four points still hold and only the fourth was answered.
 
-`--root DIR` defaults to the working directory. `write` and `edit` reject paths outside it. `bash` applies Landlock on Linux and Seatbelt on macOS.
+`--root DIR` defaults to the working directory. `--confine` selects how much of it is enforced: `none`, `paths` for the userspace bound on `write` and `edit`, or `fs` to add Landlock on Linux and Seatbelt on macOS to `bash`. The default is `paths`.
 
 ## The problem
 
@@ -163,13 +163,124 @@ Reads need no decision. The policy above does not bound them.
 
 Shipped 2026-09-20. The intersection policy above, unchanged: reads everywhere, writes under the root, `$TMPDIR`, `/dev/null` and the ecosystem caches. `write` and `edit` keep the userspace check, bounded by the root alone, because nothing needs them to reach a cache. `read` has no check, since `bash` reads everything regardless. Network stays open, so this is a filesystem boundary and not containment.
 
-Landlock is pinned to ABI 3 as a hard requirement, which means kernel 6.2. ABI 1 denies every rename across directories, breaking `mv` inside the root; ABI 2 leaves `Truncate` unhandled, so the read grant on `/` would still permit `: > file` anywhere, which destroys a file without writing to it. `IoctlDev` arrives in ABI 5 and is not handled, so ioctls on device files the command can open are unrestricted. Debian 12, RHEL 9 and Ubuntu 22.04 GA sit below the floor and need `--no-sandbox`.
+Landlock is pinned to ABI 3 as a hard requirement, which means kernel 6.2. ABI 1 denies every rename across directories, breaking `mv` inside the root; ABI 2 leaves `Truncate` unhandled, so the read grant on `/` would still permit `: > file` anywhere, which destroys a file without writing to it. `IoctlDev` arrives in ABI 5 and is not handled, so ioctls on device files the command can open are unrestricted. Debian 12, RHEL 9 and Ubuntu 22.04 GA sit below the floor, which is why `fs` is opt-in rather than the default.
 
-Degradation is open decision 1, answered as it was written: `tools::preflight` runs one confined command at startup and fails the run if the sandbox cannot be installed.
+Degradation is open decision 1, answered as it was written: `tools::preflight` runs one confined command at startup and fails the run if the sandbox cannot be installed. That answer is what makes `fs` opt-in. A mode that refuses to start cannot be the default when the floor excludes Debian 12, RHEL 9 and Ubuntu 22.04 GA, and the alternative -- starting unconfined with a warning -- is the quiet failure the decision rejects. The flag carries the choice instead of the runtime guessing.
 
 Measured 2026-09-20, correcting the measurement below: an offline `cargo build` opens
 `$CARGO_HOME/.package-cache`, `.global-cache` and `.package-cache-mutate` with `O_RDWR|O_CREAT` on
 every invocation. The earlier note that a build "wrote 0 files" under `~/.cargo` counted content writes, not opens. Cache writes are therefore required for any build, not only for a dependency fetch, which is what moved the caches onto the permissive side of the policy.
+
+## Protected paths
+
+Added 2026-09-20, after the sandbox. `write` and `edit` refuse a resolved path under the root with
+a `.git` component, or a component beginning `.env`. The model used was [pi's protected-paths
+extension](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/examples/extensions/protected-paths.ts),
+which blocks its `write` and `edit` on `path.includes(".env" | ".git/" | "node_modules/")`.
+
+Three changes to that rule. It matches the path after resolution, so `../elsewhere/.env` is
+caught and a root reached through a symlink still matches. It matches whole components, so
+`.github/`, `.gitignore` and `env.sample` are not caught, and `.env` matches as a prefix, so
+`.env.production` is.
+
+The prefix then exempts `.envrc` and any name containing `example`, `sample` or `template`. Those
+are committed files holding no secret, and they are the `.env`-family file an agent edits most
+often, when a feature adds a config variable. Elsewhere in the family the exemption is not worth
+making: over-blocking `.env.test` costs a turn, while a missed `.env.production` costs a secret the
+repository cannot restore. `.git` stays whole. Sparing `hooks/` and `info/exclude`, which have
+uses no `git` subcommand covers, means enumerating the irreplaceable parts instead, which is more
+rule than a guard `bash` ignores can carry.
+
+A refusal costs the model one turn, not the capability: it reaches the file through `bash` on the
+next call. It also moves the write to a worse mechanism, since `write` and `edit` replace a file by
+rename and `printf >` truncates in place. That is the argument for keeping the list short.
+
+The question is whether the kernel policy can carry the same rule, since `bash` is where every
+deletion happens.
+
+- **Seatbelt: yes.** SBPL takes the last matching rule, so a deny appended after the root allow
+  holds. Measured 2026-09-20 on macOS 25.6 against a temp tree: with
+  `(allow file-write* (subpath "<root>")) (deny file-write* (subpath "<root>/.git"))`, a write
+  under `<root>/sub` returns 0, a write to `<root>/.git/config` and an `rm` of it both fail with
+  `Operation not permitted`, and `cat` of it still works.
+
+- **Landlock: no.** "One policy layer grants access to a file path if at least one of its rules
+  encountered on the path grants the access"
+  ([kernel documentation](https://docs.kernel.org/userspace-api/landlock.html)). Rules met walking
+  a path are unioned, so `PathBeneath(root, write)` grants write to everything below the root and a
+  nested rule carrying fewer rights subtracts nothing. There is no deny rule, and a second stacked
+  layer has the same shape. The only expressible form is to drop the root rule and enumerate the
+  root's children minus the protected ones, which leaves no rule on the root directory itself and
+  so denies `MakeReg` and `MakeDir` there: the model could no longer create a file at the top level
+  of the project.
+
+So the rule is enforced in minima's process only, on both platforms, and the README says `bash`
+ignores it. Shipping the Seatbelt half alone was rejected on the intersection principle above, and
+on a worse failure it invites: a boundary tested on a Mac and trusted on Linux.
+
+This also settles the same question for reads. Denying a read of `.env` would need a hole in the
+rule granting reads on `/`, which is the identical Landlock limit.
+
+## The writable set, and why it cannot be complete
+
+The policy permits writes to five paths outside the root. The bar they were chosen against was "a
+build that fetches nothing still opens it". Measured against that bar on macOS 25.6, 2026-09-20,
+the bar turns out to be the wrong one: no cache entry is required for a build to succeed.
+
+Method: the SBPL profile `sandbox_command` builds, with one candidate path removed at a time, over
+a temp project as the root.
+
+| Case | Cache denied | Result |
+|-|-|-|
+| `cargo build --offline`, from clean, dependency already in the registry | `$CARGO_HOME` | succeeds |
+| `cargo build`, populating a fresh `CARGO_HOME` | `$CARGO_HOME` | fails: `failed to create directory .../registry/cache` |
+| `go build`, `GOCACHE` exists, forced cache miss | `~/Library/Caches` | succeeds, silently without caching |
+| `go build`, `GOCACHE` does not exist | `~/Library/Caches` | fails: `failed to initialize build cache` |
+| `npm run`, and `npm install` with no dependencies | `~/.npm` | succeeds |
+| `uv venv` | `~/.cache` | fails: `Failed to initialize cache at ~/.cache/uv` |
+| `R -e '1+1'` | everything | succeeds |
+
+So the entries earn their place for a different reason than the one recorded: they are there so the
+agent can **fetch a dependency**, not so a build can run. A denied cache costs caching and blocks
+`cargo add`, `go get` and `npm install`; it does not break compilation. `uv` is the exception, and
+it is already covered by the `$XDG_CACHE_HOME` entry.
+
+This also narrows what `~/Library/Caches` is for. Not `uv`, which prefers `~/.cache` when it
+exists, and not Homebrew, whose prefix is outside the root and stays denied either way. It is
+there because Go's build cache lives under it on macOS, and because `$XDG_CACHE_HOME` was the
+Linux half of a rule written on Linux.
+
+The doc's earlier claim -- that an offline `cargo build` opening `$CARGO_HOME/.package-cache` means
+a policy without the caches denies the build -- conflates the open happening with the build
+failing. The open may well happen; cargo tolerates its failure. That was measured on Linux under
+Landlock and is untested against this question there, so CI is what would settle whether Landlock
+behaves as Seatbelt does here.
+
+That bar cannot cover every ecosystem, because the paths divide into two kinds and only the first
+belongs in a policy at all.
+
+| Kind | Examples | Loss if destroyed |
+|-|-|-|
+| Regenerable cache | `$CARGO_HOME/.package-cache`, `$GOCACHE`, `~/.npm/_cacache`, `~/Library/Caches`, `~/.cabal/packages` | a re-download |
+| Installed environment | `~/R/library`, `~/.opam/<switch>`, `~/.stack`, `~/.ghcup`, `~/.rustup`, `~/.cabal/store` | hours of rebuilds, shared with every other project on the machine |
+
+Writing to the second kind is the global environment change the policy exists to prevent:
+installing an R package into the user library changes every other R project on the machine. Each
+of those ecosystems has a project-local form -- `renv` or `R_LIBS_USER`, `opam switch create .`
+giving `./_opam`, a relocated cabal store or stack root -- which puts the store inside the root,
+where it is already writable and where a reproducible project wants it. `AGENTS.md` is the place
+to tell the model a project works that way.
+
+`--writable DIR` covers what is left. It is the escape hatch that makes an incomplete built-in set
+safe to ship: the person who uses OCaml knows they need `~/.opam`, and minima does not have to
+know. Waiting for a complete list is what kept this work unmerged, and there is no complete list.
+
+Not implemented, and worth testing before it is: both backends can express create-and-write without
+delete-or-truncate. Landlock has separate `MakeReg`, `WriteFile`, `RemoveFile` and `Truncate` bits,
+and the ruleset here grants `AccessFs::from_all`, which is all of them; SBPL has `file-write-create`
+and `file-write-data` apart from `file-write-unlink`. A store the agent can add to but not delete
+from would match the accident model exactly. The risk is a half-written package with no way to
+clean it up, which may be worse than a denial.
 
 ## Why it was rejected first
 

@@ -3,14 +3,13 @@
 //! Presentation and cancellation arrive through `Frontend` and `Cancel`, so the REPL and the
 //! headless path cannot drift apart by each growing their own copy of this loop.
 
-use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{Result, bail};
 use futures_util::StreamExt;
 
 use crate::cancel::Cancel;
-use crate::config::{CONTEXT_MARGIN, Config};
+use crate::config::{Bounds, CONTEXT_MARGIN, Config};
 use crate::frontend::Frontend;
 use crate::prompt::system_prompt;
 use crate::provider::{Error, Message, Provider};
@@ -29,8 +28,7 @@ complete; split the work into smaller calls";
 pub struct Agent {
     provider: Provider,
     config: Config,
-    root: PathBuf,
-    sandbox: bool,
+    bounds: Bounds,
     messages: Vec<Message>,
     tools: Vec<serde_json::Value>,
     /// Total tokens the last turn reported. Checked before each send once it nears the window.
@@ -41,13 +39,12 @@ pub struct Agent {
 type FirstTurn = Box<dyn FnOnce(&Config)>;
 
 impl Agent {
-    pub fn with_sandbox(provider: Provider, config: Config, root: PathBuf, sandbox: bool) -> Self {
+    pub fn with_bounds(provider: Provider, config: Config, bounds: Bounds) -> Self {
         Self {
             provider,
             tools: tools::specs(config.dialect),
             config,
-            root,
-            sandbox,
+            bounds,
             messages: vec![Message::system(system_prompt())],
             used: 0,
             on_first_turn: None,
@@ -136,14 +133,7 @@ impl Agent {
                 frontend.tool_start(name, &call.arguments);
 
                 let outcome = match Tool::from_name(name) {
-                    Some(tool) => {
-                        tool.call(
-                            &call.arguments,
-                            cancel,
-                            self.sandbox.then_some(self.root.as_path()),
-                        )
-                        .await
-                    }
+                    Some(tool) => tool.call(&call.arguments, cancel, &self.bounds).await,
                     None => Err(anyhow::anyhow!("no such tool: {name}")),
                 };
                 let (ok, body, note) = match outcome {
@@ -305,7 +295,8 @@ mod tests {
 
     fn agent_with_root(script: &str, root: std::path::PathBuf) -> Agent {
         let mock = crate::provider::mock::Mock::from_script(script).expect("script");
-        Agent::with_sandbox(Provider::Mock(mock), Config::for_test("m"), root, true)
+        let bounds = Bounds::new(crate::config::Confine::Paths, root);
+        Agent::with_bounds(Provider::Mock(mock), Config::for_test("m"), bounds)
     }
 
     fn call(id: &str, name: &str, arguments: serde_json::Value) -> String {
@@ -390,12 +381,11 @@ mod tests {
         let mut config = Config::for_test("m");
         config.base_url = format!("http://{}/v1", listener.local_addr().unwrap());
         let http = crate::provider::http::Http::new().unwrap();
-        let mut agent = Agent::with_sandbox(
-            Provider::Http(http),
-            config,
+        let bounds = Bounds::new(
+            crate::config::Confine::Paths,
             std::env::current_dir().unwrap(),
-            true,
         );
+        let mut agent = Agent::with_bounds(Provider::Http(http), config, bounds);
 
         let cancel = Cancel::new();
         tokio::spawn({

@@ -19,7 +19,7 @@ use std::os::unix::process::CommandExt;
 
 use super::Outcome;
 use crate::cancel::Cancel;
-use crate::config::TOOL_OUTPUT_CAP;
+use crate::config::{Bounds, TOOL_OUTPUT_CAP};
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
 const MAX_TIMEOUT: Duration = Duration::from_secs(600);
@@ -77,7 +77,7 @@ pub struct Args {
     pub timeout_ms: Option<u64>,
 }
 
-pub async fn call(args: Args, cancel: &Cancel, root: Option<&std::path::Path>) -> Result<Outcome> {
+pub async fn call(args: Args, cancel: &Cancel, bounds: &Bounds) -> Result<Outcome> {
     if login_shell(&args.command) {
         bail!(LOGIN_SHELL);
     }
@@ -86,12 +86,13 @@ pub async fn call(args: Args, cancel: &Cancel, root: Option<&std::path::Path>) -
         .map_or(DEFAULT_TIMEOUT, Duration::from_millis)
         .min(MAX_TIMEOUT);
 
-    let mut command = match root {
-        Some(root) => sandbox_command(root, &args.command)?,
-        None => plain_command(&args.command),
+    let mut command = if bounds.confine.sandboxes_bash() {
+        sandbox_command(bounds, &args.command)?
+    } else {
+        plain_command(&args.command)
     };
     command
-        .current_dir(root.unwrap_or_else(|| std::path::Path::new(".")))
+        .current_dir(&bounds.root)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -143,6 +144,12 @@ pub async fn call(args: Args, cancel: &Cancel, root: Option<&std::path::Path>) -
         (Some(code), None) => Some(format!("exit {code}")),
         (None, _) => Some("killed by a signal".to_string()),
     };
+    if bounds.confine.sandboxes_bash() && looks_denied(&stderr) {
+        note = Some(match note {
+            Some(note) => format!("{note}; {DENIED}"),
+            None => DENIED.to_string(),
+        });
+    }
     // Said once, to the model and the user, so neither loses track of a job it started.
     if left_running {
         note = Some(match note {
@@ -184,6 +191,7 @@ fn writable_outside_root() -> Vec<std::path::PathBuf> {
         named("XDG_CACHE_HOME", ".cache"),
         named("GOPATH", "go"),
         home.as_ref().map(|h| h.join(".npm")),
+        platform_cache(home.as_ref()),
     ]
     .into_iter()
     .flatten()
@@ -194,12 +202,37 @@ fn writable_outside_root() -> Vec<std::path::PathBuf> {
     .collect()
 }
 
+/// macOS keeps user caches under `~/Library/Caches`, not `$XDG_CACHE_HOME`, so the entry above is
+/// the Linux half of one rule. Go's build cache is `~/Library/Caches/go-build` on a Mac, and
+/// measured 2026-09-20: `go build` fails outright when that directory does not yet exist and
+/// cannot be created, and silently stops caching when it exists but is not writable.
+#[cfg(target_os = "macos")]
+fn platform_cache(home: Option<&std::path::PathBuf>) -> Option<std::path::PathBuf> {
+    home.map(|h| h.join("Library/Caches"))
+}
+
+#[cfg(target_os = "linux")]
+fn platform_cache(_home: Option<&std::path::PathBuf>) -> Option<std::path::PathBuf> {
+    None
+}
+
+/// What a denied open looks like from inside the command. Seatbelt returns `EPERM` and Landlock
+/// `EACCES`, and the program prints its own message, which never names the policy: a model that
+/// reads "Operation not permitted" retries the command or reaches for `sudo`. Matching the text
+/// is a heuristic -- an ordinary permission error gets the line too, and a translated system gets
+/// nothing -- and one extra sentence costs less than a retry loop.
+const DENIED: &str = "if a write was denied: --confine fs permits writes under the root, $TMPDIR, /dev/null and the build caches; another directory needs --writable, or a store inside the root";
+
+fn looks_denied(stderr: &str) -> bool {
+    stderr.contains("Operation not permitted") || stderr.contains("Permission denied")
+}
+
 /// Reads are allowed everywhere; writes only under the root and `writable_outside_root`. The
 /// policy bounds what a command can destroy, not what it can see. Headers, toolchains and
 /// dependency sources sit outside the root, and the network is open either way, so denying reads
 /// would cost capability without closing exfiltration.
 #[cfg(target_os = "linux")]
-fn sandbox_command(root: &std::path::Path, command: &str) -> Result<Command> {
+fn sandbox_command(bounds: &Bounds, command: &str) -> Result<Command> {
     use landlock::{
         ABI, Access, AccessFs, CompatLevel, Compatible, PathBeneath, PathFd, Ruleset, RulesetAttr,
         RulesetCreatedAttr, RulesetStatus, path_beneath_rules,
@@ -223,14 +256,17 @@ fn sandbox_command(root: &std::path::Path, command: &str) -> Result<Command> {
         ))
         .context("allowing reads")?
         .add_rule(PathBeneath::new(
-            PathFd::new(root).context("opening the sandbox root")?,
+            PathFd::new(&bounds.root).context("opening the sandbox root")?,
             write,
         ))
         .context("allowing the sandbox root")?
         // Drops a path that does not open, and masks the directory-only rights that would be
-        // rejected on a file, which `/dev/null` is.
+        // rejected on a file, which `/dev/null` is. A `--writable` path is already resolved, and
+        // is added here rather than earlier so a missing one is reported by its own flag.
         .add_rules(path_beneath_rules(writable_outside_root(), write))
-        .context("allowing the writable paths outside the root")?;
+        .context("allowing the writable paths outside the root")?
+        .add_rules(path_beneath_rules(bounds.writable.clone(), write))
+        .context("allowing the paths --writable named")?;
 
     let mut ruleset = Some(ruleset);
     let mut process = Command::new("bash");
@@ -264,10 +300,13 @@ const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
 /// command outright. `.github/workflows/ci.yml` runs the suite on macOS, so the profile is
 /// tested, but an allow-default profile is the shape whose mistakes are recoverable.
 #[cfg(target_os = "macos")]
-fn sandbox_command(root: &std::path::Path, command: &str) -> Result<Command> {
+fn sandbox_command(bounds: &Bounds, command: &str) -> Result<Command> {
     let mut profile =
         String::from("(version 1) (allow default) (deny file-write*) (allow file-write*");
-    for path in std::iter::once(root.to_path_buf()).chain(writable_outside_root()) {
+    let named = std::iter::once(bounds.root.clone())
+        .chain(writable_outside_root())
+        .chain(bounds.writable.iter().cloned());
+    for path in named {
         let form = if path.is_dir() { "subpath" } else { "literal" };
         // The backslash is replaced first, or it would escape the quote that follows it.
         let quoted = path
@@ -285,20 +324,20 @@ fn sandbox_command(root: &std::path::Path, command: &str) -> Result<Command> {
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-fn sandbox_command(_root: &std::path::Path, _command: &str) -> Result<Command> {
-    bail!("this platform has no filesystem sandbox; --no-sandbox runs without one")
+fn sandbox_command(_bounds: &Bounds, _command: &str) -> Result<Command> {
+    bail!("this platform has no filesystem sandbox; --confine paths runs without one")
 }
 
 /// One confined command before the agent starts. A kernel without Landlock, or a macOS without
 /// `sandbox-exec`, fails here rather than on whichever tool call the model makes first.
-pub async fn preflight(root: &std::path::Path) -> Result<()> {
+pub async fn preflight(bounds: &Bounds) -> Result<()> {
     let args = Args {
         command: "exit 0".into(),
         timeout_ms: Some(10_000),
     };
-    call(args, &Cancel::new(), Some(root))
-        .await
-        .context("the filesystem sandbox could not be installed; --no-sandbox runs without it")?;
+    call(args, &Cancel::new(), bounds).await.context(
+        "the filesystem sandbox could not be installed; --confine paths runs without it",
+    )?;
     Ok(())
 }
 
@@ -449,6 +488,12 @@ fn first_line(stderr: &str) -> Option<String> {
 mod tests {
     use super::*;
 
+    /// Every test here runs under the kernel policy; `tools::only_fs_bounds_bash` covers the
+    /// modes that do not.
+    fn sandboxed() -> Bounds {
+        Bounds::new(crate::config::Confine::Fs, std::env::current_dir().unwrap())
+    }
+
     async fn run(command: &str) -> Outcome {
         run_for(command, 10_000).await
     }
@@ -473,13 +518,9 @@ mod tests {
             command: command.to_string(),
             timeout_ms: Some(timeout_ms),
         };
-        call(
-            args,
-            &Cancel::new(),
-            Some(&std::env::current_dir().unwrap()),
-        )
-        .await
-        .expect("bash tool")
+        call(args, &Cancel::new(), &sandboxed())
+            .await
+            .expect("bash tool")
     }
 
     #[cfg(unix)]
@@ -542,13 +583,9 @@ mod tests {
             command: format!("bash -lc 'touch {}'", marker.display()),
             timeout_ms: None,
         };
-        let err = call(
-            args,
-            &Cancel::new(),
-            Some(&std::env::current_dir().unwrap()),
-        )
-        .await
-        .expect_err("refused");
+        let err = call(args, &Cancel::new(), &sandboxed())
+            .await
+            .expect_err("refused");
         assert_eq!(err.to_string(), LOGIN_SHELL);
         assert!(!marker.exists());
     }
@@ -642,9 +679,7 @@ mod tests {
             }
         });
 
-        let out = call(args, &cancel, Some(&std::env::current_dir().unwrap()))
-            .await
-            .expect("bash tool");
+        let out = call(args, &cancel, &sandboxed()).await.expect("bash tool");
         trigger.await.expect("trigger");
         assert_eq!(out.body, crate::tools::CANCELLED);
         assert!(gone(read_pid(&pids)).await, "the background sleep survived");
@@ -730,6 +765,72 @@ mod tests {
         assert!(!out.body.contains("WROTE"), "{out:?}");
     }
 
+    /// A denied write reaches the model as whatever the command printed, which never names the
+    /// policy. The note is what tells it the difference between a broken machine and a bound one.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[tokio::test]
+    async fn a_denied_write_says_which_policy_denied_it() {
+        let Some(path) = outside_root("denied-note") else {
+            return;
+        };
+        let out = run(&format!("touch {}", quoted(&path))).await;
+        let _ = std::fs::remove_file(&path);
+        let note = out.note.unwrap_or_default();
+        assert!(note.contains("--writable"), "{note}");
+        assert!(out.body.contains("--confine fs"), "{:?}", out.body);
+    }
+
+    /// The note is for the mode that can deny. Under `paths` nothing bounds `bash`, so a
+    /// permission error is the filesystem's own and the policy has nothing to say about it.
+    #[tokio::test]
+    async fn an_unsandboxed_permission_error_gets_no_note() {
+        let args = Args {
+            command: "touch /minima-not-writable 2>&1".into(),
+            timeout_ms: Some(10_000),
+        };
+        let bounds = Bounds::new(
+            crate::config::Confine::Paths,
+            std::env::current_dir().unwrap(),
+        );
+        let out = call(args, &Cancel::new(), &bounds)
+            .await
+            .expect("bash tool");
+        assert!(!out.body.contains("--writable"), "{:?}", out.body);
+    }
+
+    /// `--writable` widens the kernel policy and nothing else: the named directory takes a
+    /// write, the sibling beside it does not.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[tokio::test]
+    async fn only_the_named_directory_is_added() {
+        let Some(base) = outside_root("writable") else {
+            return;
+        };
+        let (granted, denied) = (base.join("granted"), base.join("denied"));
+        std::fs::create_dir_all(&granted).unwrap();
+        std::fs::create_dir_all(&denied).unwrap();
+
+        let mut bounds = sandboxed();
+        bounds
+            .writable
+            .push(std::fs::canonicalize(&granted).unwrap());
+        let args = Args {
+            command: format!("touch {}/a; touch {}/b", quoted(&granted), quoted(&denied)),
+            timeout_ms: Some(10_000),
+        };
+        let out = call(args, &Cancel::new(), &bounds)
+            .await
+            .expect("bash tool");
+
+        let (added, sibling) = (granted.join("a").exists(), denied.join("b").exists());
+        let _ = std::fs::remove_dir_all(&base);
+        assert!(added, "the --writable directory was denied: {out:?}");
+        assert!(
+            !sibling,
+            "a write reached a sibling of the --writable directory"
+        );
+    }
+
     /// Landlock handles `Truncate` only from ABI 3. Below it the read grant on `/` still permits
     /// `: > file` anywhere, which destroys the file without ever writing to it.
     #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -750,7 +851,11 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn the_sandbox_is_spawned_by_absolute_path() {
-        let command = sandbox_command(std::path::Path::new("/"), "exit 0").unwrap();
+        let command = sandbox_command(
+            &Bounds::new(crate::config::Confine::Fs, std::path::PathBuf::from("/")),
+            "exit 0",
+        )
+        .unwrap();
         let program = command.as_std().get_program();
         assert_eq!(program, SANDBOX_EXEC);
         assert!(
@@ -761,7 +866,7 @@ mod tests {
 
     #[tokio::test]
     async fn preflight_installs_the_sandbox() {
-        preflight(&std::env::current_dir().unwrap())
+        preflight(&sandboxed())
             .await
             .expect("the sandbox should install on a supported platform");
     }

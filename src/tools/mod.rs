@@ -15,7 +15,7 @@ use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
 use crate::cancel::Cancel;
-use crate::config::TOOL_OUTPUT_CAP;
+use crate::config::{Bounds, TOOL_OUTPUT_CAP};
 use crate::provider::{Dialect, anthropic, chat, responses};
 
 /// The result recorded for a call the user cancelled or that never ran because of a cancel.
@@ -94,37 +94,36 @@ impl Tool {
     }
 
     /// `arguments` is the raw JSON string the model streamed, parsed here and nowhere else.
-    pub async fn call(
-        self,
-        arguments: &str,
-        cancel: &Cancel,
-        root: Option<&std::path::Path>,
-    ) -> Result<Outcome> {
+    pub async fn call(self, arguments: &str, cancel: &Cancel, bounds: &Bounds) -> Result<Outcome> {
         let raw = if arguments.trim().is_empty() {
             "{}"
         } else {
             arguments
         };
+        let bound = bounds
+            .confine
+            .bounds_files()
+            .then_some(bounds.root.as_path());
         let out: Outcome = match self {
-            // Not confined: `bash` reads the whole filesystem, so a jail here would only push
-            // the model through `cat`. `write` and `edit` are confined, because they are
-            // otherwise the way around the sandbox's write policy.
+            // `read` is never bounded: `bash` reads the whole filesystem in every mode, so a jail
+            // here would only push the model through `cat`. `write` and `edit` are, because they
+            // are otherwise the way around the sandbox's write policy.
             Tool::Read => read::call(parse(raw)?).await?.into(),
             Tool::Write => {
                 let mut args: write::Args = parse(raw)?;
-                if let Some(root) = root {
+                if let Some(root) = bound {
                     args.path = confine_path(root, &args.path)?.display().to_string();
                 }
                 write::call(args).await?.into()
             }
             Tool::Edit => {
                 let mut args: edit::Args = parse(raw)?;
-                if let Some(root) = root {
+                if let Some(root) = bound {
                     args.path = confine_path(root, &args.path)?.display().to_string();
                 }
                 edit::call(args).await?.into()
             }
-            Tool::Bash => bash::call(parse(raw)?, cancel, root).await?,
+            Tool::Bash => bash::call(parse(raw)?, cancel, bounds).await?,
         };
         Ok(Outcome {
             body: cap(out.body),
@@ -164,7 +163,35 @@ fn confine_path(root: &std::path::Path, raw: &str) -> Result<std::path::PathBuf>
     if !resolved.starts_with(root) {
         bail!("path {raw:?} is outside root {}", root.display());
     }
+    if let Some(name) = protected(root, &resolved) {
+        bail!("path {raw:?} is protected: {name} is not writable through write or edit");
+    }
     Ok(resolved)
+}
+
+/// The protected component of a resolved path, if it has one.
+///
+/// `.git` because a damaged object store loses history nothing can rebuild, and `.env` because a
+/// replaced secret is not in the repository to restore. `.git` matches whole, leaving `.github`
+/// and `.gitignore` alone. `.env` matches as a prefix, so `.env.production` is covered, minus the
+/// names that hold no secret by convention: a template and `.envrc` are committed files, and
+/// blocking them would refuse the edit that adding a config variable actually needs. Only
+/// components below the root count: a root that itself sits under a `.git` directory is the
+/// user's choice.
+///
+/// `bash` ignores this, on both platforms. Landlock grants access by union over the rules met
+/// walking a path, so the rule granting the root cannot have a hole cut in it, and a boundary
+/// that held only on macOS would be worse than none. See `docs/dev/root-sandbox.md`.
+fn protected(root: &std::path::Path, resolved: &std::path::Path) -> Option<String> {
+    const COMMITTED: [&str; 3] = ["example", "sample", "template"];
+    let relative = resolved.strip_prefix(root).ok()?;
+    relative.components().find_map(|component| {
+        let name = component.as_os_str().to_str()?;
+        let secret = name.starts_with(".env")
+            && name != ".envrc"
+            && !COMMITTED.iter().any(|kind| name.contains(kind));
+        (name == ".git" || secret).then(|| name.to_string())
+    })
 }
 
 pub fn specs(dialect: Dialect) -> Vec<serde_json::Value> {
@@ -245,6 +272,7 @@ impl Drop for Scratch {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::Confine;
 
     /// A tool the model is never told about cannot be called, and a mock cannot catch that.
     /// Each dialect reads the name and schema from a different place.
@@ -305,20 +333,117 @@ mod tests {
         assert!(err.to_string().contains("outside root"), "{err}");
     }
 
+    #[test]
+    fn a_protected_path_under_the_root_is_refused_and_a_lookalike_is_not() {
+        let dir = Scratch::new("protected");
+        // `confine_path` resolves the path and not the root, as `Cli::resolve_root` does that once.
+        let root = std::fs::canonicalize(dir.file("")).unwrap();
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+
+        for path in [".git", ".git/config", ".env", ".env.local", "sub/.env"] {
+            let err = confine_path(&root, path).unwrap_err();
+            assert!(err.to_string().contains("is protected"), "{path}: {err}");
+        }
+        for path in [
+            ".github/ci.yml",
+            ".gitignore",
+            "env.sample",
+            "src/environment.rs",
+            ".env.example",
+            ".env.local.template",
+            ".envrc",
+        ] {
+            confine_path(&root, path).unwrap_or_else(|e| panic!("{path}: {e}"));
+        }
+    }
+
+    /// The guard bounds the two file tools. `read` is untouched, and so is `bash`.
     #[tokio::test]
-    async fn no_root_allows_a_write_outside_the_working_root() {
-        let outside = Scratch::new("no-sandbox-outside");
+    async fn a_protected_file_survives_write_and_stays_readable() {
+        let dir = Scratch::new("protected-write");
+        let root = std::fs::canonicalize(dir.file("")).unwrap();
+        let path = dir.file(".env");
+        std::fs::write(&path, "SECRET=1\n").unwrap();
+
+        let err = Tool::Write
+            .call(
+                &serde_json::json!({ "path": path, "content": "x" }).to_string(),
+                &Cancel::new(),
+                &Bounds::new(Confine::Paths, root.clone()),
+            )
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("is protected"), "{err}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "SECRET=1\n");
+
+        let out = Tool::Read
+            .call(
+                &serde_json::json!({ "path": path }).to_string(),
+                &Cancel::new(),
+                &Bounds::new(Confine::Paths, root.clone()),
+            )
+            .await
+            .unwrap();
+        assert!(out.body.contains("SECRET=1"), "{out:?}");
+    }
+
+    #[tokio::test]
+    async fn confine_none_allows_a_write_outside_the_root() {
+        let outside = Scratch::new("confine-none-outside");
         let path = outside.file("written.txt");
 
         Tool::Write
             .call(
                 &serde_json::json!({ "path": path, "content": "x" }).to_string(),
                 &Cancel::new(),
-                None,
+                &Bounds::new(Confine::None, std::path::PathBuf::from(outside.file(""))),
             )
             .await
             .unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "x");
+    }
+
+    /// The mode decides two things, and the wiring between them is what is new: `paths` bounds
+    /// the file tools and leaves `bash` alone, `fs` bounds both. `$HOME` is the one place outside
+    /// the root that is neither the temp directory nor a build cache.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[tokio::test]
+    async fn only_fs_bounds_bash() {
+        let dir = Scratch::new("confine-bash");
+        let root = std::fs::canonicalize(dir.file("")).unwrap();
+        let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) else {
+            return;
+        };
+        if !home.is_dir() {
+            return;
+        }
+        let probe = home.join(format!(".minima-confine-{}", std::process::id()));
+        let args =
+            serde_json::json!({ "command": format!("touch '{}'", probe.display()) }).to_string();
+
+        let out = Tool::Bash
+            .call(
+                &args,
+                &Cancel::new(),
+                &Bounds::new(Confine::Paths, root.clone()),
+            )
+            .await
+            .unwrap();
+        let reached = probe.exists();
+        let _ = std::fs::remove_file(&probe);
+        assert!(reached, "paths must not bound bash: {out:?}");
+
+        let out = Tool::Bash
+            .call(
+                &args,
+                &Cancel::new(),
+                &Bounds::new(Confine::Fs, root.clone()),
+            )
+            .await
+            .unwrap();
+        let reached = probe.exists();
+        let _ = std::fs::remove_file(&probe);
+        assert!(!reached, "fs must bound bash: {out:?}");
     }
 
     #[tokio::test]
@@ -332,7 +457,7 @@ mod tests {
             .call(
                 &serde_json::json!({ "path": path, "content": "x" }).to_string(),
                 &Cancel::new(),
-                Some(std::path::Path::new(&root.file("."))),
+                &Bounds::new(Confine::Paths, std::path::PathBuf::from(root.file("."))),
             )
             .await
             .unwrap_err();
@@ -352,7 +477,7 @@ mod tests {
             .call(
                 &serde_json::json!({ "path": path }).to_string(),
                 &Cancel::new(),
-                Some(std::path::Path::new(&root.file("."))),
+                &Bounds::new(Confine::Paths, std::path::PathBuf::from(root.file("."))),
             )
             .await
             .unwrap();
