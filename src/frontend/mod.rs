@@ -4,8 +4,10 @@
 //! would buy nothing and cost object safety.
 
 pub mod headless;
+mod history;
 pub mod json;
 pub mod repl;
+mod screen;
 
 use std::time::Duration;
 

@@ -1,41 +1,29 @@
 //! Terminal mode ownership.
 //!
-//! Raw mode is restored from `Drop` and from a panic hook. Losing either leaves the user's shell
-//! in raw mode after a crash, which is why `profile.release` keeps `panic = "unwind"`.
+//! The REPL runs in raw mode with bracketed paste on. Both are undone by `restore`, from the
+//! screen's `Drop`, a panic hook and the signal handler. Losing it leaves the user's shell in raw
+//! mode after a crash, which is why `profile.release` keeps `panic = "unwind"`.
 
-use anyhow::Result;
-use crossterm::terminal;
+use crossterm::{cursor, event, execute, terminal};
 
-pub struct RawGuard {
-    armed: bool,
+/// A no-op unless the REPL entered raw mode, so `-p` output piped elsewhere gets no escapes.
+pub fn restore() {
+    if !terminal::is_raw_mode_enabled().unwrap_or(false) {
+        return;
+    }
+    let _ = execute!(
+        std::io::stdout(),
+        event::DisableBracketedPaste,
+        cursor::Show
+    );
+    let _ = terminal::disable_raw_mode();
 }
 
-impl RawGuard {
-    pub fn enter() -> Result<Self> {
-        terminal::enable_raw_mode()?;
-        Ok(Self { armed: true })
-    }
-
-    /// Leave raw mode early, for a subprocess that wants the tty in cooked mode.
-    pub fn release(&mut self) {
-        if self.armed {
-            let _ = terminal::disable_raw_mode();
-            self.armed = false;
-        }
-    }
-}
-
-impl Drop for RawGuard {
-    fn drop(&mut self) {
-        self.release();
-    }
-}
-
-/// Restore cooked mode before the default hook prints, so the panic message is readable.
+/// Restore the terminal before the default hook prints, so the panic message is readable.
 pub fn install_panic_hook() {
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        let _ = terminal::disable_raw_mode();
+        restore();
         previous(info);
     }));
 }

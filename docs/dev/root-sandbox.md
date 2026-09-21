@@ -2,6 +2,8 @@
 
 Whether `bash` can be confined to one directory, and whether a path guard on the other tools is worth having without it. Written 2026-09-19 against minima 0.3.0. Both were implemented, measured and rejected. No code from either remains.
 
+Update 2026-09-21: an experimental filesystem sandbox is under development on the `sandbox` branch. This record still describes `main`.
+
 The rejected guard added `--root DIR`, defaulting to the working directory, refusing `write` and `edit` outside it. 145 lines, no dependency.
 
 ## The problem

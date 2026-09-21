@@ -6,6 +6,8 @@ A minimal coding agent harness with a tiny feature set.
 
 **IMPORTANT** minima runs every tool call **without asking**. It **has no approval gate**. The model can run any `bash` command and write any file your user can. Run it only where this is acceptable, such as a container or a disposable checkout. Our sibling project, [sanduk](https://github.com/shakfu/sanduk), has builtin support for running minima (and other agents) in sandboxed mode using apple container or docker containers.
 
+This build has no sandbox. An experimental filesystem sandbox, using Landlock on Linux and Seatbelt on macOS, is on the [`sandbox`](https://github.com/shakfu/minima/tree/sandbox) branch. It bounds what a tool call can write, not what it can read or send over the network.
+
 ## Install
 
 ```sh
@@ -49,11 +51,13 @@ Options:
 
 - **Shell commands:** each call runs in its own process group. A timeout (120 s default, 600 s cap) or a cancel kills the group. Background jobs outlive the call and die with minima. A login-shell wrapper such as `bash -lc` is refused, because a login profile can reorder `PATH`.
 
-- **Modes:** an interactive REPL with history, and headless `-p`, printing text or JSON lines with `--json`. `/exit`, `/quit` or Ctrl-D leaves the REPL.
+- **Modes:** an interactive REPL, and headless `-p`, printing text or JSON lines with `--json`. `/exit`, `/quit` or Ctrl-D on an empty input leaves the REPL.
+
+- **REPL:** an input box with a status bar below it, pinned to the bottom of the terminal; output scrolls above it into the terminal's scrollback. Enter submits, Alt-Enter or Ctrl-J adds a newline, Up and Down or Ctrl-P and Ctrl-N browse history, Ctrl-R searches it, and Ctrl-C clears the input. Typing continues during a turn.
 
 - **JSON output:** one record per line: `turn`, `tool_call`, `tool_result`, `retry`, then a final `result`. `turn` and `result` carry token counts, `cost` in USD or null, and `cost_estimated`.
 
-- **Display:** one line per tool call, such as `read src/lib.rs:1-400 -> 400 lines` or `$ cargo test -> exit 101: ...`. After each prompt, one line gives context used, tokens in and out, and the cost. OpenRouter reports the cost; for OpenAI and Anthropic it is estimated from OpenRouter's public price list and marked `~`. The right side of the prompt shows the model, context used and the session's cost.
+- **Display:** one line per tool call, such as `read src/lib.rs:1-400 -> 400 lines` or `$ cargo test -> exit 101: ...`. After each prompt, one line gives context used, tokens in and out, and the cost. OpenRouter reports the cost; for OpenAI and Anthropic it is estimated from OpenRouter's public price list and marked `~`. The status bar shows the working directory, or a spinner and elapsed time during a turn, then the model, context used and the session's cost.
 
 - **Cancellation:** Esc or Ctrl-C cancels a REPL turn, including a pending request or a retry wait. A cancelled `-p` run exits 130.
 

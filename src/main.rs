@@ -108,7 +108,7 @@ fn exit_on_hangup_or_terminate(runtime: &tokio::runtime::Runtime) -> Result<()> 
             _ = hangup.recv() => 129,
             _ = terminate.recv() => 143,
         };
-        let _ = crossterm::terminal::disable_raw_mode();
+        term::restore();
         tools::kill_background();
         std::process::exit(code);
     });
