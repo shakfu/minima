@@ -1,7 +1,9 @@
-//! Cost estimates for providers that report none, from OpenRouter's public price list.
+//! Cost estimates and context windows for providers that report none, from OpenRouter's public
+//! model list.
 //!
-//! OpenAI and Anthropic return token counts but no cost. OpenRouter lists their models at the
-//! vendors' rates, and its `/models` needs no key. A table kept in minima would go stale.
+//! OpenAI returns neither a cost nor a context window, and Anthropic no cost. OpenRouter lists
+//! their models at the vendors' rates and windows, and its `/models` needs no key. A table kept in
+//! minima would go stale.
 
 use serde_json::Value;
 
@@ -78,9 +80,25 @@ fn rates(v: &Value, fallback: Option<Rates>) -> Option<Rates> {
     })
 }
 
-/// Prices for the configured model, when its provider reports no cost of its own. A failed fetch
-/// loses only the estimate, so it never stops the run.
-pub async fn estimate(config: &Config, refresh: bool) -> Option<Pricing> {
+/// What OpenRouter lists for the configured model.
+pub struct Listing {
+    pub pricing: Option<Pricing>,
+    pub context: Option<u32>,
+}
+
+impl Listing {
+    /// The window only replaces the 128k fallback. A flag or the provider's own list outranks it.
+    pub fn apply(self, config: &mut Config) {
+        config.pricing = self.pricing;
+        if let (true, Some(window)) = (config.context_guessed, self.context) {
+            config.context = window;
+        }
+    }
+}
+
+/// The listing for the configured model, when its provider is one OpenRouter mirrors. A failed
+/// fetch loses only the listing, so it never stops the run.
+pub async fn lookup(config: &Config, refresh: bool) -> Option<Listing> {
     // A gateway or proxy need not bill at the vendor's rates.
     let entry = registry::find(&config.provider)?;
     if config.base_url != entry.base_url {
@@ -97,7 +115,11 @@ pub async fn estimate(config: &Config, refresh: bool) -> Option<Pricing> {
     {
         tracing::warn!("price list unavailable: {e:#}");
     }
-    ids.iter().find_map(|id| list.pricing_for(id))
+    let entry = ids.iter().find_map(|id| list.find(id))?;
+    Some(Listing {
+        pricing: entry.pricing.as_ref().and_then(Pricing::from_openrouter),
+        context: entry.context_length,
+    })
 }
 
 /// OpenRouter's candidate ids for a model: as given, then without a date suffix. Anthropic writes
@@ -215,6 +237,25 @@ mod tests {
         let usage = Usage::from_parts(300_000, 0);
         assert!(close(p.cost(&usage), 300_000.0 * 0.0000004));
         assert!(close(p.tiers[0].1.cache_write, 0.00000025));
+    }
+
+    #[test]
+    fn a_listed_window_replaces_only_the_fallback() {
+        let listing = || Listing {
+            pricing: Some(luna()),
+            context: Some(1_050_000),
+        };
+        let mut guessed = Config {
+            context_guessed: true,
+            ..Config::for_test("gpt-5.6-luna")
+        };
+        listing().apply(&mut guessed);
+        assert_eq!(guessed.context, 1_050_000);
+        assert!(guessed.pricing.is_some());
+
+        let mut known = Config::for_test("gpt-5.6-luna");
+        listing().apply(&mut known);
+        assert_eq!(known.context, 128_000);
     }
 
     #[test]

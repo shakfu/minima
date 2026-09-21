@@ -76,8 +76,10 @@ pub struct Config {
     pub model: String,
     pub dialect: Dialect,
     pub context: u32,
+    /// True when no flag or model list gave the window, so `context` is the 128k fallback.
+    pub context_guessed: bool,
     pub max_turns: u32,
-    /// Set only when the provider reports no cost; see `price::estimate`.
+    /// Set only when the provider reports no cost; see `price::lookup`.
     pub pricing: Option<crate::price::Pricing>,
 }
 
@@ -91,6 +93,7 @@ impl Config {
             model: model.into(),
             dialect: Dialect::Chat,
             context: 128_000,
+            context_guessed: false,
             max_turns: 8,
             pricing: None,
         }
@@ -108,6 +111,7 @@ impl Cli {
                 model: self.model.clone().unwrap_or_else(|| "mock".into()),
                 dialect: Dialect::Chat,
                 context: self.context.unwrap_or(128_000),
+                context_guessed: false,
                 max_turns: self.max_turns,
                 pricing: None,
             });
@@ -126,9 +130,11 @@ impl Cli {
                     registry::ids().join(", ")
                 ),
             },
-            // No provider named: take the first whose key variable is set. Local servers carry
-            // no key and so are never autoselected.
-            None => match registry::autoselect(|var| std::env::var(var).ok()) {
+            // No provider named: the last one used if its key is still set, else the first whose
+            // key variable is set. Local servers carry no key and so are never autoselected.
+            None => match registry::autoselect(crate::state::State::load().last_provider(), |var| {
+                std::env::var(var).ok()
+            }) {
                 Some(entry) => entry,
                 None => bail!(
                     "no provider key found; set one of {}, or pass --provider",
@@ -189,11 +195,10 @@ impl Cli {
             ),
         };
 
+        let context = self.context.or_else(|| cache.context_for(&model));
         Ok(Config {
-            context: self
-                .context
-                .or_else(|| cache.context_for(&model))
-                .unwrap_or(128_000),
+            context: context.unwrap_or(128_000),
+            context_guessed: context.is_none(),
             provider: entry.id.to_string(),
             base_url,
             api_key,

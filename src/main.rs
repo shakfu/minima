@@ -58,8 +58,10 @@ fn start() -> Result<ExitCode> {
 
     let mut config = runtime.block_on(cli.resolve())?;
     // Not in resolve(), which stays free of network calls the provider does not need.
-    if cli.mock.is_none() {
-        config.pricing = runtime.block_on(price::estimate(&config, cli.refresh_models));
+    if cli.mock.is_none()
+        && let Some(listing) = runtime.block_on(price::lookup(&config, cli.refresh_models))
+    {
+        listing.apply(&mut config);
     }
     let provider = match &cli.mock {
         Some(path) => Provider::Mock(Mock::load(path)?),

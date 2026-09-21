@@ -18,7 +18,7 @@ pub trait Frontend {
     fn tool_start(&mut self, name: &str, arguments: &str);
 
     /// `note` is set when the tool ran but reported a problem, such as a non-zero exit. `ok` is
-    /// false only when the tool itself failed.
+    /// false only when the tool itself failed, and `note` is then the error's root cause.
     fn tool_end(&mut self, body: &str, note: Option<&str>, ok: bool);
 
     fn retry(&mut self, attempt: u32, delay: Duration);

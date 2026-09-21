@@ -28,7 +28,7 @@ pub struct Entry {
     max_input_tokens: Option<u32>,
     /// OpenRouter's per-token prices, kept as served and parsed by `price` on use.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pricing: Option<serde_json::Value>,
+    pub pricing: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -80,9 +80,8 @@ impl Models {
         self.entries.iter().find(|e| e.id == model)?.context_length
     }
 
-    pub fn pricing_for(&self, model: &str) -> Option<crate::price::Pricing> {
-        let entry = self.entries.iter().find(|e| e.id == model)?;
-        crate::price::Pricing::from_openrouter(entry.pricing.as_ref()?)
+    pub fn find(&self, model: &str) -> Option<&Entry> {
+        self.entries.iter().find(|e| e.id == model)
     }
 
     pub async fn refresh(&mut self, base_url: &str, api_key: &str, dialect: Dialect) -> Result<()> {

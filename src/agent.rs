@@ -53,6 +53,10 @@ impl Agent {
         self.config.context
     }
 
+    pub fn model(&self) -> &str {
+        &self.config.model
+    }
+
     /// True when costs come from a price list rather than from the provider.
     pub fn cost_is_estimate(&self) -> bool {
         self.config.pricing.is_some()
@@ -148,7 +152,13 @@ impl Agent {
                 };
                 let (ok, body, note) = match outcome {
                     Ok(out) => (true, out.body, out.note),
-                    Err(e) => (false, format!("error: {e:#}"), None),
+                    // The user sees only the root cause: the call line already names the target
+                    // that the outer context repeats.
+                    Err(e) => (
+                        false,
+                        format!("error: {e:#}"),
+                        Some(e.root_cause().to_string()),
+                    ),
                 };
 
                 frontend.tool_end(&body, note.as_deref(), ok);

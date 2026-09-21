@@ -51,10 +51,14 @@ pub const ALL: &[Entry] = &[
     },
 ];
 
-/// The first entry whose key variable holds something. `lookup` is injected so the order can be
-/// tested without mutating the process environment.
-pub fn autoselect(lookup: impl Fn(&str) -> Option<String>) -> Option<&'static Entry> {
-    ALL.iter().find(|entry| {
+/// The first entry whose key variable holds something, trying `prefer` (the provider last used)
+/// before the table order. `lookup` is injected so the order can be tested without mutating the
+/// process environment.
+pub fn autoselect(
+    prefer: Option<&str>,
+    lookup: impl Fn(&str) -> Option<String>,
+) -> Option<&'static Entry> {
+    prefer.and_then(find).into_iter().chain(ALL).find(|entry| {
         entry
             .key_env
             .and_then(&lookup)
@@ -105,11 +109,11 @@ mod tests {
             move |var: &str| (var == want).then(|| "k".to_string())
         }
         assert_eq!(
-            autoselect(only("OPENAI_API_KEY")).map(|e| e.id),
+            autoselect(None, only("OPENAI_API_KEY")).map(|e| e.id),
             Some("openai")
         );
         assert_eq!(
-            autoselect(only("ANTHROPIC_API_KEY")).map(|e| e.id),
+            autoselect(None, only("ANTHROPIC_API_KEY")).map(|e| e.id),
             Some("anthropic")
         );
 
@@ -117,18 +121,36 @@ mod tests {
         let two = |var: &str| {
             matches!(var, "ANTHROPIC_API_KEY" | "OPENAI_API_KEY").then(|| "k".to_string())
         };
-        assert_eq!(autoselect(two).map(|e| e.id), Some("anthropic"));
+        assert_eq!(autoselect(None, two).map(|e| e.id), Some("anthropic"));
+    }
+
+    #[test]
+    fn the_last_provider_wins_while_its_key_is_set() {
+        let two = |var: &str| {
+            matches!(var, "ANTHROPIC_API_KEY" | "OPENAI_API_KEY").then(|| "k".to_string())
+        };
+        assert_eq!(
+            autoselect(Some("openai"), two).map(|e| e.id),
+            Some("openai")
+        );
+        // Its key is gone, so the table order decides.
+        assert_eq!(
+            autoselect(Some("openrouter"), two).map(|e| e.id),
+            Some("anthropic")
+        );
+        // A local server has no key, so remembering it never selects it silently.
+        assert_eq!(autoselect(Some("ollama"), |_| None).map(|e| e.id), None);
     }
 
     #[test]
     fn a_blank_variable_does_not_count_as_set() {
         let blank = |_: &str| Some("   ".to_string());
-        assert!(autoselect(blank).is_none());
+        assert!(autoselect(None, blank).is_none());
     }
 
     #[test]
     fn nothing_set_selects_nothing_rather_than_a_local_server() {
-        assert!(autoselect(|_| None).is_none());
+        assert!(autoselect(None, |_| None).is_none());
     }
 
     /// A remote provider without a key variable would fail with a confusing 401 instead of a

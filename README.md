@@ -49,9 +49,11 @@ Options:
 
 - **Shell commands:** each call runs in its own process group. A timeout (120 s default, 600 s cap) or a cancel kills the group. Background jobs outlive the call and die with minima. A login-shell wrapper such as `bash -lc` is refused, because a login profile can reorder `PATH`.
 
-- **Modes:** an interactive REPL with history, and headless `-p`, printing text or JSON lines with `--json`.
+- **Modes:** an interactive REPL with history, and headless `-p`, printing text or JSON lines with `--json`. `/exit`, `/quit` or Ctrl-D leaves the REPL.
 
-- **Display:** one line per tool call, such as `read src/lib.rs:1-400 -> 400 lines` or `$ cargo test -> exit 101: ...`. After each prompt, one line gives context used, tokens in and out, and the cost. OpenRouter reports the cost; for OpenAI and Anthropic it is estimated from OpenRouter's public price list and marked `~`.
+- **JSON output:** one record per line: `turn`, `tool_call`, `tool_result`, `retry`, then a final `result`. `turn` and `result` carry token counts, `cost` in USD or null, and `cost_estimated`.
+
+- **Display:** one line per tool call, such as `read src/lib.rs:1-400 -> 400 lines` or `$ cargo test -> exit 101: ...`. After each prompt, one line gives context used, tokens in and out, and the cost. OpenRouter reports the cost; for OpenAI and Anthropic it is estimated from OpenRouter's public price list and marked `~`. The right side of the prompt shows the model, context used and the session's cost.
 
 - **Cancellation:** Esc or Ctrl-C cancels a REPL turn, including a pending request or a retry wait. A cancelled `-p` run exits 130.
 
@@ -59,11 +61,11 @@ Options:
 
 - **Skills:** `skills/<name>/SKILL.md` in the config directory. The system prompt lists each skill's path and frontmatter; the model reads the file when a task matches.
 
-- **Context:** the window comes from the provider's model list or `--context`. Once the last turn's token count nears the window, the next request is refused before sending. There is no compaction.
+- **Context:** the window comes from `--context`, the provider's model list, or OpenRouter's list for an OpenAI model, whose own list gives none. Once the last turn's token count nears the window, the next request is refused before sending. There is no compaction.
 
-- **Network:** up to 4 connection retries with backoff. Requests time out after 10 s to connect or 300 s without data.
+- **Network:** up to 4 connection retries with backoff. Requests time out after 10 s to connect or 300 s without data. With `openai` or `anthropic`, minima also fetches OpenRouter's public model list, without a key and at most once a day, for prices and missing context windows. `--base-url` turns this off.
 
-- **Persistence:** a model list cache, prompt history, and the last model per provider. See [Build](#build) for where they live.
+- **Persistence:** a model list cache, prompt history, the last provider, and the last model per provider. See [Build](#build) for where they live.
 
 - **Colour:** on for a terminal, off for a pipe, `--no-color` or `NO_COLOR`.
 
@@ -73,7 +75,7 @@ Options:
 
 Each registry entry fixes a base URL, a dialect and a key variable, so `--provider` and `--model` are the whole selection, and both have a fallback:
 
-- No `--provider`: the first entry below whose key variable is set. Local servers carry no key and are never autoselected, so an endpoint that is simply unreachable is never chosen silently.
+- No `--provider`: the provider last used, if its key variable is still set, then the first entry below whose key variable is set. So a bare `minima` repeats the last provider and model. Local servers carry no key and are never autoselected, so an endpoint that is simply unreachable is never chosen silently.
 
 - No `--model`: the model last used with that provider, then a single-model endpoint's only entry, then an error naming the provider.
 
@@ -115,7 +117,7 @@ minima --mock mock/read-then-answer.json -p "what is this package?"
 minima --mock mock/say-hi.json            # interactive
 ```
 
-A mock script is a JSON array of turns, each an array of steps: `{"text": ...}`, `{"tool_call": {...}}`, `{"usage": {...}}`, and `"truncated"` for a response cut off at the output token limit. One turn is consumed per provider round-trip.
+A mock script is a JSON array of turns, each an array of steps: `{"text": ...}`, `{"tool_call": {...}}`, `{"usage": {...}}` with token counts and an optional `cost`, and `"truncated"` for a response cut off at the output token limit. One turn is consumed per provider round-trip.
 
 Configuration, in precedence order: flags, then environment, then `$XDG_CONFIG_HOME/minima/`, which also holds the model cache, `history.txt`, `state.json`, and optionally `AGENTS.md` and `skills/`. minima creates the directory 0700 and the files it owns 0600, because prompts are written verbatim.
 

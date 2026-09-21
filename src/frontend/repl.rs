@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use crossterm::event::{self, KeyCode, KeyEventKind, KeyModifiers};
-use reedline::{DefaultPrompt, FileBackedHistory, Reedline, Signal};
+use reedline::{DefaultPrompt, DefaultPromptSegment, FileBackedHistory, Reedline, Signal};
 
 use super::{Frontend, describe, one_line, printable};
 use crate::agent::Agent;
@@ -42,6 +42,8 @@ pub struct Repl {
     session_cost: Option<f64>,
     /// Costs come from a price list, not the provider, and are marked `~`.
     estimate: bool,
+    /// The last line written was a tool line, so the answer that follows needs a gap.
+    after_tool: bool,
 }
 
 impl Repl {
@@ -74,10 +76,24 @@ impl Repl {
             );
             self.line(&theme::paint(Style::Muted, &text));
         }
-        self.used = 0;
+        // `used` stays: the conversation, and so the context it fills, carries over.
+        self.after_tool = false;
         self.input = 0;
         self.output = 0;
         self.cost = None;
+    }
+
+    /// The right prompt: the model, then context used and the session's cost once known.
+    fn status(&self, model: &str) -> String {
+        let mut text = model.to_string();
+        if self.used > 0 {
+            let (used, window) = (count(self.used.into()), count(self.context.into()));
+            text.push_str(&format!("  {used}/{window}"));
+        }
+        if let Some(cost) = self.session_cost {
+            text.push_str(&format!("  {}", dollars(cost, self.estimate)));
+        }
+        text
     }
 }
 
@@ -92,7 +108,7 @@ fn usage_line(
     session: Option<f64>,
     estimate: bool,
 ) -> String {
-    let dollars = |usd: f64| format!("{}{}", if estimate { "~" } else { "" }, dollars(usd));
+    let dollars = |usd: f64| dollars(usd, estimate);
     let mut text = format!(
         "{}/{} context, {} in, {} out",
         count(used.into()),
@@ -135,16 +151,23 @@ fn count(n: u64) -> String {
     format!("{text}{unit}")
 }
 
-fn dollars(usd: f64) -> String {
+/// An estimate is marked `~`.
+fn dollars(usd: f64, estimate: bool) -> String {
+    let mark = if estimate { "~" } else { "" };
     if usd < 1.0 {
-        format!("${usd:.4}")
+        format!("{mark}${usd:.4}")
     } else {
-        format!("${usd:.2}")
+        format!("{mark}${usd:.2}")
     }
 }
 
 impl Frontend for Repl {
     fn text(&mut self, delta: &str) {
+        // A blank line sets the answer apart from the tool lines above it.
+        if self.after_tool && !delta.is_empty() {
+            self.after_tool = false;
+            self.put("\n");
+        }
         self.put(&printable(delta));
     }
 
@@ -164,11 +187,12 @@ impl Frontend for Repl {
         let room = WIDTH.saturating_sub(self.call_width + 4).max(16);
         let status = |text: &str| format!(" -> {}", one_line(text, room));
         let text = match (ok, note) {
-            (false, _) => theme::paint(Style::Error, &status(body)),
+            (false, note) => theme::paint(Style::Error, &status(note.unwrap_or(body))),
             (true, Some(note)) => theme::paint(Style::Warn, &status(note)),
             (true, None) => theme::paint(Style::Muted, &status(&result(body))),
         };
         self.put(&format!("{text}\n"));
+        self.after_tool = true;
     }
 
     fn retry(&mut self, attempt: u32, delay: Duration) {
@@ -193,12 +217,38 @@ impl Frontend for Repl {
     }
 }
 
+const EXIT: [&str; 2] = ["/quit", "/exit"];
+
+/// Drops the exit commands from the history file before it loads, so the first Up in a fresh
+/// session does not hand back one of them. Filtered here, not on save: reedline excludes only one
+/// prefix, and `/` alone would also drop prompts that start with a path.
+fn forget_exit_commands(path: &std::path::Path) {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return;
+    };
+    if !text.lines().any(|line| EXIT.contains(&line)) {
+        return;
+    }
+    let kept: String = text
+        .lines()
+        .filter(|line| !EXIT.contains(line))
+        .map(|line| format!("{line}\n"))
+        .collect();
+    // Replaced by rename, and tightened before it, as the model cache is.
+    let tmp = path.with_extension("tmp");
+    if std::fs::write(&tmp, kept).is_ok() {
+        let _ = crate::config::restrict_to_owner(&tmp);
+        let _ = std::fs::rename(&tmp, path);
+    }
+}
+
 /// Prompt history survives the session. It cannot be recovered if the file is unusable, so a
 /// failure degrades to the in-memory default rather than refusing to start.
 fn editor_with_history() -> Reedline {
     let Some(path) = crate::config::history_path() else {
         return Reedline::create();
     };
+    forget_exit_commands(&path);
     match FileBackedHistory::with_file(HISTORY_CAPACITY, path.clone()) {
         Ok(history) => {
             // Prompts are written verbatim, so the file and the directory holding it are
@@ -208,15 +258,11 @@ fn editor_with_history() -> Reedline {
                     tracing::warn!("could not restrict {}: {e}", target.display());
                 }
             }
-            // Keeps /quit out of the recall ring; otherwise the first Up in a fresh session hands
-            // the user the exit command. Only /quit: a prompt can start with a path.
-            Reedline::create()
-                .with_history(Box::new(history))
-                .with_history_exclusion_prefix(Some("/quit".into()))
+            Reedline::create().with_history(Box::new(history))
         }
         Err(e) => {
             tracing::warn!("history disabled, staying in memory: {e}");
-            Reedline::create().with_history_exclusion_prefix(Some("/quit".into()))
+            Reedline::create()
         }
     }
 }
@@ -225,7 +271,7 @@ fn editor_with_history() -> Reedline {
 /// never sits inside an async task.
 pub fn run(runtime: &tokio::runtime::Runtime, agent: &mut Agent) -> Result<()> {
     let mut editor = editor_with_history();
-    let prompt = DefaultPrompt::default();
+    let mut prompt = DefaultPrompt::default();
     let cancel = Cancel::new();
     let mut frontend = Repl {
         context: agent.context_window(),
@@ -234,6 +280,7 @@ pub fn run(runtime: &tokio::runtime::Runtime, agent: &mut Agent) -> Result<()> {
     };
 
     loop {
+        prompt.right_prompt = DefaultPromptSegment::Basic(frontend.status(agent.model()));
         let line = match editor.read_line(&prompt)? {
             Signal::Success(line) => line,
             Signal::CtrlC => continue,
@@ -243,7 +290,7 @@ pub fn run(runtime: &tokio::runtime::Runtime, agent: &mut Agent) -> Result<()> {
         if trimmed.is_empty() {
             continue;
         }
-        if trimmed == "/quit" {
+        if EXIT.contains(&trimmed) {
             break;
         }
 
@@ -293,7 +340,35 @@ fn watch_for_esc(cancel: Cancel, stop: Arc<AtomicBool>) -> std::thread::JoinHand
 
 #[cfg(test)]
 mod tests {
-    use super::{count, result, usage_line};
+    use super::{Repl, count, forget_exit_commands, result, usage_line};
+
+    #[test]
+    fn the_status_grows_as_the_session_does() {
+        let mut repl = Repl {
+            context: 1_050_000,
+            estimate: true,
+            ..Repl::default()
+        };
+        assert_eq!(repl.status("gpt-5.6-luna"), "gpt-5.6-luna");
+        repl.used = 11_500;
+        repl.session_cost = Some(0.005);
+        assert_eq!(
+            repl.status("gpt-5.6-luna"),
+            "gpt-5.6-luna  11.5k/1.05M  ~$0.0050"
+        );
+    }
+
+    #[test]
+    fn exit_commands_are_dropped_from_history_and_paths_kept() {
+        let dir = crate::tools::Scratch::new("history-exit");
+        let path = dir.file("history.txt");
+        std::fs::write(&path, "fix it\n/quit\n/etc/hosts is wrong\n/exit\n").unwrap();
+        forget_exit_commands(path.as_ref());
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "fix it\n/etc/hosts is wrong\n"
+        );
+    }
 
     #[test]
     fn counts_are_short() {

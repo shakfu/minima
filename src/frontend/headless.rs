@@ -39,7 +39,8 @@ impl Frontend for Headless {
 
     fn tool_end(&mut self, body: &str, note: Option<&str>, ok: bool) {
         if !ok {
-            self.note(Style::Error, &format!("  -> {}", one_line(body, 80)));
+            let error = note.unwrap_or(body);
+            self.note(Style::Error, &format!("  -> {}", one_line(error, 80)));
         } else if let Some(note) = note {
             self.note(Style::Warn, &format!("  -> {note}"));
         }
