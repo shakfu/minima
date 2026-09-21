@@ -24,6 +24,12 @@
 
   The check is resolved-path and component-wise, unlike the substring test the feature is modelled on, so `.github/`, `.gitignore` and `env.sample` are untouched and `../x/.env` is not. It is not a boundary: `bash` ignores it on both platforms. Landlock grants an access if any rule met while walking the path grants it, so no hole can be cut in the rule that grants the root, and enumerating the root's children instead would cost the ability to create a file at the top level of the project. Seatbelt does take a trailing deny, but a boundary that held only on macOS would be trusted on Linux.
 
+- `scripts/test_sandbox.py` runs real commands under `--confine fs` and checks the disk rather than minima's report: a cargo build and a git commit that must succeed, and writes escaping the root by redirect, `cd ..`, symlink, Python, `rm`, truncation and a background job that must not. A mock plays the model, so it needs no key and runs unchanged on Linux and macOS. `CONFINE=paths` is the control, under which the escaping writes land. It was chosen over an integration test in `tests/` because the cargo case makes it slow and it needs a kernel with Landlock.
+
+### Fixed
+
+- A tool note in the REPL wraps instead of being cut at 80 columns. After a long stderr line the cut removed whatever the note appended, such as `--confine fs`'s hint on a denied write or the notice that background jobs are still running. A routine result is still cut to one line.
+
 ## 0.4.0
 
 ### Added

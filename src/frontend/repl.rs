@@ -134,19 +134,13 @@ impl Frontend for Repl {
 
     fn tool_end(&mut self, body: &str, note: Option<&str>, ok: bool) {
         let call = self.call.take().unwrap_or_default();
-        // A note displaces the result because it says more: it is the reason the model is about
-        // to try something else.
         let room = WIDTH.saturating_sub(call.chars().count() + 4).max(16);
-        let (tone, status) = match (ok, note) {
-            (false, note) => (Style::Error, note.unwrap_or(body).to_string()),
-            (true, Some(note)) => (Style::Warn, note.to_string()),
-            (true, None) => (Style::Muted, result(body)),
-        };
+        let (tone, status) = tool_status(body, note, ok, room);
         let mut screen = self.screen();
         screen.set_activity(None);
         let _ = screen.spans(vec![
             (Tone::Role(Style::Muted), call),
-            (Tone::Role(tone), format!(" -> {}", one_line(&status, room))),
+            (Tone::Role(tone), format!(" -> {status}")),
         ]);
         let _ = screen.draw();
         drop(screen);
@@ -462,6 +456,17 @@ fn usage_line(
     text
 }
 
+/// What follows a finished call's `->`. A note displaces the result because it says more: it is
+/// the reason the model is about to try something else. So a note or an error is flattened but
+/// never cut, and wraps if it must; only a routine result is cut to `room` columns.
+fn tool_status(body: &str, note: Option<&str>, ok: bool, room: usize) -> (Style, String) {
+    match (ok, note) {
+        (false, note) => (Style::Error, one_line(note.unwrap_or(body), usize::MAX)),
+        (true, Some(note)) => (Style::Warn, one_line(note, usize::MAX)),
+        (true, None) => (Style::Muted, one_line(&result(body), room)),
+    }
+}
+
 /// A one-line result is shown whole; anything longer by its size, not counting `read`'s
 /// `... N more lines` footers.
 fn result(body: &str) -> String {
@@ -500,7 +505,24 @@ fn dollars(usd: f64, estimate: bool) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Meter, Search, Step, count, result, usage_line};
+    use super::{Meter, Search, Step, count, result, tool_status, usage_line};
+    use crate::theme::Style;
+
+    /// A hint after a long stderr line, such as `--confine fs`'s note on a denied write, must
+    /// reach the user; the routine result is what gets cut.
+    #[test]
+    fn notes_and_errors_are_never_cut() {
+        let note = format!(
+            "exit 1: {}; if a write was denied: see --writable",
+            "x".repeat(60)
+        );
+        let (tone, shown) = tool_status("", Some(&note), true, 20);
+        assert_eq!((tone, shown.as_str()), (Style::Warn, note.as_str()));
+        let (tone, shown) = tool_status("", Some("a\nlong\nerror"), false, 5);
+        assert_eq!((tone, shown.as_str()), (Style::Error, "a long error"));
+        let (_, shown) = tool_status(&"y".repeat(60), None, true, 20);
+        assert_eq!(shown.chars().count(), 20);
+    }
     use crate::frontend::history::History;
     use crate::provider::Usage;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};

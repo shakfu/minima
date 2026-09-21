@@ -57,7 +57,7 @@ Options:
 
 - **Shell commands:** each call runs in its own process group. A timeout (120 s default, 600 s cap) or a cancel kills the group. Background jobs outlive the call and die with minima. A login-shell wrapper such as `bash -lc` is refused, because a login profile can reorder `PATH`.
 
-- **Confinement:** `--confine` takes one of three modes. `none` bounds nothing. `paths`, the default, bounds `write` and `edit` by the root and refuses the protected paths under it, leaving `bash` unbounded. `fs` adds the platform's filesystem sandbox to `bash` and its descendants, which may then write only under the root, `$TMPDIR`, `/dev/null` and the ecosystem caches (`$CARGO_HOME`, `$XDG_CACHE_HOME`, `$GOPATH`, `~/.npm`, and `~/Library/Caches` on macOS). So `fs` is not `paths` applied to `bash`: it is a wider set for `bash`, because no build works without the caches, and the same narrow set for the file tools. Reads are unrestricted in every mode. Under `fs` one confined command runs at startup, so a platform that cannot install the sandbox fails there rather than mid-turn, and a command whose output looks like a denied write gets a note naming the policy, since `Operation not permitted` on its own tells the model nothing.
+- **Confinement:** `--confine` takes one of three modes. `none` bounds nothing. `paths`, the default, bounds `write` and `edit` by the root and refuses the protected paths under it, leaving `bash` unbounded. `fs` adds the platform's filesystem sandbox to `bash` and its descendants, which may then write only under the root, `$TMPDIR`, `/dev/null` and the ecosystem caches (`$CARGO_HOME`, `$XDG_CACHE_HOME`, `$GOPATH`, `~/.npm`, and `~/Library/Caches` on macOS). So `fs` is not `paths` applied to `bash`: it is a wider set for `bash`, because no build works without the caches, and the same narrow set for the file tools. Reads are unrestricted in every mode. Under `fs` one confined command runs at startup, so a platform that cannot install the sandbox fails there rather than mid-turn, and a command whose output looks like a denied write gets a note naming the policy and `--writable`, shown to both the model and the user, since `Operation not permitted` on its own tells neither of them anything.
 
   | Platform | Mechanism | Requires |
   |-|-|-|
@@ -79,7 +79,7 @@ Options:
 
 - **JSON output:** one record per line: `turn`, `tool_call`, `tool_result`, `retry`, then a final `result`. `turn` and `result` carry token counts, `cost` in USD or null, and `cost_estimated`; `result` also names the bounds the run used, as `confine` and `writable`.
 
-- **Display:** one line per tool call, such as `read src/lib.rs:1-400 -> 400 lines` or `$ cargo test -> exit 101: ...`. After each prompt, one line gives context used, tokens in and out, and the cost. OpenRouter reports the cost; for OpenAI and Anthropic it is estimated from OpenRouter's public price list and marked `~`. The status bar shows the working directory, or a spinner and elapsed time during a turn, then the model, context used and the session's cost.
+- **Display:** one line per tool call, such as `read src/lib.rs:1-400 -> 400 lines` or `$ cargo test -> exit 101: ...`. A routine result is cut to fit; a note or an error wraps onto further rows, so a hint at its end is never lost. After each prompt, one line gives context used, tokens in and out, and the cost. OpenRouter reports the cost; for OpenAI and Anthropic it is estimated from OpenRouter's public price list and marked `~`. The status bar shows the working directory, or a spinner and elapsed time during a turn, then the model, context used and the session's cost.
 
 - **Cancellation:** Esc or Ctrl-C cancels a REPL turn, including a pending request or a retry wait. A cancelled `-p` run exits 130.
 
@@ -131,6 +131,8 @@ make help       # every target
 Plain `cargo build`, `cargo test` and `cargo clippy --all-targets -- -D warnings` work too.
 
 `scripts/test_openrouter.sh`, `test_openai.sh` and `test_anthropic.sh` run five scenarios against a real endpoint -- text, `read`, `bash`, `write` with a read-back, then a skill the prompt does not name -- and exit non-zero if any of them misses. They take the key from the provider's usual environment variable or from `~/.config/minima/<provider>.key`, and work from a throwaway directory rather than the repo. `XDG_CONFIG_HOME` points at a throwaway directory too, so your own `AGENTS.md` and skills stay out of the prompt. The Anthropic one speaks native `anthropic-messages`.
+
+`scripts/test_sandbox.py` runs real commands under `--confine fs` -- a cargo build, a git commit, and writes that escape the root by redirect, `cd ..`, symlink, Python, `rm`, truncation and a background job -- then checks the disk rather than minima's report. A mock plays the model, so it needs no key. `CONFINE=paths` runs it as a control, where the escaping `bash` writes should land.
 
 Rust 1.88 or newer, for let-chains under edition 2024. `cargo test` also needs `python3`.
 
