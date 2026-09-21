@@ -14,7 +14,8 @@ use crate::provider::http::{authorize, client};
 const TTL_SECS: u64 = 24 * 60 * 60;
 /// Bounds the cursor walk, so a gateway that always answers `has_more` cannot loop it forever.
 const MAX_PAGES: usize = 20;
-const SCHEMA: u32 = 1;
+/// 2 added `pricing`; a version-1 file would hide it for a day.
+const SCHEMA: u32 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Entry {
@@ -25,6 +26,9 @@ pub struct Entry {
     /// Anthropic's name for the context window. Folded into `context_length` on fetch.
     #[serde(default, skip_serializing)]
     max_input_tokens: Option<u32>,
+    /// OpenRouter's per-token prices, kept as served and parsed by `price` on use.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pricing: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -74,6 +78,10 @@ impl Models {
 
     pub fn context_for(&self, model: &str) -> Option<u32> {
         self.entries.iter().find(|e| e.id == model)?.context_length
+    }
+
+    pub fn find(&self, model: &str) -> Option<&Entry> {
+        self.entries.iter().find(|e| e.id == model)
     }
 
     pub async fn refresh(&mut self, base_url: &str, api_key: &str, dialect: Dialect) -> Result<()> {

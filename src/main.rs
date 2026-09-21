@@ -5,6 +5,7 @@ mod cache;
 mod cancel;
 mod config;
 mod frontend;
+mod price;
 mod prompt;
 mod provider;
 mod state;
@@ -68,7 +69,13 @@ fn start() -> Result<ExitCode> {
         Confine::Fs => runtime.block_on(tools::preflight(&bounds))?,
     }
 
-    let config = runtime.block_on(cli.resolve())?;
+    let mut config = runtime.block_on(cli.resolve())?;
+    // Not in resolve(), which stays free of network calls the provider does not need.
+    if cli.mock.is_none()
+        && let Some(listing) = runtime.block_on(price::lookup(&config, cli.refresh_models))
+    {
+        listing.apply(&mut config);
+    }
     let provider = match &cli.mock {
         Some(path) => Provider::Mock(Mock::load(path)?),
         None => Provider::Http(Http::new()?),
@@ -114,7 +121,7 @@ fn exit_on_hangup_or_terminate(runtime: &tokio::runtime::Runtime) -> Result<()> 
             _ = hangup.recv() => 129,
             _ = terminate.recv() => 143,
         };
-        let _ = crossterm::terminal::disable_raw_mode();
+        term::restore();
         tools::kill_background();
         std::process::exit(code);
     });
@@ -140,6 +147,7 @@ async fn headless(
 
     let mut plain = Headless::default();
     let mut json = Json::new(std::io::stdout(), bounds);
+    json.estimate = agent.cost_is_estimate();
     let frontend: &mut dyn Frontend = if as_json { &mut json } else { &mut plain };
     let result = agent.run(prompt, frontend, &cancel).await;
     watcher.abort();

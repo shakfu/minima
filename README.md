@@ -23,20 +23,28 @@ A minimal coding agent for the terminal
 Usage: minima [OPTIONS]
 
 Options:
-      --root <DIR>      Directory in which the agent operates, and the boundary `--confine` applies. Defaults to the current directory
-      --confine <MODE>  How much a tool call is bounded [default: paths] [possible values: none, paths, fs]
-      --writable <DIR>  Directory `--confine fs` leaves writable for `bash`, beyond the root and the build caches. Repeat for more than one. Never widens `write` or `edit`, which stay inside the root
-  -p, --prompt <TEXT>   Headless: answer this prompt, print the result, exit
-      --json            With -p: print one JSON record per line on stdout, ending in a `result` record
-      --provider <ID>   Which provider to talk to: fixes the endpoint, the wire format and the key variable. Left out, minima takes the first provider whose key variable is set [env: MINIMA_PROVIDER=]
-      --model <ID>      Left out, minima reuses the model last used with this provider [env: MINIMA_MODEL=]
-      --base-url <URL>  Override the provider's endpoint, for a local server or a gateway. Never changes the wire format: a different shape is a different provider, not a different address [env: MINIMA_BASE_URL=]
-      --api-key <KEY>   Overrides the provider's key variable. Requires --provider [env: MINIMA_API_KEY]
-      --no-color        Print without colour. Colour is off anyway when stdout is not a terminal, or when NO_COLOR is set
-      --context <N>     Context window in tokens. Falls back to the cached value for the model [env: MINIMA_CONTEXT=]
-      --mock <PATH>     Replay a scripted JSON stream instead of calling the network
-      --max-turns <N>   Refuse to keep going after this many provider round-trips in one user turn [default: 32]
-      --refresh-models  Re-fetch the model list even if the cache is fresh
+      --root <DIR>      Directory the agent works in, and the bound --confine
+                        applies. Default: the current directory
+      --confine <MODE>  How much a tool call is bounded [default: paths]
+                        [possible values: none, paths, fs]
+      --writable <DIR>  Another directory bash may write to under --confine fs.
+                        Repeatable
+  -p, --prompt <TEXT>   Answer one prompt, print the result, exit
+      --json            With -p: print JSON lines, ending in a `result` record
+  -P, --provider <ID>   Provider id. Default: the first one whose key is set
+                        [env: MINIMA_PROVIDER=]
+  -m, --model <ID>      Model id. Default: the last one used with this provider
+                        [env: MINIMA_MODEL=]
+      --base-url <URL>  Override the provider's endpoint. The wire format stays
+                        the same [env: MINIMA_BASE_URL=]
+      --api-key <KEY>   Provider key. Requires --provider [env: MINIMA_API_KEY]
+      --no-color        Disable colour. Also off for non-terminals or when
+                        NO_COLOR is set
+      --context <N>     Context window in tokens. Default: the cached value for
+                        the model [env: MINIMA_CONTEXT=]
+      --mock <PATH>     Replay a scripted JSON stream instead of the network
+      --max-turns <N>   Max provider round-trips per user turn [default: 32]
+      --refresh-models  Re-fetch the model list, ignoring the cache
   -h, --help            Print help (see more with '--help')
   -V, --version         Print version
 ```
@@ -65,7 +73,13 @@ Options:
 
 - **Unsafe mode:** `--confine none` keeps the selected working directory and bounds nothing. It prints a warning at startup.
 
-- **Modes:** an interactive REPL with history, and headless `-p`, printing text or JSON lines with `--json`.
+- **Modes:** an interactive REPL, and headless `-p`, printing text or JSON lines with `--json`. `/exit`, `/quit` or Ctrl-D on an empty input leaves the REPL.
+
+- **REPL:** an input box with a status bar below it, pinned to the bottom of the terminal; output scrolls above it into the terminal's scrollback. Enter submits, Alt-Enter or Ctrl-J adds a newline, Up and Down or Ctrl-P and Ctrl-N browse history, Ctrl-R searches it, and Ctrl-C clears the input. Typing continues during a turn.
+
+- **JSON output:** one record per line: `turn`, `tool_call`, `tool_result`, `retry`, then a final `result`. `turn` and `result` carry token counts, `cost` in USD or null, and `cost_estimated`; `result` also names the bounds the run used, as `confine` and `writable`.
+
+- **Display:** one line per tool call, such as `read src/lib.rs:1-400 -> 400 lines` or `$ cargo test -> exit 101: ...`. After each prompt, one line gives context used, tokens in and out, and the cost. OpenRouter reports the cost; for OpenAI and Anthropic it is estimated from OpenRouter's public price list and marked `~`. The status bar shows the working directory, or a spinner and elapsed time during a turn, then the model, context used and the session's cost.
 
 - **Cancellation:** Esc or Ctrl-C cancels a REPL turn, including a pending request or a retry wait. A cancelled `-p` run exits 130.
 
@@ -73,11 +87,11 @@ Options:
 
 - **Skills:** `skills/<name>/SKILL.md` in the config directory. The system prompt lists each skill's path and frontmatter; the model reads the file when a task matches.
 
-- **Context:** the window comes from the provider's model list or `--context`. Once the last turn's token count nears the window, the next request is refused before sending. There is no compaction.
+- **Context:** the window comes from `--context`, the provider's model list, or OpenRouter's list for an OpenAI model, whose own list gives none. Once the last turn's token count nears the window, the next request is refused before sending. There is no compaction.
 
-- **Network:** up to 4 connection retries with backoff. Requests time out after 10 s to connect or 300 s without data.
+- **Network:** up to 4 connection retries with backoff. Requests time out after 10 s to connect or 300 s without data. With `openai` or `anthropic`, minima also fetches OpenRouter's public model list, without a key and at most once a day, for prices and missing context windows. `--base-url` turns this off.
 
-- **Persistence:** a model list cache, prompt history, and the last model per provider. See [Build](#build) for where they live.
+- **Persistence:** a model list cache, prompt history, the last provider, and the last model per provider. See [Build](#build) for where they live.
 
 - **Colour:** on for a terminal, off for a pipe, `--no-color` or `NO_COLOR`.
 
@@ -87,7 +101,7 @@ Options:
 
 Each registry entry fixes a base URL, a dialect and a key variable, so `--provider` and `--model` are the whole selection, and both have a fallback:
 
-- No `--provider`: the first entry below whose key variable is set. Local servers carry no key and are never autoselected, so an endpoint that is simply unreachable is never chosen silently.
+- No `--provider`: the provider last used, if its key variable is still set, then the first entry below whose key variable is set. So a bare `minima` repeats the last provider and model. Local servers carry no key and are never autoselected, so an endpoint that is simply unreachable is never chosen silently.
 
 - No `--model`: the model last used with that provider, then a single-model endpoint's only entry, then an error naming the provider.
 
@@ -129,7 +143,7 @@ minima --mock mock/read-then-answer.json -p "what is this package?"
 minima --mock mock/say-hi.json            # interactive
 ```
 
-A mock script is a JSON array of turns, each an array of steps: `{"text": ...}`, `{"tool_call": {...}}`, `{"usage": {...}}`, and `"truncated"` for a response cut off at the output token limit. One turn is consumed per provider round-trip.
+A mock script is a JSON array of turns, each an array of steps: `{"text": ...}`, `{"tool_call": {...}}`, `{"usage": {...}}` with token counts and an optional `cost`, and `"truncated"` for a response cut off at the output token limit. One turn is consumed per provider round-trip.
 
 Configuration, in precedence order: flags, then environment, then `$XDG_CONFIG_HOME/minima/`, which also holds the model cache, `history.txt`, `state.json`, and optionally `AGENTS.md` and `skills/`. minima creates the directory 0700 and the files it owns 0600, because prompts are written verbatim.
 

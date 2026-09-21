@@ -76,10 +76,10 @@ impl Bounds {
 }
 
 #[derive(Parser, Debug, Clone)]
-#[command(name = "minima", version, about)]
+#[command(name = "minima", version, about, max_term_width = 80)]
 pub struct Cli {
-    /// Directory in which the agent operates, and the boundary `--confine` applies. Defaults to
-    /// the current directory.
+    /// Directory the agent works in, and the bound --confine applies. Default: the
+    /// current directory.
     #[arg(long, value_name = "DIR")]
     pub root: Option<PathBuf>,
 
@@ -87,34 +87,31 @@ pub struct Cli {
     #[arg(long, value_name = "MODE", value_enum, default_value_t = Confine::Paths)]
     pub confine: Confine,
 
-    /// Directory `--confine fs` leaves writable for `bash`, beyond the root and the build caches.
-    /// Repeat for more than one. Never widens `write` or `edit`, which stay inside the root.
+    /// Another directory bash may write to under --confine fs. Repeatable.
     #[arg(long, value_name = "DIR")]
     pub writable: Vec<PathBuf>,
 
-    /// Headless: answer this prompt, print the result, exit.
+    /// Answer one prompt, print the result, exit.
     #[arg(short = 'p', long, value_name = "TEXT")]
     pub prompt: Option<String>,
 
-    /// With -p: print one JSON record per line on stdout, ending in a `result` record.
+    /// With -p: print JSON lines, ending in a `result` record.
     #[arg(long, requires = "prompt")]
     pub json: bool,
 
-    /// Which provider to talk to: fixes the endpoint, the wire format and the key variable.
-    /// Left out, minima takes the first provider whose key variable is set.
-    #[arg(long, env = "MINIMA_PROVIDER", value_name = "ID")]
+    /// Provider id. Default: the first one whose key is set.
+    #[arg(short = 'P', long, env = "MINIMA_PROVIDER", value_name = "ID")]
     pub provider: Option<String>,
 
-    /// Left out, minima reuses the model last used with this provider.
-    #[arg(long, env = "MINIMA_MODEL", value_name = "ID")]
+    /// Model id. Default: the last one used with this provider.
+    #[arg(short, long, env = "MINIMA_MODEL", value_name = "ID")]
     pub model: Option<String>,
 
-    /// Override the provider's endpoint, for a local server or a gateway. Never changes the wire
-    /// format: a different shape is a different provider, not a different address.
+    /// Override the provider's endpoint. The wire format stays the same.
     #[arg(long, env = "MINIMA_BASE_URL", value_name = "URL")]
     pub base_url: Option<String>,
 
-    /// Overrides the provider's key variable. Requires --provider.
+    /// Provider key. Requires --provider.
     #[arg(
         long,
         env = "MINIMA_API_KEY",
@@ -123,24 +120,23 @@ pub struct Cli {
     )]
     pub api_key: Option<String>,
 
-    /// Print without colour. Colour is off anyway when stdout is not a terminal, or when
-    /// NO_COLOR is set.
+    /// Disable colour. Also off for non-terminals or when NO_COLOR is set.
     #[arg(long)]
     pub no_color: bool,
 
-    /// Context window in tokens. Falls back to the cached value for the model.
+    /// Context window in tokens. Default: the cached value for the model.
     #[arg(long, env = "MINIMA_CONTEXT", value_name = "N")]
     pub context: Option<u32>,
 
-    /// Replay a scripted JSON stream instead of calling the network.
+    /// Replay a scripted JSON stream instead of the network.
     #[arg(long, value_name = "PATH")]
     pub mock: Option<PathBuf>,
 
-    /// Refuse to keep going after this many provider round-trips in one user turn.
+    /// Max provider round-trips per user turn.
     #[arg(long, default_value_t = 32, value_name = "N")]
     pub max_turns: u32,
 
-    /// Re-fetch the model list even if the cache is fresh.
+    /// Re-fetch the model list, ignoring the cache.
     #[arg(long)]
     pub refresh_models: bool,
 }
@@ -195,7 +191,11 @@ pub struct Config {
     pub model: String,
     pub dialect: Dialect,
     pub context: u32,
+    /// True when no flag or model list gave the window, so `context` is the 128k fallback.
+    pub context_guessed: bool,
     pub max_turns: u32,
+    /// Set only when the provider reports no cost; see `price::lookup`.
+    pub pricing: Option<crate::price::Pricing>,
 }
 
 impl Config {
@@ -208,7 +208,9 @@ impl Config {
             model: model.into(),
             dialect: Dialect::Chat,
             context: 128_000,
+            context_guessed: false,
             max_turns: 8,
+            pricing: None,
         }
     }
 }
@@ -224,7 +226,9 @@ impl Cli {
                 model: self.model.clone().unwrap_or_else(|| "mock".into()),
                 dialect: Dialect::Chat,
                 context: self.context.unwrap_or(128_000),
+                context_guessed: false,
                 max_turns: self.max_turns,
+                pricing: None,
             });
         }
 
@@ -241,9 +245,11 @@ impl Cli {
                     registry::ids().join(", ")
                 ),
             },
-            // No provider named: take the first whose key variable is set. Local servers carry
-            // no key and so are never autoselected.
-            None => match registry::autoselect(|var| std::env::var(var).ok()) {
+            // No provider named: the last one used if its key is still set, else the first whose
+            // key variable is set. Local servers carry no key and so are never autoselected.
+            None => match registry::autoselect(crate::state::State::load().last_provider(), |var| {
+                std::env::var(var).ok()
+            }) {
                 Some(entry) => entry,
                 None => bail!(
                     "no provider key found; set one of {}, or pass --provider",
@@ -304,17 +310,17 @@ impl Cli {
             ),
         };
 
+        let context = self.context.or_else(|| cache.context_for(&model));
         Ok(Config {
-            context: self
-                .context
-                .or_else(|| cache.context_for(&model))
-                .unwrap_or(128_000),
+            context: context.unwrap_or(128_000),
+            context_guessed: context.is_none(),
             provider: entry.id.to_string(),
             base_url,
             api_key,
             model,
             dialect: entry.dialect,
             max_turns: self.max_turns,
+            pricing: None,
         })
     }
 

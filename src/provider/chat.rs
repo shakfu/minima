@@ -134,6 +134,8 @@ struct WireUsage {
     completion_tokens: u32,
     #[serde(default)]
     total_tokens: u32,
+    #[serde(default)]
+    cost: Option<f64>,
 }
 
 impl Chunk {
@@ -188,6 +190,8 @@ impl Chunk {
                 prompt_tokens: u.prompt_tokens,
                 completion_tokens: u.completion_tokens,
                 total_tokens: total,
+                cost: u.cost,
+                ..Usage::default()
             })));
         }
         out
@@ -271,5 +275,14 @@ mod tests {
             u[0].as_ref().unwrap(),
             &Event::Usage(Usage::from_parts(4, 2))
         );
+    }
+
+    #[test]
+    fn openrouter_cost_is_carried() {
+        let u = parse_frame(r#"{"usage":{"prompt_tokens":4,"completion_tokens":2,"cost":0.25}}"#);
+        let Ok(Event::Usage(usage)) = &u[0] else {
+            panic!("{u:?}")
+        };
+        assert_eq!(usage.cost, Some(0.25));
     }
 }

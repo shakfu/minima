@@ -24,7 +24,35 @@
 
   The check is resolved-path and component-wise, unlike the substring test the feature is modelled on, so `.github/`, `.gitignore` and `env.sample` are untouched and `../x/.env` is not. It is not a boundary: `bash` ignores it on both platforms. Landlock grants an access if any rule met while walking the path grants it, so no hole can be cut in the rule that grants the root, and enumerating the root's children instead would cost the ability to create a file at the top level of the project. Seatbelt does take a trailing deny, but a boundary that held only on macOS would be trusted on Linux.
 
+## 0.4.0
+
+### Added
+
+- `-m` for `--model` and `-P` for `--provider`. `-p` stays `--prompt`, matching `claude -p`.
+
+- The REPL starts with `minima <version>` in bold cyan, or plain when colour is off. `-p` prints no banner, since its stdout is the answer.
+
+- `/exit` leaves the REPL, as `/quit` does. Neither is recorded in `history.txt`, and older entries of either are dropped when it loads.
+
+- The REPL prints one usage line per prompt: context used against the window, tokens in and out, and the cost in USD. `--json` carries it as `cost` in `turn` and `result` records, with `cost_estimated` true when minima computed it. OpenRouter reports the cost itself. For `openai` and `anthropic`, minima estimates it from OpenRouter's public price list and marks it `~`. It fetches that list from openrouter.ai without a key, at most once a day, even when OpenRouter is not the provider. The estimate prices cached input at the cache rate, which OpenAI bills at a tenth of the input rate, and applies long-prompt tiers. The price list was chosen over a table in minima, which would go stale. There is no estimate under `--base-url`, since a gateway need not bill at the vendor's rates.
+
+### Changed
+
+- The REPL shows each tool call on one line, by its target and result: `read src/lib.rs:495-994 -> 500 lines`, `$ cargo test -> exit 101: ...`. It showed the raw JSON arguments and a flattened preview of the output, and printed an unlabelled token count after every round-trip. That count was one request's prompt plus output, so it was neither context used nor spend. A failed call shows only the error's root cause, since the call line already names the target, and a blank line separates the answer from the tool lines. In `--json`, a failed call's `tool_result` carries that root cause as `note`, which was null.
+
+- Autoselect tries the provider last used before the table order, while its key is set. With several keys set, a bare `minima` repeats the last provider and its model instead of switching to the first key in the table.
+
+- The REPL is an inline ratatui viewport instead of a reedline prompt: an input box with a status bar below it, pinned to the bottom of the terminal. Output still goes to the terminal's own scrollback. The status bar shows the working directory, or a spinner and elapsed time during a turn, then the model, context used and the session's cost. The input box grows to 6 rows. Enter submits, Alt-Enter or Ctrl-J adds a newline, Up and Down or Ctrl-P and Ctrl-N browse history, and Ctrl-R searches it as readline does, except that Enter accepts the match into the input instead of submitting it. Typing continues during a turn and is kept for the next prompt. `history.txt` keeps reedline's format, so existing history carries over. The viewport was chosen over a scroll region or a permanent completion menu under reedline, since reedline clears everything below the prompt on each repaint. It costs 20 more crates. When the terminal gets narrower, ratatui clears the visible screen; the transcript stays in scrollback.
+
+- `bash` no longer warns the user about stderr output when the command exits 0. cargo, git and pip write progress there, so a passing `cargo test` showed as `stderr: Updating crates.io index`. The model still gets the stderr line, which catches a failing stage in a pipeline that exits 0.
+
+- The README and `docs/dev/root-sandbox.md` point to the experimental filesystem sandbox on the `sandbox` branch. This build has no sandbox.
+
+- `--help` wraps at 80 columns, or the terminal width if narrower, and its flag descriptions are shorter. Wrapping needs clap's `wrap_help` feature, which adds `terminal_size`. Without it, clap does not wrap at all.
+
 ### Fixed
+
+- An OpenAI model's context window comes from OpenRouter's model list when neither `--context` nor OpenAI's list gives one. OpenAI's `/models` reports no window, so minima assumed 128k and refused `gpt-5.6-luna` at about 12% of its 1.05M window. The listed window replaces only that fallback.
 
 - A stream that ends without a terminal event is an error, not a finished turn. A proxy or a dropped connection can close an SSE stream after partial text or a complete-looking tool call, and minima took the text as the answer or ran the call. The Chat dialect now reports `finish_reason` as a terminal event of its own, separate from `[DONE]`: a server that omits the sentinel would otherwise fail every turn, and treating the stop reason as the end of the stream would stop the read before the usage frame that follows it.
 

@@ -3,7 +3,7 @@
 use std::io::Write;
 use std::time::Duration;
 
-use super::{Frontend, one_line, printable};
+use super::{Frontend, describe, one_line, printable};
 use crate::provider::Usage;
 use crate::theme::{self, Style};
 
@@ -34,15 +34,13 @@ impl Frontend for Headless {
     }
 
     fn tool_start(&mut self, name: &str, arguments: &str) {
-        self.note(
-            Style::Muted,
-            &format!("[{name}] {}", one_line(arguments, 80)),
-        );
+        self.note(Style::Muted, &describe(name, arguments, 80));
     }
 
     fn tool_end(&mut self, body: &str, note: Option<&str>, ok: bool) {
         if !ok {
-            self.note(Style::Error, &format!("  -> {}", one_line(body, 80)));
+            let error = note.unwrap_or(body);
+            self.note(Style::Error, &format!("  -> {}", one_line(error, 80)));
         } else if let Some(note) = note {
             self.note(Style::Warn, &format!("  -> {note}"));
         }

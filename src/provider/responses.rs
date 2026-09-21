@@ -123,10 +123,12 @@ pub fn parse_frame(data: &str) -> Vec<Result<Event, Error>> {
                 usage["input_tokens"].as_u64(),
                 usage["output_tokens"].as_u64(),
             ) {
-                out.push(Ok(Event::Usage(Usage::from_parts(
-                    input as u32,
-                    output as u32,
-                ))));
+                // Cached tokens are a part of `input_tokens`, not an addition to it.
+                let cached = usage["input_tokens_details"]["cached_tokens"].as_u64();
+                out.push(Ok(Event::Usage(Usage {
+                    cache_read: cached.unwrap_or(0) as u32,
+                    ..Usage::from_parts(input as u32, output as u32)
+                })));
             }
             out.push(Ok(Event::Done));
             out
@@ -211,6 +213,18 @@ mod tests {
             &Event::Usage(Usage::from_parts(10, 5))
         );
         assert_eq!(events[1].as_ref().unwrap(), &Event::Done);
+    }
+
+    #[test]
+    fn cached_input_is_a_part_of_the_input() {
+        let events = parse_frame(
+            r#"{"type":"response.completed","response":{"usage":{"input_tokens":10,
+                "input_tokens_details":{"cached_tokens":8},"output_tokens":5}}}"#,
+        );
+        let Ok(Event::Usage(usage)) = &events[0] else {
+            panic!("{events:?}")
+        };
+        assert_eq!((usage.prompt_tokens, usage.cache_read), (10, 8));
     }
 
     #[test]

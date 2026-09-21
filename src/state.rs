@@ -1,4 +1,4 @@
-//! What minima remembers between runs: the model last used with each provider.
+//! What minima remembers between runs: the provider last used, and the model last used with each.
 //!
 //! Separate from `cache.rs` on purpose. The model list is a cache, disposable and keyed by
 //! endpoint; this is a preference, meaningful and keyed by provider, and it survives a
@@ -17,6 +17,9 @@ pub struct State {
     /// provider id -> model id
     #[serde(default)]
     last_model: BTreeMap<String, String>,
+    /// Preferred by autoselect while its key is set, so a bare `minima` resumes the last setup.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    last_provider: Option<String>,
 }
 
 impl State {
@@ -40,13 +43,20 @@ impl State {
         self.last_model.get(provider).cloned()
     }
 
+    pub fn last_provider(&self) -> Option<&str> {
+        self.last_provider.as_deref()
+    }
+
     /// Records the pairing and writes it, unless it is already what is on disk.
     pub fn remember(&mut self, provider: &str, model: &str) {
-        if self.last_model.get(provider).is_some_and(|m| m == model) {
+        if self.last_model.get(provider).is_some_and(|m| m == model)
+            && self.last_provider.as_deref() == Some(provider)
+        {
             return;
         }
         self.last_model
             .insert(provider.to_string(), model.to_string());
+        self.last_provider = Some(provider.to_string());
         self.schema = SCHEMA;
         self.store();
     }
@@ -105,6 +115,16 @@ mod tests {
         std::fs::write(&path, r#"{"schema":1,"last_model":{"openai":"gpt-5"}}"#).unwrap();
         let current = State::load_from(path.as_ref());
         assert_eq!(current.last_model("openai").as_deref(), Some("gpt-5"));
+
+        std::fs::write(
+            &path,
+            r#"{"schema":1,"last_model":{"openai":"gpt-5"},"last_provider":"openai"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            State::load_from(path.as_ref()).last_provider(),
+            Some("openai")
+        );
 
         std::fs::write(&path, r#"{"schema":99,"last_model":{"openai":"gpt-4"}}"#).unwrap();
         assert_eq!(State::load_from(path.as_ref()).last_model("openai"), None);

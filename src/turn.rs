@@ -127,6 +127,17 @@ fn merge_usage(old: Usage, new: Usage) -> Usage {
         prompt_tokens: prompt,
         completion_tokens: completion,
         total_tokens: total,
+        cache_read: if new.cache_read > 0 {
+            new.cache_read
+        } else {
+            old.cache_read
+        },
+        cache_write: if new.cache_write > 0 {
+            new.cache_write
+        } else {
+            old.cache_write
+        },
+        cost: new.cost.or(old.cost),
     }
 }
 
