@@ -51,9 +51,52 @@ pub fn one_line(text: &str, width: usize) -> String {
     format!("{head}...")
 }
 
+/// A tool call as a user would type it, `read src/lib.rs:495-994` rather than its JSON. Unknown
+/// tools and arguments that do not parse fall back to the raw form.
+pub fn describe(name: &str, arguments: &str, width: usize) -> String {
+    let args: serde_json::Value = serde_json::from_str(arguments).unwrap_or_default();
+    let path = args["path"].as_str();
+    let text = match (name, path, args["command"].as_str()) {
+        ("bash", _, Some(command)) => format!("$ {command}"),
+        ("read", Some(path), _) => {
+            let start = args["offset"].as_u64().unwrap_or(1).max(1);
+            match args["limit"].as_u64() {
+                Some(limit) => format!("read {path}:{start}-{}", start + limit.max(1) - 1),
+                None if start > 1 => format!("read {path}:{start}-"),
+                None => format!("read {path}"),
+            }
+        }
+        ("write" | "edit", Some(path), _) => format!("{name} {path}"),
+        _ => format!("{name}({arguments})"),
+    };
+    one_line(&text, width)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{one_line, printable};
+    use super::{describe, one_line, printable};
+
+    #[test]
+    fn describes_known_calls_by_their_target() {
+        let d = |name, args| describe(name, args, 80);
+        assert_eq!(
+            d("bash", r#"{"command":"cargo test","timeout_ms":1}"#),
+            "$ cargo test"
+        );
+        assert_eq!(
+            d("read", r#"{"path":"a.rs","offset":495,"limit":500}"#),
+            "read a.rs:495-994"
+        );
+        assert_eq!(d("read", r#"{"path":"a.rs","offset":7}"#), "read a.rs:7-");
+        assert_eq!(d("read", r#"{"path":"a.rs"}"#), "read a.rs");
+        assert_eq!(
+            d("edit", r#"{"path":"a.rs","old":"x","new":"y"}"#),
+            "edit a.rs"
+        );
+        // Anything unrecognised is shown as it arrived.
+        assert_eq!(d("bash", "{not json"), "bash({not json)");
+        assert_eq!(d("grep", r#"{"q":1}"#), r#"grep({"q":1})"#);
+    }
 
     #[test]
     fn printable_strips_escapes_but_keeps_layout() {

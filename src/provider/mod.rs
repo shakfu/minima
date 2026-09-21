@@ -83,11 +83,17 @@ impl Message {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Usage {
     pub prompt_tokens: u32,
     pub completion_tokens: u32,
     pub total_tokens: u32,
+    /// The parts of `prompt_tokens` read from and written to the provider's prompt cache, which
+    /// are billed at their own rates.
+    pub cache_read: u32,
+    pub cache_write: u32,
+    /// USD. Reported only by OpenRouter; otherwise estimated from its price list, see `price`.
+    pub cost: Option<f64>,
 }
 
 impl Usage {
@@ -97,11 +103,12 @@ impl Usage {
             prompt_tokens: prompt,
             completion_tokens: completion,
             total_tokens: prompt + completion,
+            ..Self::default()
         }
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Event {
     Text(String),
     /// Tool calls arrive interleaved, so fragments carry the key their dialect groups by: the

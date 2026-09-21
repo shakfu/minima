@@ -5,6 +5,7 @@ mod cache;
 mod cancel;
 mod config;
 mod frontend;
+mod price;
 mod prompt;
 mod provider;
 mod state;
@@ -55,7 +56,11 @@ fn start() -> Result<ExitCode> {
     #[cfg(unix)]
     exit_on_hangup_or_terminate(&runtime)?;
 
-    let config = runtime.block_on(cli.resolve())?;
+    let mut config = runtime.block_on(cli.resolve())?;
+    // Not in resolve(), which stays free of network calls the provider does not need.
+    if cli.mock.is_none() {
+        config.pricing = runtime.block_on(price::estimate(&config, cli.refresh_models));
+    }
     let provider = match &cli.mock {
         Some(path) => Provider::Mock(Mock::load(path)?),
         None => Provider::Http(Http::new()?),
@@ -122,6 +127,7 @@ async fn headless(agent: &mut Agent, prompt: &str, as_json: bool) -> Result<Exit
 
     let mut plain = Headless::default();
     let mut json = Json::default();
+    json.estimate = agent.cost_is_estimate();
     let frontend: &mut dyn Frontend = if as_json { &mut json } else { &mut plain };
     let result = agent.run(prompt, frontend, &cancel).await;
     watcher.abort();

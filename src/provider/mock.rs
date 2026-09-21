@@ -31,6 +31,8 @@ struct ScriptUsage {
     completion_tokens: u32,
     #[serde(default)]
     total_tokens: u32,
+    #[serde(default)]
+    cost: Option<f64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -95,6 +97,8 @@ impl Mock {
                     } else {
                         u.prompt_tokens + u.completion_tokens
                     },
+                    cost: u.cost,
+                    ..Usage::default()
                 }),
                 Step::ToolCall {
                     index,

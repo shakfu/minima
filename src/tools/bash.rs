@@ -126,28 +126,34 @@ pub async fn call(args: Args, cancel: &Cancel) -> Result<Outcome> {
 
     // A non-zero exit is information for the model, not a tool failure. The note is what the user
     // sees, so it leads with the reason rather than the whole output.
-    //
-    // Exit status alone is not enough. In a pipeline the status belongs to the last stage, so
-    // `find -printf ... | wc -c` exits 0 while find's error goes to stderr unseen. Anything on
-    // stderr is therefore worth a line, whatever the exit code says.
     let reason = first_line(&stderr);
-    let mut note = match (status.code(), reason) {
-        (Some(0), None) => None,
-        (Some(0), Some(line)) => Some(format!("stderr: {line}")),
+    let failure = match (status.code(), &reason) {
+        (Some(0), _) => None,
         (Some(code), Some(line)) => Some(format!("exit {code}: {line}")),
         (Some(code), None) => Some(format!("exit {code}")),
         (None, _) => Some("killed by a signal".to_string()),
     };
+    // The model also gets stderr after exit 0: in a pipeline the status belongs to the last stage,
+    // so `find -printf ... | wc -c` hides find's error. The user does not, because cargo, git and
+    // pip write progress there, and every success would read as a warning.
+    let mut told = failure
+        .clone()
+        .or_else(|| reason.map(|line| format!("stderr: {line}")));
+    let mut note = failure;
     // Said once, to the model and the user, so neither loses track of a job it started.
     if left_running {
-        note = Some(match note {
-            Some(note) => format!("{note}; {LEFT_RUNNING}"),
-            None => LEFT_RUNNING.to_string(),
-        });
+        let add = |n: Option<String>| {
+            Some(n.map_or_else(
+                || LEFT_RUNNING.to_string(),
+                |n| format!("{n}; {LEFT_RUNNING}"),
+            ))
+        };
+        told = add(told);
+        note = add(note);
     }
 
-    if let Some(note) = &note {
-        body.push_str(&format!("\n({note})"));
+    if let Some(told) = &told {
+        body.push_str(&format!("\n({told})"));
     }
     Ok(Outcome { body, note })
 }
@@ -408,7 +414,13 @@ mod tests {
     #[tokio::test]
     async fn stderr_is_reported_even_when_the_pipeline_exits_zero() {
         let out = run("echo 'unknown primary' >&2 | wc -c").await;
-        assert_eq!(out.note.as_deref(), Some("stderr: unknown primary"));
+        assert!(
+            out.body.ends_with("(stderr: unknown primary)"),
+            "{:?}",
+            out.body
+        );
+        // Progress output on stderr is routine, so the user sees no warning for it.
+        assert_eq!(out.note, None);
     }
 
     /// Capture is bounded while the command runs, not after it returns: by then a command that

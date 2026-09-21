@@ -21,6 +21,10 @@ pub struct Json<W: Write = std::io::Stdout> {
     turns: u32,
     input: u64,
     output: u64,
+    /// USD, when the provider reports it.
+    cost: Option<f64>,
+    /// Set when costs come from a price list rather than the provider.
+    pub estimate: bool,
 }
 
 impl Default for Json {
@@ -38,6 +42,8 @@ impl<W: Write> Json<W> {
             turns: 0,
             input: 0,
             output: 0,
+            cost: None,
+            estimate: false,
         }
     }
 
@@ -61,6 +67,8 @@ impl<W: Write> Json<W> {
             "turns": self.turns,
             "input_tokens": self.input,
             "output_tokens": self.output,
+            "cost": self.cost,
+            "cost_estimated": self.estimate && self.cost.is_some(),
         });
         self.emit(record);
     }
@@ -87,12 +95,17 @@ impl<W: Write> Frontend for Json<W> {
         self.turns += 1;
         self.input += u64::from(usage.prompt_tokens);
         self.output += u64::from(usage.completion_tokens);
+        if let Some(cost) = usage.cost {
+            self.cost = Some(self.cost.unwrap_or(0.0) + cost);
+        }
         self.last = std::mem::take(&mut self.text);
         let record = json!({
             "type": "turn",
             "text": self.last,
             "input_tokens": usage.prompt_tokens,
             "output_tokens": usage.completion_tokens,
+            "cost": usage.cost,
+            "cost_estimated": self.estimate && usage.cost.is_some(),
         });
         self.emit(record);
     }
@@ -141,9 +154,40 @@ mod tests {
             records[4],
             json!({
                 "type": "result", "outcome": "complete", "text": "the answer", "error": null,
-                "turns": 2, "input_tokens": 40, "output_tokens": 7,
+                "turns": 2, "input_tokens": 40, "output_tokens": 7, "cost": null,
+                "cost_estimated": false,
             })
         );
+    }
+
+    #[test]
+    fn a_reported_cost_is_summed_into_the_result() {
+        let mut json = Json::new(Vec::new());
+        for cost in [0.25, 0.5] {
+            json.turn_end(Usage {
+                cost: Some(cost),
+                ..Usage::from_parts(1, 1)
+            });
+        }
+        json.result(&Ok(()), false);
+        let records = records(&json);
+        assert_eq!(records[0]["cost"], 0.25);
+        assert_eq!(records[2]["cost"], 0.75);
+        assert_eq!(records[2]["cost_estimated"], false);
+    }
+
+    #[test]
+    fn an_estimated_cost_is_marked() {
+        let mut json = Json::new(Vec::new());
+        json.estimate = true;
+        json.turn_end(Usage {
+            cost: Some(0.5),
+            ..Usage::from_parts(1, 1)
+        });
+        json.result(&Ok(()), false);
+        let records = records(&json);
+        assert_eq!(records[0]["cost_estimated"], true);
+        assert_eq!(records[1]["cost_estimated"], true);
     }
 
     #[test]

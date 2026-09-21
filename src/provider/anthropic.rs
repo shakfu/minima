@@ -100,15 +100,22 @@ pub fn parse_frame(event: &str, data: &str) -> Vec<Result<Event, Error>> {
     };
 
     match event {
+        // `input_tokens` excludes the cached parts, so the prompt is the sum of all three.
         "message_start" => {
             let usage = &root["message"]["usage"];
+            let count = |key: &str| usage[key].as_u64().unwrap_or(0) as u32;
             usage["input_tokens"]
                 .as_u64()
                 .map(|input| {
-                    vec![Ok(Event::Usage(Usage::from_parts(
-                        input as u32,
-                        usage["output_tokens"].as_u64().unwrap_or(0) as u32,
-                    )))]
+                    let (read, write) = (
+                        count("cache_read_input_tokens"),
+                        count("cache_creation_input_tokens"),
+                    );
+                    vec![Ok(Event::Usage(Usage {
+                        cache_read: read,
+                        cache_write: write,
+                        ..Usage::from_parts(input as u32 + read + write, count("output_tokens"))
+                    }))]
                 })
                 .unwrap_or_default()
         }
@@ -262,6 +269,23 @@ mod tests {
             &Event::Done
         );
         assert!(parse_frame("ping", "{}").is_empty());
+    }
+
+    /// Anthropic counts cached input apart from `input_tokens`, so the prompt is the sum.
+    #[test]
+    fn cached_input_is_added_to_the_prompt() {
+        let events = parse_frame(
+            "message_start",
+            r#"{"message":{"usage":{"input_tokens":3,"cache_read_input_tokens":90,
+                "cache_creation_input_tokens":7,"output_tokens":1}}}"#,
+        );
+        let Ok(Event::Usage(usage)) = &events[0] else {
+            panic!("{events:?}")
+        };
+        assert_eq!(
+            (usage.prompt_tokens, usage.cache_read, usage.cache_write),
+            (100, 90, 7)
+        );
     }
 
     #[test]

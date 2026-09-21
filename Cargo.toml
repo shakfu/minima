@@ -43,7 +43,7 @@ schemars = "1"
 
 # Frontend. crossterm tracks reedline's requirement (0.49 -> ^0.29) because KeyEvent crosses that
 # boundary and two versions of the type would not unify. Re-check on every reedline bump.
-clap = { version = "4", features = ["derive", "env"] }
+clap = { version = "4", features = ["derive", "env", "wrap_help"] }
 reedline = "0.49"
 crossterm = "0.29"
 

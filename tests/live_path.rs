@@ -349,11 +349,11 @@ fn every_dialect_sends_its_own_shape_and_reassembles_fragments() {
             String::from_utf8_lossy(&out.stderr)
         );
 
-        // The fixture splits the arguments across two frames; a whole object means the
-        // dialect's grouping key survived reassembly.
+        // The fixture splits the arguments across two frames. The call is described by its path
+        // only if the joined arguments parse, so the dialect's grouping key survived reassembly.
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert!(
-            stderr.contains(r#"{"path":"notes.txt"}"#),
+            stderr.lines().any(|line| line == "read notes.txt"),
             "{}: fragments did not reassemble, stderr {stderr}",
             case.dialect
         );

@@ -61,7 +61,7 @@ impl Run {
             line.clear();
             let read = self.stderr.read_line(&mut line).expect("reading stderr");
             assert!(read > 0, "minima exited before bash call {n}");
-            seen += usize::from(line.contains("[bash]"));
+            seen += usize::from(line.starts_with("$ "));
         }
     }
 

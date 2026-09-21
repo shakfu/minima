@@ -21,17 +21,22 @@ A minimal coding agent for the terminal
 Usage: minima [OPTIONS]
 
 Options:
-  -p, --prompt <TEXT>   Headless: answer this prompt, print the result, exit
-      --json            With -p: print one JSON record per line on stdout, ending in a `result` record
-      --provider <ID>   Which provider to talk to: fixes the endpoint, the wire format and the key variable. Left out, minima takes the first provider whose key variable is set [env: MINIMA_PROVIDER=]
-      --model <ID>      Left out, minima reuses the model last used with this provider [env: MINIMA_MODEL=]
-      --base-url <URL>  Override the provider's endpoint, for a local server or a gateway. Never changes the wire format: a different shape is a different provider, not a different address [env: MINIMA_BASE_URL=]
-      --api-key <KEY>   Overrides the provider's key variable. Requires --provider [env: MINIMA_API_KEY]
-      --no-color        Print without colour. Colour is off anyway when stdout is not a terminal, or when NO_COLOR is set
-      --context <N>     Context window in tokens. Falls back to the cached value for the model [env: MINIMA_CONTEXT=]
-      --mock <PATH>     Replay a scripted JSON stream instead of calling the network
-      --max-turns <N>   Refuse to keep going after this many provider round-trips in one user turn [default: 32]
-      --refresh-models  Re-fetch the model list even if the cache is fresh
+  -p, --prompt <TEXT>   Answer one prompt, print the result, exit
+      --json            With -p: print JSON lines, ending in a `result` record
+  -P, --provider <ID>   Provider id. Default: the first one whose key is set
+                        [env: MINIMA_PROVIDER=]
+  -m, --model <ID>      Model id. Default: the last one used with this provider
+                        [env: MINIMA_MODEL=]
+      --base-url <URL>  Override the provider's endpoint. The wire format stays
+                        the same [env: MINIMA_BASE_URL=]
+      --api-key <KEY>   Provider key. Requires --provider [env: MINIMA_API_KEY]
+      --no-color        Disable colour. Also off for non-terminals or when
+                        NO_COLOR is set
+      --context <N>     Context window in tokens. Default: the cached value for
+                        the model [env: MINIMA_CONTEXT=]
+      --mock <PATH>     Replay a scripted JSON stream instead of the network
+      --max-turns <N>   Max provider round-trips per user turn [default: 32]
+      --refresh-models  Re-fetch the model list, ignoring the cache
   -h, --help            Print help
   -V, --version         Print version
 ```
@@ -45,6 +50,8 @@ Options:
 - **Shell commands:** each call runs in its own process group. A timeout (120 s default, 600 s cap) or a cancel kills the group. Background jobs outlive the call and die with minima. A login-shell wrapper such as `bash -lc` is refused, because a login profile can reorder `PATH`.
 
 - **Modes:** an interactive REPL with history, and headless `-p`, printing text or JSON lines with `--json`.
+
+- **Display:** one line per tool call, such as `read src/lib.rs:1-400 -> 400 lines` or `$ cargo test -> exit 101: ...`. After each prompt, one line gives context used, tokens in and out, and the cost. OpenRouter reports the cost; for OpenAI and Anthropic it is estimated from OpenRouter's public price list and marked `~`.
 
 - **Cancellation:** Esc or Ctrl-C cancels a REPL turn, including a pending request or a retry wait. A cancelled `-p` run exits 130.
 

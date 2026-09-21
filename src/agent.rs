@@ -49,6 +49,15 @@ impl Agent {
         }
     }
 
+    pub fn context_window(&self) -> u32 {
+        self.config.context
+    }
+
+    /// True when costs come from a price list rather than from the provider.
+    pub fn cost_is_estimate(&self) -> bool {
+        self.config.pricing.is_some()
+    }
+
     /// Runs once, after the first turn streams to completion: the point at which the provider
     /// has accepted the model.
     pub fn on_first_turn(&mut self, f: impl FnOnce(&Config) + 'static) {
@@ -68,10 +77,13 @@ impl Agent {
         self.messages.push(Message::user(prompt));
 
         for _ in 0..self.config.max_turns {
-            let Some(turn) = self.one_turn(frontend, cancel).await? else {
+            let Some(mut turn) = self.one_turn(frontend, cancel).await? else {
                 frontend.cancelled();
                 return Ok(());
             };
+            if let (None, Some(pricing)) = (turn.usage.cost, &self.config.pricing) {
+                turn.usage.cost = Some(pricing.cost(&turn.usage));
+            }
 
             frontend.turn_end(turn.usage);
             if turn.usage.total_tokens > 0 {

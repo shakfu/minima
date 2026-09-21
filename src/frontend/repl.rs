@@ -13,7 +13,7 @@ use anyhow::Result;
 use crossterm::event::{self, KeyCode, KeyEventKind, KeyModifiers};
 use reedline::{DefaultPrompt, FileBackedHistory, Reedline, Signal};
 
-use super::{Frontend, one_line, printable};
+use super::{Frontend, describe, one_line, printable};
 use crate::agent::Agent;
 use crate::cancel::Cancel;
 use crate::provider::Usage;
@@ -23,9 +23,25 @@ use crate::theme::{self, Style};
 const POLL: Duration = Duration::from_millis(80);
 const HISTORY_CAPACITY: usize = 1000;
 
+/// Tool lines and the usage summary stay within this many columns.
+const WIDTH: usize = 80;
+const CALL_WIDTH: usize = 56;
+
 #[derive(Default)]
 pub struct Repl {
     line_open: bool,
+    /// Columns the open tool line already takes.
+    call_width: usize,
+    context: u32,
+    /// Tokens the last round-trip reported: what the next request will carry.
+    used: u32,
+    /// Summed over the round-trips of one prompt.
+    input: u64,
+    output: u64,
+    cost: Option<f64>,
+    session_cost: Option<f64>,
+    /// Costs come from a price list, not the provider, and are marked `~`.
+    estimate: bool,
 }
 
 impl Repl {
@@ -43,6 +59,88 @@ impl Repl {
         }
         self.put(&format!("{text}\n"));
     }
+
+    /// One line per prompt, after its last round-trip, then the counters restart.
+    fn finish(&mut self) {
+        if self.input + self.output > 0 {
+            let text = usage_line(
+                self.used,
+                self.context,
+                self.input,
+                self.output,
+                self.cost,
+                self.session_cost,
+                self.estimate,
+            );
+            self.line(&theme::paint(Style::Muted, &text));
+        }
+        self.used = 0;
+        self.input = 0;
+        self.output = 0;
+        self.cost = None;
+    }
+}
+
+/// `39.3k/1.05M context, 312.4k in, 8.1k out, $0.0123 (session $0.0456)`. Cost only when known,
+/// and the session total only once it differs from this prompt's.
+fn usage_line(
+    used: u32,
+    context: u32,
+    input: u64,
+    output: u64,
+    cost: Option<f64>,
+    session: Option<f64>,
+    estimate: bool,
+) -> String {
+    let dollars = |usd: f64| format!("{}{}", if estimate { "~" } else { "" }, dollars(usd));
+    let mut text = format!(
+        "{}/{} context, {} in, {} out",
+        count(used.into()),
+        count(context.into()),
+        count(input),
+        count(output)
+    );
+    if let Some(cost) = cost {
+        text.push_str(&format!(", {}", dollars(cost)));
+        if let Some(session) = session.filter(|s| s - cost > 1e-9) {
+            text.push_str(&format!(" (session {})", dollars(session)));
+        }
+    }
+    text
+}
+
+/// A one-line result is shown whole; anything longer by its size, not counting `read`'s
+/// `... N more lines` footers.
+fn result(body: &str) -> String {
+    match body
+        .trim()
+        .lines()
+        .filter(|line| !line.starts_with("... "))
+        .count()
+    {
+        0 => "no output".to_string(),
+        1 => body.trim().to_string(),
+        n => format!("{n} lines"),
+    }
+}
+
+fn count(n: u64) -> String {
+    let (value, unit, places) = match n {
+        0..1_000 => return n.to_string(),
+        1_000..1_000_000 => (n as f64 / 1e3, "k", 1),
+        _ => (n as f64 / 1e6, "M", 2),
+    };
+    let text = format!("{value:.places$}");
+    let text = text.trim_end_matches('0').trim_end_matches('.');
+    format!("{text}{unit}")
+}
+
+fn dollars(usd: f64) -> String {
+    if usd < 1.0 {
+        format!("${usd:.4}")
+    } else {
+        format!("${usd:.2}")
+    }
 }
 
 impl Frontend for Repl {
@@ -50,20 +148,27 @@ impl Frontend for Repl {
         self.put(&printable(delta));
     }
 
+    /// Left open until `tool_end` adds the status, so each call takes one line.
     fn tool_start(&mut self, name: &str, arguments: &str) {
-        let text = format!("{name}({})", one_line(arguments, 72));
-        self.line(&theme::paint(Style::Muted, &text));
+        if self.line_open {
+            self.put("\n");
+        }
+        let text = describe(name, arguments, CALL_WIDTH);
+        self.put(&theme::paint(Style::Muted, &text));
+        self.call_width = text.chars().count();
     }
 
     fn tool_end(&mut self, body: &str, note: Option<&str>, ok: bool) {
-        // One line per tool call. A note displaces the result preview because it says more:
-        // it is the reason the model is about to try something else.
-        let line = match (ok, note) {
-            (false, _) => theme::paint(Style::Error, &format!("  {}", one_line(body, 72))),
-            (true, Some(note)) => theme::paint(Style::Warn, &format!("  {note}")),
-            (true, None) => theme::paint(Style::Muted, &format!("  {}", one_line(body, 72))),
+        // A note displaces the result because it says more: it is the reason the model is about
+        // to try something else.
+        let room = WIDTH.saturating_sub(self.call_width + 4).max(16);
+        let status = |text: &str| format!(" -> {}", one_line(text, room));
+        let text = match (ok, note) {
+            (false, _) => theme::paint(Style::Error, &status(body)),
+            (true, Some(note)) => theme::paint(Style::Warn, &status(note)),
+            (true, None) => theme::paint(Style::Muted, &status(&result(body))),
         };
-        self.line(&line);
+        self.put(&format!("{text}\n"));
     }
 
     fn retry(&mut self, attempt: u32, delay: Duration) {
@@ -73,10 +178,13 @@ impl Frontend for Repl {
 
     fn turn_end(&mut self, usage: Usage) {
         if usage.total_tokens > 0 {
-            self.line(&theme::paint(
-                Style::Muted,
-                &format!("{} tokens", usage.total_tokens),
-            ));
+            self.used = usage.total_tokens;
+        }
+        self.input += u64::from(usage.prompt_tokens);
+        self.output += u64::from(usage.completion_tokens);
+        if let Some(cost) = usage.cost {
+            self.cost = Some(self.cost.unwrap_or(0.0) + cost);
+            self.session_cost = Some(self.session_cost.unwrap_or(0.0) + cost);
         }
     }
 
@@ -119,6 +227,11 @@ pub fn run(runtime: &tokio::runtime::Runtime, agent: &mut Agent) -> Result<()> {
     let mut editor = editor_with_history();
     let prompt = DefaultPrompt::default();
     let cancel = Cancel::new();
+    let mut frontend = Repl {
+        context: agent.context_window(),
+        estimate: agent.cost_is_estimate(),
+        ..Repl::default()
+    };
 
     loop {
         let line = match editor.read_line(&prompt)? {
@@ -138,11 +251,11 @@ pub fn run(runtime: &tokio::runtime::Runtime, agent: &mut Agent) -> Result<()> {
         let stop = Arc::new(AtomicBool::new(false));
         let watcher = watch_for_esc(cancel.clone(), Arc::clone(&stop));
 
-        let mut frontend = Repl::default();
         let result = runtime.block_on(agent.run(trimmed, &mut frontend, &cancel));
 
         stop.store(true, Ordering::SeqCst);
         let _ = watcher.join();
+        frontend.finish();
         frontend.line("");
         drop(guard);
 
@@ -176,4 +289,49 @@ fn watch_for_esc(cancel: Cancel, stop: Arc<AtomicBool>) -> std::thread::JoinHand
             }
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{count, result, usage_line};
+
+    #[test]
+    fn counts_are_short() {
+        assert_eq!(count(508), "508");
+        assert_eq!(count(39_317), "39.3k");
+        assert_eq!(count(400_000), "400k");
+        assert_eq!(count(1_050_000), "1.05M");
+        assert_eq!(count(1_000_000), "1M");
+    }
+
+    #[test]
+    fn the_usage_line_adds_cost_only_when_reported() {
+        assert_eq!(
+            usage_line(39_317, 1_050_000, 312_400, 8_100, None, None, false),
+            "39.3k/1.05M context, 312.4k in, 8.1k out"
+        );
+        assert_eq!(
+            usage_line(10, 1000, 10, 2, Some(0.0123), Some(0.0123), false),
+            "10/1k context, 10 in, 2 out, $0.0123"
+        );
+        assert_eq!(
+            usage_line(10, 1000, 10, 2, Some(0.0123), Some(1.5), false),
+            "10/1k context, 10 in, 2 out, $0.0123 (session $1.50)"
+        );
+        assert_eq!(
+            usage_line(10, 1000, 10, 2, Some(0.0123), Some(1.5), true),
+            "10/1k context, 10 in, 2 out, ~$0.0123 (session ~$1.50)"
+        );
+    }
+
+    #[test]
+    fn a_result_is_shown_whole_only_when_it_is_one_line() {
+        assert_eq!(
+            result("wrote 6049 bytes to REVIEW.md\n"),
+            "wrote 6049 bytes to REVIEW.md"
+        );
+        assert_eq!(result("1 a\n2 b\n3 c\n"), "3 lines");
+        assert_eq!(result("1 a\n2 b\n... 57 more lines\n"), "2 lines");
+        assert_eq!(result("  \n"), "no output");
+    }
 }
