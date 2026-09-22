@@ -46,9 +46,11 @@ jobs:
       # rather than skip.
       - if: runner.os == 'Linux'
         run: cat /sys/kernel/security/lsm
-      # The sandbox tests skip when the cache they aim at is missing, and the runner images have
-      # Go without a GOPATH.
-      - run: command -v go && mkdir -p "$(go env GOPATH)/bin" "$(go env GOPATH)/pkg/mod" || true
+      # The sandbox tests skip when the cache they aim at is missing. The Linux image has Go without
+      # a GOPATH; the macOS image has no Go.
+      - if: runner.os == 'macOS'
+        run: brew install go
+      - run: mkdir -p "$(go env GOPATH)/bin" "$(go env GOPATH)/pkg/mod"
       - run: make test
       # Real commands under --confine fs, judged on disk. The cargo case fetches, so this needs
       # the network.

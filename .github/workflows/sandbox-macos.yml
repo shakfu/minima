@@ -25,6 +25,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: brew install uv ccache deno
+      # The macos-15 image has no Go on PATH.
+      - run: brew install uv ccache deno go
       - run: mkdir -p "$(go env GOPATH)/bin" "$(go env GOPATH)/pkg/mod"
       - run: cargo build && scripts/test_sandbox_macos.py
