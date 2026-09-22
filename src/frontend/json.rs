@@ -61,7 +61,7 @@ impl<W: Write> Json<W> {
         let record = json!({
             "type": "result",
             "outcome": outcome,
-            "confine": self.bounds.confine.name(),
+            "sandbox": self.bounds.sandbox,
             "writable": self
                 .bounds
                 .writable
@@ -126,14 +126,12 @@ impl<W: Write> Frontend for Json<W> {
 mod tests {
     use super::*;
 
-    use crate::config::Confine;
-
-    fn paths() -> Bounds {
-        Bounds::new(Confine::Paths, "/tmp".into())
+    fn off() -> Bounds {
+        Bounds::new(false, "/tmp".into())
     }
 
     fn fs_with_writable() -> Bounds {
-        let mut bounds = Bounds::new(Confine::Fs, "/tmp".into());
+        let mut bounds = Bounds::new(true, "/tmp".into());
         bounds.writable.push("/tmp/cache".into());
         bounds
     }
@@ -148,7 +146,7 @@ mod tests {
 
     #[test]
     fn a_run_ends_in_a_result_carrying_the_last_turn_and_the_totals() {
-        let mut json = Json::new(Vec::new(), &paths());
+        let mut json = Json::new(Vec::new(), &off());
         json.text("look");
         json.turn_end(Usage::from_parts(10, 2));
         json.tool_start("bash", r#"{"command":"ls"}"#);
@@ -171,7 +169,7 @@ mod tests {
         assert_eq!(
             records[4],
             json!({
-                "type": "result", "outcome": "complete", "confine": "paths", "writable": [],
+                "type": "result", "outcome": "complete", "sandbox": false, "writable": [],
                 "text": "the answer", "error": null,
                 "turns": 2, "input_tokens": 40, "output_tokens": 7, "cost": null,
                 "cost_estimated": false,
@@ -186,13 +184,13 @@ mod tests {
         let mut json = Json::new(Vec::new(), &fs_with_writable());
         json.result(&Ok(()), false);
         let result = &records(&json)[0];
-        assert_eq!(result["confine"], "fs");
+        assert_eq!(result["sandbox"], true);
         assert_eq!(result["writable"], json!(["/tmp/cache"]));
     }
 
     #[test]
     fn a_reported_cost_is_summed_into_the_result() {
-        let mut json = Json::new(Vec::new(), &paths());
+        let mut json = Json::new(Vec::new(), &off());
         for cost in [0.25, 0.5] {
             json.turn_end(Usage {
                 cost: Some(cost),
@@ -208,7 +206,7 @@ mod tests {
 
     #[test]
     fn an_estimated_cost_is_marked() {
-        let mut json = Json::new(Vec::new(), &paths());
+        let mut json = Json::new(Vec::new(), &off());
         json.estimate = true;
         json.turn_end(Usage {
             cost: Some(0.5),
@@ -222,7 +220,7 @@ mod tests {
 
     #[test]
     fn an_error_is_reported_in_the_result() {
-        let mut json = Json::new(Vec::new(), &paths());
+        let mut json = Json::new(Vec::new(), &off());
         json.result(&Err(anyhow::anyhow!("stopped after 3 turns")), false);
         let result = &records(&json)[0];
         assert_eq!(result["outcome"], "error");
@@ -231,7 +229,7 @@ mod tests {
 
     #[test]
     fn a_cancel_drops_the_partial_text() {
-        let mut json = Json::new(Vec::new(), &paths());
+        let mut json = Json::new(Vec::new(), &off());
         json.text("half");
         json.cancelled();
         json.result(&Ok(()), true);
@@ -242,7 +240,7 @@ mod tests {
 
     #[test]
     fn escape_sequences_stay_escaped() {
-        let mut json = Json::new(Vec::new(), &paths());
+        let mut json = Json::new(Vec::new(), &off());
         json.text("a\x1b]52;c;aGk=\x07b");
         json.turn_end(Usage::default());
         let raw = String::from_utf8(json.out.clone()).unwrap();

@@ -2,7 +2,7 @@
 
 Whether `bash` can be confined to one directory, and whether a path guard on the other tools is worth having without it. Written 2026-09-19 against minima 0.3.0, which rejected both. Reversed 2026-09-20: both shipped. The rejection reasoning is kept below, because three of its four points still hold and only the fourth was answered.
 
-`--root DIR` defaults to the working directory. `--confine` selects how much of it is enforced: `none`, `paths` for the userspace bound on `write` and `edit`, or `fs` to add Landlock on Linux and Seatbelt on macOS to `bash`. The default is `paths`.
+`--root DIR` defaults to the working directory. `--sandbox`, off by default, enforces it: Landlock on Linux and Seatbelt on macOS on `bash`, and a path check on `write` and `edit`. Until 2026-09-22 this was `--confine none|paths|fs` with `paths` the default; the middle mode bounded the file tools but not `bash`, and was dropped as misleading. Sections below written before then use the old names.
 
 ## The problem
 
@@ -163,9 +163,9 @@ Reads need no decision. The policy above does not bound them.
 
 Shipped 2026-09-20. The intersection policy above, unchanged: reads everywhere, writes under the root, `$TMPDIR`, `/dev/null` and the ecosystem caches. `write` and `edit` keep the userspace check, bounded by the root alone, because nothing needs them to reach a cache. `read` has no check, since `bash` reads everything regardless. Network stays open, so this is a filesystem boundary and not containment.
 
-Landlock is pinned to ABI 3 as a hard requirement, which means kernel 6.2. ABI 1 denies every rename across directories, breaking `mv` inside the root; ABI 2 leaves `Truncate` unhandled, so the read grant on `/` would still permit `: > file` anywhere, which destroys a file without writing to it. `IoctlDev` arrives in ABI 5 and is not handled, so ioctls on device files the command can open are unrestricted. Debian 12, RHEL 9 and Ubuntu 22.04 GA sit below the floor, which is why `fs` is opt-in rather than the default.
+Landlock is pinned to ABI 3 as a hard requirement, which means kernel 6.2. ABI 1 denies every rename across directories, breaking `mv` inside the root; ABI 2 leaves `Truncate` unhandled, so the read grant on `/` would still permit `: > file` anywhere, which destroys a file without writing to it. `IoctlDev` arrives in ABI 5 and is not handled, so ioctls on device files the command can open are unrestricted. Debian 12, RHEL 9 and Ubuntu 22.04 GA sit below the floor, which is why the sandbox is opt-in rather than the default.
 
-Degradation is open decision 1, answered as it was written: `tools::preflight` runs one confined command at startup and fails the run if the sandbox cannot be installed. That answer is what makes `fs` opt-in. A mode that refuses to start cannot be the default when the floor excludes Debian 12, RHEL 9 and Ubuntu 22.04 GA, and the alternative -- starting unconfined with a warning -- is the quiet failure the decision rejects. The flag carries the choice instead of the runtime guessing.
+Degradation is open decision 1, answered as it was written: `tools::preflight` runs one confined command at startup and fails the run if the sandbox cannot be installed. That answer is what makes the sandbox opt-in. A mode that refuses to start cannot be the default when the floor excludes Debian 12, RHEL 9 and Ubuntu 22.04 GA, and the alternative -- starting unconfined with a warning -- is the quiet failure the decision rejects. The flag carries the choice instead of the runtime guessing.
 
 Measured 2026-09-20, correcting the measurement below: an offline `cargo build` opens
 `$CARGO_HOME/.package-cache`, `.global-cache` and `.package-cache-mutate` with `O_RDWR|O_CREAT` on
@@ -173,62 +173,30 @@ every invocation. The earlier note that a build "wrote 0 files" under `~/.cargo`
 
 ## Protected paths
 
-Added 2026-09-20, after the sandbox. `write` and `edit` refuse a resolved path under the root with
-a `.git` component, or a component beginning `.env`. The model used was [pi's protected-paths
-extension](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/examples/extensions/protected-paths.ts),
+Added 2026-09-20, after the sandbox. `write` and `edit` refuse a resolved path under the root with a `.git` component, or a component beginning `.env`. The model used was [pi's protected-paths extension](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/examples/extensions/protected-paths.ts),
 which blocks its `write` and `edit` on `path.includes(".env" | ".git/" | "node_modules/")`.
 
-Three changes to that rule. It matches the path after resolution, so `../elsewhere/.env` is
-caught and a root reached through a symlink still matches. It matches whole components, so
-`.github/`, `.gitignore` and `env.sample` are not caught, and `.env` matches as a prefix, so
-`.env.production` is.
+Three changes to that rule. It matches the path after resolution, so `../elsewhere/.env` is caught and a root reached through a symlink still matches. It matches whole components, so `.github/`, `.gitignore` and `env.sample` are not caught, and `.env` matches as a prefix, so `.env.production` is.
 
-The prefix then exempts `.envrc` and any name containing `example`, `sample` or `template`. Those
-are committed files holding no secret, and they are the `.env`-family file an agent edits most
-often, when a feature adds a config variable. Elsewhere in the family the exemption is not worth
-making: over-blocking `.env.test` costs a turn, while a missed `.env.production` costs a secret the
-repository cannot restore. `.git` stays whole. Sparing `hooks/` and `info/exclude`, which have
-uses no `git` subcommand covers, means enumerating the irreplaceable parts instead, which is more
-rule than a guard `bash` ignores can carry.
+The prefix then exempts `.envrc` and any name containing `example`, `sample` or `template`. Those are committed files holding no secret, and they are the `.env`-family file an agent edits most often, when a feature adds a config variable. Elsewhere in the family the exemption is not worth making: over-blocking `.env.test` costs a turn, while a missed `.env.production` costs a secret the repository cannot restore. `.git` stays whole. Sparing `hooks/` and `info/exclude`, which have uses no `git` subcommand covers, means enumerating the irreplaceable parts instead, which is more rule than a guard `bash` ignores can carry.
 
-A refusal costs the model one turn, not the capability: it reaches the file through `bash` on the
-next call. It also moves the write to a worse mechanism, since `write` and `edit` replace a file by
-rename and `printf >` truncates in place. That is the argument for keeping the list short.
+A refusal costs the model one turn, not the capability: it reaches the file through `bash` on the next call. It also moves the write to a worse mechanism, since `write` and `edit` replace a file by rename and `printf >` truncates in place. That is the argument for keeping the list short.
 
-The question is whether the kernel policy can carry the same rule, since `bash` is where every
-deletion happens.
+The question is whether the kernel policy can carry the same rule, since `bash` is where every deletion happens.
 
-- **Seatbelt: yes.** SBPL takes the last matching rule, so a deny appended after the root allow
-  holds. Measured 2026-09-20 on macOS 25.6 against a temp tree: with
-  `(allow file-write* (subpath "<root>")) (deny file-write* (subpath "<root>/.git"))`, a write
-  under `<root>/sub` returns 0, a write to `<root>/.git/config` and an `rm` of it both fail with
-  `Operation not permitted`, and `cat` of it still works.
+- **Seatbelt: yes.** SBPL takes the last matching rule, so a deny appended after the root allow holds. Measured 2026-09-20 on macOS 25.6 against a temp tree: with `(allow file-write* (subpath "<root>")) (deny file-write* (subpath "<root>/.git"))`, a write under `<root>/sub` returns 0, a write to `<root>/.git/config` and an `rm` of it both fail with `Operation not permitted`, and `cat` of it still works.
 
-- **Landlock: no.** "One policy layer grants access to a file path if at least one of its rules
-  encountered on the path grants the access"
-  ([kernel documentation](https://docs.kernel.org/userspace-api/landlock.html)). Rules met walking
-  a path are unioned, so `PathBeneath(root, write)` grants write to everything below the root and a
-  nested rule carrying fewer rights subtracts nothing. There is no deny rule, and a second stacked
-  layer has the same shape. The only expressible form is to drop the root rule and enumerate the
-  root's children minus the protected ones, which leaves no rule on the root directory itself and
-  so denies `MakeReg` and `MakeDir` there: the model could no longer create a file at the top level
-  of the project.
+- **Landlock: no.** "One policy layer grants access to a file path if at least one of its rules encountered on the path grants the access" ([kernel documentation](https://docs.kernel.org/userspace-api/landlock.html)). Rules met walking a path are unioned, so `PathBeneath(root, write)` grants write to everything below the root and a nested rule carrying fewer rights subtracts nothing. There is no deny rule, and a second stacked layer has the same shape. The only expressible form is to drop the root rule and enumerate the root's children minus the protected ones, which leaves no rule on the root directory itself and so denies `MakeReg` and `MakeDir` there: the model could no longer create a file at the top level of the project.
 
-So the rule is enforced in minima's process only, on both platforms, and the README says `bash`
-ignores it. Shipping the Seatbelt half alone was rejected on the intersection principle above, and
-on a worse failure it invites: a boundary tested on a Mac and trusted on Linux.
+So the rule is enforced in minima's process only, on both platforms, and the README says `bash` ignores it. Shipping the Seatbelt half alone was rejected on the intersection principle above, and on a worse failure it invites: a boundary tested on a Mac and trusted on Linux.
 
-This also settles the same question for reads. Denying a read of `.env` would need a hole in the
-rule granting reads on `/`, which is the identical Landlock limit.
+This also settles the same question for reads. Denying a read of `.env` would need a hole in the rule granting reads on `/`, which is the identical Landlock limit.
 
 ## The writable set, and why it cannot be complete
 
-The policy permits writes to five paths outside the root. The bar they were chosen against was "a
-build that fetches nothing still opens it". Measured against that bar on macOS 25.6, 2026-09-20,
-the bar turns out to be the wrong one: no cache entry is required for a build to succeed.
+The policy permits writes to five paths outside the root. The bar they were chosen against was "a build that fetches nothing still opens it". Measured against that bar on macOS 25.6, 2026-09-20, the bar turns out to be the wrong one: no cache entry is required for a build to succeed.
 
-Method: the SBPL profile `sandbox_command` builds, with one candidate path removed at a time, over
-a temp project as the root.
+Method: the SBPL profile `sandbox_command` builds, with one candidate path removed at a time, over a temp project as the root.
 
 | Case | Cache denied | Result |
 |-|-|-|
@@ -240,47 +208,24 @@ a temp project as the root.
 | `uv venv` | `~/.cache` | fails: `Failed to initialize cache at ~/.cache/uv` |
 | `R -e '1+1'` | everything | succeeds |
 
-So the entries earn their place for a different reason than the one recorded: they are there so the
-agent can **fetch a dependency**, not so a build can run. A denied cache costs caching and blocks
-`cargo add`, `go get` and `npm install`; it does not break compilation. `uv` is the exception, and
-it is already covered by the `$XDG_CACHE_HOME` entry.
+So the entries earn their place for a different reason than the one recorded: they are there so the agent can **fetch a dependency**, not so a build can run. A denied cache costs caching and blocks `cargo add`, `go get` and `npm install`; it does not break compilation. `uv` is the exception, and it is already covered by the `$XDG_CACHE_HOME` entry.
 
-This also narrows what `~/Library/Caches` is for. Not `uv`, which prefers `~/.cache` when it
-exists, and not Homebrew, whose prefix is outside the root and stays denied either way. It is
-there because Go's build cache lives under it on macOS, and because `$XDG_CACHE_HOME` was the
-Linux half of a rule written on Linux.
+This also narrows what `~/Library/Caches` is for. Not `uv`, which prefers `~/.cache` when it exists, and not Homebrew, whose prefix is outside the root and stays denied either way. It is there because Go's build cache lives under it on macOS, and because `$XDG_CACHE_HOME` was the Linux half of a rule written on Linux.
 
-The doc's earlier claim -- that an offline `cargo build` opening `$CARGO_HOME/.package-cache` means
-a policy without the caches denies the build -- conflates the open happening with the build
-failing. The open may well happen; cargo tolerates its failure. That was measured on Linux under
-Landlock and is untested against this question there, so CI is what would settle whether Landlock
-behaves as Seatbelt does here.
+The doc's earlier claim -- that an offline `cargo build` opening `$CARGO_HOME/.package-cache` means a policy without the caches denies the build -- conflates the open happening with the build failing. The open may well happen; cargo tolerates its failure. That was measured on Linux under Landlock and is untested against this question there, so CI is what would settle whether Landlock behaves as Seatbelt does here.
 
-That bar cannot cover every ecosystem, because the paths divide into two kinds and only the first
-belongs in a policy at all.
+That bar cannot cover every ecosystem, because the paths divide into two kinds and only the first belongs in a policy at all.
 
 | Kind | Examples | Loss if destroyed |
 |-|-|-|
 | Regenerable cache | `$CARGO_HOME/.package-cache`, `$GOCACHE`, `~/.npm/_cacache`, `~/Library/Caches`, `~/.cabal/packages` | a re-download |
 | Installed environment | `~/R/library`, `~/.opam/<switch>`, `~/.stack`, `~/.ghcup`, `~/.rustup`, `~/.cabal/store` | hours of rebuilds, shared with every other project on the machine |
 
-Writing to the second kind is the global environment change the policy exists to prevent:
-installing an R package into the user library changes every other R project on the machine. Each
-of those ecosystems has a project-local form -- `renv` or `R_LIBS_USER`, `opam switch create .`
-giving `./_opam`, a relocated cabal store or stack root -- which puts the store inside the root,
-where it is already writable and where a reproducible project wants it. `AGENTS.md` is the place
-to tell the model a project works that way.
+Writing to the second kind is the global environment change the policy exists to prevent: installing an R package into the user library changes every other R project on the machine. Each of those ecosystems has a project-local form -- `renv` or `R_LIBS_USER`, `opam switch create .` giving `./_opam`, a relocated cabal store or stack root -- which puts the store inside the root, where it is already writable and where a reproducible project wants it. `AGENTS.md` is the place to tell the model a project works that way.
 
-`--writable DIR` covers what is left. It is the escape hatch that makes an incomplete built-in set
-safe to ship: the person who uses OCaml knows they need `~/.opam`, and minima does not have to
-know. Waiting for a complete list is what kept this work unmerged, and there is no complete list.
+`--writable DIR` covers what is left. It is the escape hatch that makes an incomplete built-in set safe to ship: the person who uses OCaml knows they need `~/.opam`, and minima does not have to know. Waiting for a complete list is what kept this work unmerged, and there is no complete list.
 
-Not implemented, and worth testing before it is: both backends can express create-and-write without
-delete-or-truncate. Landlock has separate `MakeReg`, `WriteFile`, `RemoveFile` and `Truncate` bits,
-and the ruleset here grants `AccessFs::from_all`, which is all of them; SBPL has `file-write-create`
-and `file-write-data` apart from `file-write-unlink`. A store the agent can add to but not delete
-from would match the accident model exactly. The risk is a half-written package with no way to
-clean it up, which may be worse than a denial.
+Not implemented, and worth testing before it is: both backends can express create-and-write without delete-or-truncate. Landlock has separate `MakeReg`, `WriteFile`, `RemoveFile` and `Truncate` bits, and the ruleset here grants `AccessFs::from_all`, which is all of them; SBPL has `file-write-create` and `file-write-data` apart from `file-write-unlink`. A store the agent can add to but not delete from would match the accident model exactly. The risk is a half-written package with no way to clean it up, which may be worse than a denial.
 
 ## Why it was rejected first
 
@@ -298,8 +243,7 @@ The strongest argument on the other side, recorded so it is not lost: with no `r
 
 ## Writes the file rules do not see (macOS)
 
-Measured 2026-09-21 on macOS 26.7 with `scripts/test_sandbox_macos.py`, against the allow-default
-profile that denied only `file-write*`:
+Measured 2026-09-21 on macOS 26.7 with `scripts/test_sandbox_macos.py`, against the allow-default profile that denied only `file-write*`:
 
 | Command | Result | Why |
 |-|-|-|
@@ -315,8 +259,7 @@ profile that denied only `file-write*`:
 | `open x.command` | denied by macOS | Terminal refuses a sandboxed caller, with a dialog; `open` still exits 0 |
 | `open P.app`, built in the root | escaped, now denied | launchd starts the app outside the sandbox; `(deny lsopen)` also blocks pages and URLs |
 
-`~/Library/Caches` held 157 entries on the measuring machine, almost all of them apps'. Measured
-2026-09-22, each workload with the directory denied, then granted with the entries it wrote listed:
+`~/Library/Caches` held 157 entries on the measuring machine, almost all of them apps'. Measured 2026-09-22, each workload with the directory denied, then granted with the entries it wrote listed:
 
 | Workload | Denied | Writes |
 |-|-|-|
@@ -328,145 +271,92 @@ profile that denied only `file-write*`:
 | `deno` npm import | fails | `deno` |
 | `swiftc`, `bun add`, `brew info`, `Rscript` | succeeds | nothing there |
 
-The grant is those six entries. Tools not measured -- Yarn, pnpm, CocoaPods, Playwright -- need
-`--writable` until they are.
+The grant is those six entries. Tools not measured -- Yarn, pnpm, CocoaPods, Playwright -- need `--writable` until they are.
 
-`swift build` fails under `fs` whenever it compiles `Package.swift`: SwiftPM runs the manifest
-compiler under its own `sandbox-exec`, and Seatbelt refuses `sandbox_apply` inside a sandbox. A
-cached manifest in `org.swift.swiftpm` hides this on a rebuild. `--disable-sandbox` works; no
-environment variable was found that does the same, and `SWIFTC_DISABLE_SANDBOX` does not. A
-command that fails this way gets a note naming `--disable-sandbox`. SwiftPM also warns that
-`~/Library/org.swift.swiftpm/configuration` is not accessible; that is user configuration, not a
-cache, and stays denied.
+`swift build` fails under `--sandbox` whenever it compiles `Package.swift`: SwiftPM runs the manifest compiler under its own `sandbox-exec`, and Seatbelt refuses `sandbox_apply` inside a sandbox. A cached manifest in `org.swift.swiftpm` hides this on a rebuild. `--disable-sandbox` works; no environment variable was found that does the same, and `SWIFTC_DISABLE_SANDBOX` does not. A command that fails this way gets a note naming `--disable-sandbox`. SwiftPM also warns that `~/Library/org.swift.swiftpm/configuration` is not accessible; that is user configuration, not a cache, and stays denied.
 | `swiftc`, `clang -fmodules` | failed | module cache in `DARWIN_USER_CACHE_DIR`, beside `$TMPDIR` |
 
-The profile now adds `(deny user-preference-write)`, `(deny signal) (allow signal (target
-same-sandbox))`, and the user cache directory. This departs from the intersection policy. The
-signal rule needs Landlock ABI 6 (`Scope::Signal`), above the ABI 3 floor. The preference rule has
-no Linux counterpart; dotfile config there is an ordinary file write, already denied. Both close
-accident-class escapes, which is the threat model, so a macOS-only rule is not a boundary Linux
-users would be misled into trusting.
+The profile now adds `(deny user-preference-write)`, `(deny signal) (allow signal (target same-sandbox))`, and the user cache directory. This departs from the intersection policy. The signal rule needs Landlock ABI 6 (`Scope::Signal`), above the ABI 3 floor. The preference rule has no Linux counterpart; dotfile config there is an ordinary file write, already denied. Both close accident-class escapes, which is the threat model, so a macOS-only rule is not a boundary Linux users would be misled into trusting.
 
-`$CARGO_HOME/bin` was open, and is now closed. It is an installed environment by the table above,
-not a cache, and rustup puts it on `PATH`, so a file written there ran unconfined in the user's
-next shell. The grant is now `registry/`, `git/`, `.package-cache`, `.package-cache-mutate`,
-`.global-cache` and `.global-cache-journal`. Measured 2026-09-22: without the two lock files cargo
-logs `failed to acquire cache lock` and fetches unlocked; without the journal (the database is in
-`journal_mode=delete`) it cannot save last-use data for its garbage collector. The journal exists
-only during a write, which Landlock cannot grant, so on Linux the record is lost and the build
-still succeeds.
+`$CARGO_HOME/bin` was open, and is now closed. It is an installed environment by the table above, not a cache, and rustup puts it on `PATH`, so a file written there ran unconfined in the user's next shell. The grant is now `registry/`, `git/`, `.package-cache`, `.package-cache-mutate`, `.global-cache` and `.global-cache-journal`. Measured 2026-09-22: without the two lock files cargo logs `failed to acquire cache lock` and fetches unlocked; without the journal (the database is in `journal_mode=delete`) it cannot save last-use data for its garbage collector. The journal exists only during a write, which Landlock cannot grant, so on Linux the record is lost and the build still succeeds.
 
-`$GOPATH/bin` was the same case, and is closed the same way. The grant is `pkg/mod` and `pkg/sumdb`
-under the first `$GOPATH` entry, plus `$GOMODCACHE` when set. Measured 2026-09-22: with `pkg/mod`
-alone, fetching an uncached module fails with `verifying module: open
-.../pkg/sumdb/sum.golang.org/latest: operation not permitted`. With both, the fetch and build
-succeed and `go install` is denied.
+`$GOPATH/bin` was the same case, and is closed the same way. The grant is `pkg/mod` and `pkg/sumdb` under the first `$GOPATH` entry, plus `$GOMODCACHE` when set. Measured 2026-09-22: with `pkg/mod` alone, fetching an uncached module fails with `verifying module: open .../pkg/sumdb/sum.golang.org/latest: operation not permitted`. With both, the fetch and build succeed and `go install` is denied.
 
-A fresh install has none of these entries, and a confined command cannot create them: go fails
-`mkdir .../pkg: operation not permitted`, measured 2026-09-22 on macOS. Cargo succeeded there,
-because a Seatbelt `subpath` on `registry/` lets cargo create it; Landlock drops the rule instead,
-so Linux is expected to fail too (inferred, not measured). The preflight therefore creates them,
-only under a `$CARGO_HOME` or `$GOPATH` that already exists.
+A fresh install has none of these entries, and a confined command cannot create them: go fails `mkdir .../pkg: operation not permitted`, measured 2026-09-22 on macOS. Cargo succeeded there, because a Seatbelt `subpath` on `registry/` lets cargo create it; Landlock drops the rule instead, so Linux is expected to fail too (inferred, not measured). The preflight therefore creates them, only under a `$CARGO_HOME` or `$GOPATH` that already exists.
 
 ### Build servers
 
-A build tool that hands work to a long-lived server runs that work with the server's bounds.
-Measured with sccache, which `RUSTC_WRAPPER` often names:
+A build tool that hands work to a long-lived server runs that work with the server's bounds. Measured with sccache, which `RUSTC_WRAPPER` often names:
 
-- Server started outside: every cacheable compile, which is every registry dependency, runs
-  unconfined, proc macros and all.
-- Server started by a confined build: it keeps that build's policy after minima exits. Every later
-  cache hit, confined or not, then fails with `error writing dependencies ... Operation not
-  permitted`, because the root it was allowed to write no longer matches. Stopping the server is
-  the fix.
+- Server started outside: every cacheable compile, which is every registry dependency, runs unconfined, proc macros and all.
 
-`fs` now sets `RUSTC_WRAPPER` and `RUSTC_WORKSPACE_WRAPPER` empty. Measured 2026-09-22: empty
-overrides `build.rustc-wrapper` and `build.rustc-workspace-wrapper` in cargo config, and unset does
-not. Denying loopback connections in SBPL was the alternative: it covers every server, but only on
-macOS, and it breaks the local dev server an agent starts to test against.
+- Server started by a confined build: it keeps that build's policy after minima exits. Every later cache hit, confined or not, then fails with `error writing dependencies ... Operation not permitted`, because the root it was allowed to write no longer matches. Stopping the server is the fix.
 
-This bounds a mistake, not a model that means to escape: a command can set the wrapper again or
-connect to any server itself. Gradle's daemon and Bazel's server have the same shape and are not
-handled.
+`--sandbox` now sets `RUSTC_WRAPPER` and `RUSTC_WORKSPACE_WRAPPER` empty. Measured 2026-09-22: empty overrides `build.rustc-wrapper` and `build.rustc-workspace-wrapper` in cargo config, and unset does not. Denying loopback connections in SBPL was the alternative: it covers every server, but only on macOS, and it breaks the local dev server an agent starts to test against.
+
+This bounds a mistake, not a model that means to escape: a command can set the wrapper again or connect to any server itself. Gradle's daemon and Bazel's server have the same shape and are not handled.
 
 ## Merge readiness: `sandbox` into `main`
 
-Assessed 2026-09-22 at `31d6ea4`. Recommendation: merge, after the item under "Before merging". Do not tag a release from the merge without the items under "Before releasing".
+Assessed 2026-09-22 at `31d6ea4`, updated at `70e3585` and for the switch from `--confine` to `--sandbox`. Recommendation: merge once `ci` passes on the commit carrying that switch. Do not tag a release from the merge without the items under "Before releasing".
 
 ### State of the branch
 
-- 12 commits ahead of `main`, 0 behind. The merge is a fast-forward; `git merge-tree` reports no
-  conflicts.
-- 18 files, +2,170 / -118. `src/` is +1,344 / -65 across 8 files, tests included. `src/tools/bash.rs`
-  went from 519 lines to 674 non-test and 613 test lines. The estimate under "Cost" was 200-260
-  lines; the difference is the writable-set work, the macOS rules and the notes.
+- 12 commits ahead of `main`, 0 behind. The merge is a fast-forward; `git merge-tree` reports no conflicts.
+
+- 18 files, +2,170 / -118. `src/` is +1,344 / -65 across 8 files, tests included. `src/tools/bash.rs` went from 519 lines to 674 non-test and 613 test lines. The estimate under "Cost" was 200-260 lines; the difference is the writable-set work, the macOS rules and the notes.
+
 - One new dependency, Linux only: `landlock = "0.4.7"`.
-- CI at `b4d43d7`: `ci` passes lint and test on `ubuntu-24.04` and `macos-15`, including
-  `scripts/test_sandbox.py` at 19/19 on both. `sandbox-macos` passes `scripts/test_sandbox_macos.py`
-  at 25/25 plus 3 known. `31d6ea4` only removes that workflow's temporary push trigger; `ci` passes
-  there too (run 35734868981).
+
+- CI at `b4d43d7`: `ci` passes lint and test on `ubuntu-24.04` and `macos-15`, including `scripts/test_sandbox.py` at 19/19 on both. `sandbox-macos` passes `scripts/test_sandbox_macos.py` at 25/25 plus 3 known. `31d6ea4` only removes that workflow's temporary push trigger; `ci` passes there too (run 35734868981).
 
 ### What merging changes for users
 
-- **The default changes.** `main` has no confinement. After the merge, `--confine paths` is the
-  default: `write` and `edit` refuse a path outside the working directory, and a `.git` or `.env`
-  path inside it. A user who relied on `write` reaching `~/notes` must pass `--root` or
-  `--confine none`. This is the one change every user meets.
-- `--confine fs`, `--writable` and `--root` are opt-in and change nothing unless passed.
-- The `--json` result record gains `confine` and `writable`. Additive; a strict schema consumer
+- **Nothing, by default.** The sandbox is off unless `--sandbox` is passed, and off bounds nothing,
+  as on `main`. `scripts/test_sandbox.py` with `SANDBOX=off` confirms it: every escaping write
+  lands, the `write` tool's included.
+- `--sandbox`, `--writable` and `--root` are opt-in.
+- The `--json` result record gains `sandbox` and `writable`. Additive; a strict schema consumer
   would see new fields.
 
 ### For merging
 
-- Both backends run in CI on every push, and the macOS end-to-end script has a workflow. The
-  rejection's reason 2, "the macOS half cannot be tested here", no longer holds.
-- Every escape found on macOS is either closed and covered by a test, or recorded below as known.
-  Each closing rule was checked by removing it and watching its test fail.
-- `fs` fails at startup when the platform cannot install the sandbox, so no user is told there is a
-  boundary when there is none.
-- The branch is behind nothing, so it will not grow harder to merge; it will only diverge further
-  from `main` while it waits.
+- Both backends run in CI on every push, and the macOS end-to-end script has a workflow. The rejection's reason 2, "the macOS half cannot be tested here", no longer holds.
+
+- Every escape found on macOS is either closed and covered by a test, or recorded below as known. Each closing rule was checked by removing it and watching its test fail.
+
+- `--sandbox` fails at startup when the platform cannot install the sandbox, so no user is told there is a boundary when there is none.
+
+- The branch is behind nothing, so it will not grow harder to merge; it will only diverge further from `main` while it waits.
 
 ### Against merging now
 
-- **Linux is less measured than macOS.** Every writable-set measurement in this document was taken
-  on macOS. Two Linux behaviours are predicted, not measured: cargo losing its last-use record,
-  because Landlock cannot grant `.global-cache-journal`, and a first fetch into an empty
-  `$CARGO_HOME` succeeding because the preflight created `registry/`. The `TODO.md` entry on the
-  Linux audit is still open.
-- **The macOS policy is no longer the intersection policy.** Preference writes, signals and `open`
-  are denied on macOS only. The rule this document set was that a boundary holding on one platform
-  would be trusted on the other. The departure is argued in "Writes the file rules do not see", but
-  it is a departure.
-- **`fs` has known costs on macOS:** `swift build` needs `--disable-sandbox`, minima's own suite
-  cannot run confined, `open` is unavailable to the agent, and confined builds lose sccache.
-- **Known gaps remain:** `launchctl disable` and `enable` (reproduced on the CI runner), build
-  servers other than sccache, `$GOCACHE` and other relocated caches, and the open network.
-- Reasons 1, 3 and 4 under "Why it was rejected first" still hold. They argued against building
-  the feature; merging it is the smaller decision.
+- **Linux is less measured than macOS.** The writable-set tables in this document were measured on macOS. On Linux, CI now measures the fresh-store fetches and the last-use loss, below, but not the per-cache denial table. The `TODO.md` entry on the Linux audit is still open.
+
+- **The macOS policy is no longer the intersection policy.** Preference writes, signals and `open` are denied on macOS only. The rule this document set was that a boundary holding on one platform would be trusted on the other. The departure is argued in "Writes the file rules do not see", but it is a departure.
+
+- **`--sandbox` has known costs on macOS:** `swift build` needs `--disable-sandbox`, minima's own suite cannot run confined, `open` is unavailable to the agent, and confined builds lose sccache.
+
+- **Known gaps remain:** `launchctl disable` and `enable` (reproduced on the CI runner), build servers other than sccache, `$GOCACHE` and other relocated caches, and the open network.
+
+- Reasons 1, 3 and 4 under "Why it was rejected first" still hold. They argued against building the feature; merging it is the smaller decision.
 
 ### Before merging
 
-1. Confirm `ci` passes with the `$XDG_CACHE_HOME` fix below.
+Done. `ci` run 35740317418 (`70e3585`) passes lint and test on both runners, and `scripts/test_sandbox.py` passes 22/22 on each. uv is not installed on either runner, so its case is skipped there; the Linux go case is what confirms the `$XDG_CACHE_HOME` fix in CI, and the uv case confirms it on macOS locally.
 
 Linux results, from `ci` runs 35736572539 (`5a9af12`) and 35738450862 (`e73ebef`):
 
-- Into an empty `CARGO_HOME` the fetch succeeds with the cache lock held, and cargo's last-use
-  record is lost. Both as predicted.
-- Into an empty `GOPATH`, go fetched the module and then failed: `failed to initialize build cache
-  at /home/runner/.cache/go-build: mkdir /home/runner/.cache: permission denied`. The runner has
-  no `~/.cache`, and a writable path is granted only if it exists. Not a Linux-only fault: uv on
-  macOS fails the same way with a missing `$XDG_CACHE_HOME`, reproduced locally. The preflight now
-  creates `$XDG_CACHE_HOME` when its parent exists, and the script runs its fresh session with that
-  directory missing, so the case no longer depends on the runner image.
+- Into an empty `CARGO_HOME` the fetch succeeds with the cache lock held, and cargo's last-use record is lost. Both as predicted.
 
-Done: the CHANGELOG's `--confine` entry states the new default as a change in behaviour.
+- Into an empty `GOPATH`, go fetched the module and then failed: `failed to initialize build cache at /home/runner/.cache/go-build: mkdir /home/runner/.cache: permission denied`. The runner has no `~/.cache`, and a writable path is granted only if it exists. Not a Linux-only fault: uv on macOS fails the same way with a missing `$XDG_CACHE_HOME`, reproduced locally. The preflight now creates `$XDG_CACHE_HOME` when its parent exists, and the script runs its fresh session with that directory missing, so the case no longer depends on the runner image.
+
+Done: the default no longer changes. `--confine none|paths|fs` became `--sandbox`, off by default (2026-09-22).
 
 ### Before releasing
 
-1. Fold the Unreleased "Fixed" entries into "Added". Every one of them fixes a feature that has not
-   shipped, so no user has met the bug; as written they read as regressions in 0.4.0.
-2. Bump the version; the default change in "What merging changes for users" argues for a minor
-   version, not a patch.
-3. After the merge, start `sandbox-macos` by hand once from `main`, since `workflow_dispatch` only
-   works from the default branch.
+1. Fold the Unreleased "Fixed" entries into "Added". Every one of them fixes a feature that has not shipped, so no user has met the bug; as written they read as regressions in 0.4.0.
+
+2. Bump the minor version: a new flag and a new field in the `--json` result, with no default changed.
+
+3. After the merge, start `sandbox-macos` by hand once from `main`, since `workflow_dispatch` only works from the default branch.

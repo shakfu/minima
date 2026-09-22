@@ -317,7 +317,7 @@ mod tests {
 
     fn agent_with_root(script: &str, root: std::path::PathBuf) -> Agent {
         let mock = crate::provider::mock::Mock::from_script(script).expect("script");
-        let bounds = Bounds::new(crate::config::Confine::Paths, root);
+        let bounds = Bounds::new(false, root);
         Agent::with_bounds(Provider::Mock(mock), Config::for_test("m"), bounds)
     }
 
@@ -403,10 +403,7 @@ mod tests {
         let mut config = Config::for_test("m");
         config.base_url = format!("http://{}/v1", listener.local_addr().unwrap());
         let http = crate::provider::http::Http::new().unwrap();
-        let bounds = Bounds::new(
-            crate::config::Confine::Paths,
-            std::env::current_dir().unwrap(),
-        );
+        let bounds = Bounds::new(false, std::env::current_dir().unwrap());
         let mut agent = Agent::with_bounds(Provider::Http(http), config, bounds);
 
         let cancel = Cancel::new();

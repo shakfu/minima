@@ -1,5 +1,5 @@
 # scripts/test_sandbox_macos.py on demand: real toolchains and daemon-mediated escapes under
-# --confine fs. Not in ci.yml, because it takes minutes and fails on a slow package mirror.
+# --sandbox. Not in ci.yml, because it takes minutes and fails on a slow package mirror.
 #
 # A runner has no login GUI session, so the `open`, `launchctl` and keychain cases may be refused
 # for that reason rather than by the profile, and pass either way. The unit tests cover `open`.

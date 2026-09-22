@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Real toolchains and IPC escapes through `minima --confine fs` on macOS, checked on disk.
+"""Real toolchains and IPC escapes through `minima --sandbox` on macOS, checked on disk.
 
     cargo build && scripts/test_sandbox_macos.py
 
@@ -10,7 +10,7 @@ The macOS complement to `test_sandbox.py`, which covers escapes by path. Three g
   for the command (cfprefsd, launchd, securityd) and an app `open` would start, which no file
   rule sees.
 - `known`: reported, not failed. Nested `sandbox-exec` is refused by Seatbelt, so minima's own
-  suite cannot run under `fs`, and `swift build` compiles a changed manifest under its own
+  suite cannot run under `--sandbox`, and `swift build` compiles a changed manifest under its own
   `sandbox-exec`, so it needs `--disable-sandbox`. `launchctl disable` and `enable` reach launchd's override database,
   which no SBPL rule tried blocks; every other `launchctl` change is refused.
 
@@ -68,7 +68,7 @@ def says(word="OK"):
 
 
 # A proc macro that writes outside the root when it expands. Non-incremental, so a wrapper such
-# as sccache would cache it and run rustc in its server; `fs` clears the wrapper.
+# as sccache would cache it and run rustc in its server; `--sandbox` clears the wrapper.
 PROC_MACRO = f"""
 mkdir pm && cd pm && cargo new -q --vcs none --lib mac && cargo new -q --vcs none --lib use_it
 printf '[lib]\\nproc-macro = true\\n' >> mac/Cargo.toml
@@ -192,7 +192,7 @@ failed = 0
 try:
     run = subprocess.run(
         [BIN, "--mock", script, "--context", "1000000", "--max-turns", "64",
-         "--confine", "fs", "-p", "go", "--json"],
+         "--sandbox", "-p", "go", "--json"],
         cwd=root, capture_output=True, text=True, timeout=3000,
     )
     time.sleep(1)

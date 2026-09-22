@@ -22,7 +22,7 @@ use tracing_subscriber::EnvFilter;
 
 use crate::agent::Agent;
 use crate::cancel::Cancel;
-use crate::config::{Bounds, Cli, Confine};
+use crate::config::{Bounds, Cli};
 use crate::frontend::Frontend;
 use crate::frontend::headless::Headless;
 use crate::frontend::json::Json;
@@ -60,13 +60,11 @@ fn start() -> Result<ExitCode> {
     exit_on_hangup_or_terminate(&runtime)?;
 
     let bounds = cli.bounds(root)?;
-    match bounds.confine {
-        Confine::None => eprintln!("minima: warning: unconfined; every tool may write anywhere"),
-        // The kernel policy is the only mode with an install that can fail, so it is the only one
-        // with a preflight. It runs against the real bounds, so a `--writable` path the policy
-        // will not take fails here rather than on the model's first command.
-        Confine::Paths => {}
-        Confine::Fs => runtime.block_on(tools::preflight(&bounds))?,
+    // The kernel policy can fail to install, so it is tried once here. It runs against the real
+    // bounds, so a `--writable` path the policy will not take fails here rather than on the
+    // model's first command.
+    if bounds.sandbox {
+        runtime.block_on(tools::preflight(&bounds))?;
     }
 
     let mut config = runtime.block_on(cli.resolve())?;

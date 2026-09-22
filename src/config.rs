@@ -13,62 +13,29 @@ pub const TOOL_OUTPUT_CAP: usize = 32 * 1024;
 /// Tokens of headroom below the model's context window before the turn is refused.
 pub const CONTEXT_MARGIN: u32 = 2048;
 
-/// How much a tool call is bounded. One axis, widening: `paths` is enforced in minima's own
-/// process, `fs` adds a policy the kernel enforces on `bash` and everything it starts.
-///
-/// The two modes do not bound the same set, and that is deliberate. `paths` bounds `write` and
-/// `edit` by the root alone, while `fs` also lets `bash` write to `$TMPDIR`, `/dev/null` and the
-/// ecosystem caches, which no build works without. So `fs` is not `paths` applied to `bash`.
-#[derive(clap::ValueEnum, Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Confine {
-    /// No bounds; every tool may reach the whole filesystem
-    None,
-    /// `write` and `edit` are bounded by the root; `bash` is not
-    #[default]
-    Paths,
-    /// As `paths`, plus the platform's filesystem sandbox on `bash`
-    Fs,
-}
-
-impl Confine {
-    /// The root bounds `write` and `edit`.
-    pub fn bounds_files(self) -> bool {
-        self != Confine::None
-    }
-
-    /// `bash` and its descendants run under the kernel policy.
-    pub fn sandboxes_bash(self) -> bool {
-        self == Confine::Fs
-    }
-
-    /// The name `--confine` takes. Reported in the `--json` result record, because a program
-    /// driving minima cannot see the flags the run was started with.
-    pub fn name(self) -> &'static str {
-        match self {
-            Confine::None => "none",
-            Confine::Paths => "paths",
-            Confine::Fs => "fs",
-        }
-    }
-}
-
 /// What one tool call may reach. Resolved once at startup, so no tool re-reads the flags.
+///
+/// With `sandbox` off nothing is bounded. On, the kernel policy confines `bash` and everything it
+/// starts, and `write` and `edit` are held to the root in minima's own process, where the kernel
+/// policy does not reach. The two sets differ on purpose: `bash` may also write `$TMPDIR`,
+/// `/dev/null` and the ecosystem caches, which no build works without, and the file tools need none
+/// of them.
 #[derive(Debug, Clone)]
 pub struct Bounds {
-    pub confine: Confine,
+    pub sandbox: bool,
     /// Canonical, because `confine_path` compares against it and both sandbox backends match on
     /// the resolved path.
     pub root: PathBuf,
-    /// `--confine fs` only, and `bash` only. The file tools never leave the root, in any mode.
+    /// `--sandbox` only, and `bash` only. The file tools never leave the root.
     pub writable: Vec<PathBuf>,
 }
 
 impl Bounds {
     /// Tests only. A run resolves its bounds once, through `Cli::bounds`.
     #[cfg(test)]
-    pub fn new(confine: Confine, root: PathBuf) -> Self {
+    pub fn new(sandbox: bool, root: PathBuf) -> Self {
         Self {
-            confine,
+            sandbox,
             root,
             writable: Vec::new(),
         }
@@ -78,16 +45,17 @@ impl Bounds {
 #[derive(Parser, Debug, Clone)]
 #[command(name = "minima", version, about, max_term_width = 80)]
 pub struct Cli {
-    /// Directory the agent works in, and the bound --confine applies. Default: the
+    /// Directory the agent works in, and the bound --sandbox applies. Default: the
     /// current directory.
     #[arg(long, value_name = "DIR")]
     pub root: Option<PathBuf>,
 
-    /// How much a tool call is bounded.
-    #[arg(long, value_name = "MODE", value_enum, default_value_t = Confine::Paths)]
-    pub confine: Confine,
+    /// Confine writes to the root: bash under the platform's filesystem sandbox, write
+    /// and edit by path.
+    #[arg(long)]
+    pub sandbox: bool,
 
-    /// Another directory bash may write to under --confine fs. Repeatable.
+    /// Another directory bash may write to under --sandbox. Repeatable.
     #[arg(long, value_name = "DIR")]
     pub writable: Vec<PathBuf>,
 
@@ -162,8 +130,8 @@ impl Cli {
     /// than a skip: the user asked for it by name, and dropping it quietly would leave them
     /// believing they granted access that a denied write only reveals mid-turn.
     pub fn bounds(&self, root: PathBuf) -> Result<Bounds> {
-        if !self.writable.is_empty() && !self.confine.sandboxes_bash() {
-            bail!("--writable needs --confine fs; none and paths do not bound bash");
+        if !self.writable.is_empty() && !self.sandbox {
+            bail!("--writable needs --sandbox; without it nothing is bounded");
         }
         let writable = self
             .writable
@@ -174,7 +142,7 @@ impl Cli {
             })
             .collect::<Result<Vec<_>>>()?;
         Ok(Bounds {
-            confine: self.confine,
+            sandbox: self.sandbox,
             root,
             writable,
         })
@@ -366,7 +334,7 @@ mod tests {
     fn cli(model: Option<&str>, context: Option<u32>, refresh: bool) -> Cli {
         Cli {
             root: None,
-            confine: Confine::Paths,
+            sandbox: false,
             writable: Vec::new(),
             prompt: None,
             json: false,
@@ -382,15 +350,15 @@ mod tests {
         }
     }
 
-    /// The reported name is the one the flag accepts, or a caller reading the result record
-    /// could not pass it back.
+    /// Off unless asked for: a run without the flag bounds nothing, as before the flag existed.
     #[test]
-    fn every_mode_reports_the_name_the_flag_parses() {
-        use clap::ValueEnum;
-
-        for mode in [Confine::None, Confine::Paths, Confine::Fs] {
-            assert_eq!(Confine::from_str(mode.name(), false), Ok(mode));
-        }
+    fn the_sandbox_is_off_by_default() {
+        assert!(!Cli::try_parse_from(["minima"]).unwrap().sandbox);
+        assert!(
+            Cli::try_parse_from(["minima", "--sandbox"])
+                .unwrap()
+                .sandbox
+        );
     }
 
     #[test]
@@ -416,20 +384,20 @@ mod tests {
         assert!(cli(Some("m"), Some(64), true).wants_model_list(false));
     }
 
-    /// Under `none` and `paths` nothing bounds `bash`, so the flag would grant nothing. Refused
-    /// rather than ignored: the user named a path and would otherwise believe it was granted.
+    /// Without the sandbox nothing bounds `bash`, so the flag would grant nothing. Refused rather
+    /// than ignored: the user named a path and would otherwise believe it was granted.
     #[test]
-    fn writable_without_the_fs_mode_is_refused() {
+    fn writable_without_the_sandbox_is_refused() {
         let mut c = cli(Some("m"), Some(64), false);
         c.writable = vec![std::env::temp_dir()];
         let err = c.bounds(std::env::temp_dir()).expect_err("should refuse");
-        assert!(err.to_string().contains("--confine fs"), "{err}");
+        assert!(err.to_string().contains("--sandbox"), "{err}");
     }
 
     #[test]
     fn a_writable_path_that_does_not_resolve_is_refused() {
         let mut c = cli(Some("m"), Some(64), false);
-        c.confine = Confine::Fs;
+        c.sandbox = true;
         c.writable = vec![PathBuf::from("/no/such/directory")];
         let err = format!("{:#}", c.bounds(std::env::temp_dir()).expect_err("refuses"));
         assert!(err.contains("--writable"), "{err}");
@@ -440,7 +408,7 @@ mod tests {
     #[test]
     fn writable_paths_are_resolved_once() {
         let mut c = cli(Some("m"), Some(64), false);
-        c.confine = Confine::Fs;
+        c.sandbox = true;
         c.writable = vec![std::env::temp_dir()];
         let bounds = c.bounds(std::env::temp_dir()).expect("resolves");
         assert_eq!(

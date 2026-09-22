@@ -508,7 +508,7 @@ mod tests {
     use super::{Meter, Search, Step, count, result, tool_status, usage_line};
     use crate::theme::Style;
 
-    /// A hint after a long stderr line, such as `--confine fs`'s note on a denied write, must
+    /// A hint after a long stderr line, such as `--sandbox`'s note on a denied write, must
     /// reach the user; the routine result is what gets cut.
     #[test]
     fn notes_and_errors_are_never_cut() {

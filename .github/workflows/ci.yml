@@ -52,6 +52,6 @@ jobs:
         run: brew install go
       - run: mkdir -p "$(go env GOPATH)/bin" "$(go env GOPATH)/pkg/mod"
       - run: make test
-      # Real commands under --confine fs, judged on disk. The cargo case fetches, so this needs
+      # Real commands under --sandbox, judged on disk. The cargo case fetches, so this needs
       # the network.
       - run: cargo build && scripts/test_sandbox.py

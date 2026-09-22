@@ -86,7 +86,7 @@ pub async fn call(args: Args, cancel: &Cancel, bounds: &Bounds) -> Result<Outcom
         .map_or(DEFAULT_TIMEOUT, Duration::from_millis)
         .min(MAX_TIMEOUT);
 
-    let mut command = if bounds.confine.sandboxes_bash() {
+    let mut command = if bounds.sandbox {
         let mut command = sandbox_command(bounds, &args.command)?;
         // A wrapper such as sccache hands the compile to a server with its own bounds: unconfined
         // if started outside, or pinned to this root after minima exits if started here. Empty
@@ -164,13 +164,13 @@ pub async fn call(args: Args, cancel: &Cancel, bounds: &Bounds) -> Result<Outcom
     } else {
         looks_denied(&stderr).then_some(DENIED)
     };
-    if bounds.confine.sandboxes_bash()
+    if bounds.sandbox
         && let Some(denial) = denial
     {
         told = add(told, denial);
         note = add(note, denial);
     }
-    if bounds.confine.sandboxes_bash() && stderr.contains(OPEN_REFUSED) {
+    if bounds.sandbox && stderr.contains(OPEN_REFUSED) {
         told = add(told, OPEN_DENIED);
         note = add(note, OPEN_DENIED);
     }
@@ -388,18 +388,18 @@ fn platform_caches(_home: Option<&std::path::PathBuf>) -> Vec<std::path::PathBuf
 /// reads "Operation not permitted" retries the command or reaches for `sudo`. Matching the text
 /// is a heuristic -- an ordinary permission error gets the line too, and a translated system gets
 /// nothing -- and one extra sentence costs less than a retry loop.
-const DENIED: &str = "if a write was denied: --confine fs permits writes under the root, $TMPDIR, /dev/null and the build caches, but not $CARGO_HOME/bin or $GOPATH/bin; another directory needs --writable, or a store inside the root";
+const DENIED: &str = "if a write was denied: --sandbox permits writes under the root, $TMPDIR, /dev/null and the build caches, but not $CARGO_HOME/bin or $GOPATH/bin; another directory needs --writable, or a store inside the root";
 
 /// Seatbelt refuses a profile inside a sandbox. SwiftPM compiles `Package.swift` under its own
-/// `sandbox-exec`, so this is how `swift build` fails under `--confine fs`.
+/// `sandbox-exec`, so this is how `swift build` fails under `--sandbox`.
 const NESTED_REFUSED: &str = "sandbox_apply: Operation not permitted";
 const NESTED_DENIED: &str =
-    "--confine fs refuses a nested sandbox-exec; for `swift build`, pass --disable-sandbox";
+    "--sandbox refuses a nested sandbox-exec; for `swift build`, pass --disable-sandbox";
 
 /// LaunchServices' own message when the profile denies `open`; it never says why.
 const OPEN_REFUSED: &str = "failed with error -54";
 const OPEN_DENIED: &str =
-    "--confine fs does not let a command open apps, documents or URLs; ask the user to open it";
+    "--sandbox does not let a command open apps, documents or URLs; ask the user to open it";
 
 fn looks_denied(stderr: &str) -> bool {
     stderr.contains("Operation not permitted") || stderr.contains("Permission denied")
@@ -518,7 +518,7 @@ fn sandbox_command(bounds: &Bounds, command: &str) -> Result<Command> {
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn sandbox_command(_bounds: &Bounds, _command: &str) -> Result<Command> {
-    bail!("this platform has no filesystem sandbox; --confine paths runs without one")
+    bail!("this platform has no filesystem sandbox; run without --sandbox")
 }
 
 /// One confined command before the agent starts. A kernel without Landlock, or a macOS without
@@ -529,9 +529,9 @@ pub async fn preflight(bounds: &Bounds) -> Result<()> {
         command: "exit 0".into(),
         timeout_ms: Some(10_000),
     };
-    call(args, &Cancel::new(), bounds).await.context(
-        "the filesystem sandbox could not be installed; --confine paths runs without it",
-    )?;
+    call(args, &Cancel::new(), bounds)
+        .await
+        .context("the filesystem sandbox could not be installed; run without --sandbox")?;
     Ok(())
 }
 
@@ -682,10 +682,10 @@ fn first_line(stderr: &str) -> Option<String> {
 mod tests {
     use super::*;
 
-    /// Every test here runs under the kernel policy; `tools::only_fs_bounds_bash` covers the
-    /// modes that do not.
+    /// Every test here runs under the kernel policy; `tools::only_the_sandbox_bounds_bash` covers a
+    /// run without it.
     fn sandboxed() -> Bounds {
-        Bounds::new(crate::config::Confine::Fs, std::env::current_dir().unwrap())
+        Bounds::new(true, std::env::current_dir().unwrap())
     }
 
     async fn run(command: &str) -> Outcome {
@@ -977,21 +977,18 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let note = out.note.unwrap_or_default();
         assert!(note.contains("--writable"), "{note}");
-        assert!(out.body.contains("--confine fs"), "{:?}", out.body);
+        assert!(out.body.contains("--sandbox"), "{:?}", out.body);
     }
 
-    /// The note is for the mode that can deny. Under `paths` nothing bounds `bash`, so a
-    /// permission error is the filesystem's own and the policy has nothing to say about it.
+    /// The note is for the sandbox. Without it nothing bounds `bash`, so a permission error is
+    /// the filesystem's own and the policy has nothing to say about it.
     #[tokio::test]
     async fn an_unsandboxed_permission_error_gets_no_note() {
         let args = Args {
             command: "touch /minima-not-writable 2>&1".into(),
             timeout_ms: Some(10_000),
         };
-        let bounds = Bounds::new(
-            crate::config::Confine::Paths,
-            std::env::current_dir().unwrap(),
-        );
+        let bounds = Bounds::new(false, std::env::current_dir().unwrap());
         let out = call(args, &Cancel::new(), &bounds)
             .await
             .expect("bash tool");
@@ -1271,11 +1268,8 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn the_sandbox_is_spawned_by_absolute_path() {
-        let command = sandbox_command(
-            &Bounds::new(crate::config::Confine::Fs, std::path::PathBuf::from("/")),
-            "exit 0",
-        )
-        .unwrap();
+        let command =
+            sandbox_command(&Bounds::new(true, std::path::PathBuf::from("/")), "exit 0").unwrap();
         let program = command.as_std().get_program();
         assert_eq!(program, SANDBOX_EXEC);
         assert!(

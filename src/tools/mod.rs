@@ -100,10 +100,7 @@ impl Tool {
         } else {
             arguments
         };
-        let bound = bounds
-            .confine
-            .bounds_files()
-            .then_some(bounds.root.as_path());
+        let bound = bounds.sandbox.then_some(bounds.root.as_path());
         let out: Outcome = match self {
             // `read` is never bounded: `bash` reads the whole filesystem in every mode, so a jail
             // here would only push the model through `cat`. `write` and `edit` are, because they
@@ -272,7 +269,6 @@ impl Drop for Scratch {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Confine;
 
     /// A tool the model is never told about cannot be called, and a mock cannot catch that.
     /// Each dialect reads the name and schema from a different place.
@@ -369,7 +365,7 @@ mod tests {
             .call(
                 &serde_json::json!({ "path": path, "content": "x" }).to_string(),
                 &Cancel::new(),
-                &Bounds::new(Confine::Paths, root.clone()),
+                &Bounds::new(true, root.clone()),
             )
             .await
             .unwrap_err();
@@ -380,7 +376,7 @@ mod tests {
             .call(
                 &serde_json::json!({ "path": path }).to_string(),
                 &Cancel::new(),
-                &Bounds::new(Confine::Paths, root.clone()),
+                &Bounds::new(true, root.clone()),
             )
             .await
             .unwrap();
@@ -388,27 +384,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn confine_none_allows_a_write_outside_the_root() {
-        let outside = Scratch::new("confine-none-outside");
+    async fn without_the_sandbox_a_write_outside_the_root_lands() {
+        let outside = Scratch::new("sandbox-off-outside");
         let path = outside.file("written.txt");
 
         Tool::Write
             .call(
                 &serde_json::json!({ "path": path, "content": "x" }).to_string(),
                 &Cancel::new(),
-                &Bounds::new(Confine::None, std::path::PathBuf::from(outside.file(""))),
+                &Bounds::new(false, std::path::PathBuf::from(outside.file(""))),
             )
             .await
             .unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "x");
     }
 
-    /// The mode decides two things, and the wiring between them is what is new: `paths` bounds
-    /// the file tools and leaves `bash` alone, `fs` bounds both. `$HOME` is the one place outside
+    /// Off, `bash` reaches outside the root; on, it does not. `$HOME` is the one place outside
     /// the root that is neither the temp directory nor a build cache.
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[tokio::test]
-    async fn only_fs_bounds_bash() {
+    async fn only_the_sandbox_bounds_bash() {
         let dir = Scratch::new("confine-bash");
         let root = std::fs::canonicalize(dir.file("")).unwrap();
         let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) else {
@@ -422,28 +417,23 @@ mod tests {
             serde_json::json!({ "command": format!("touch '{}'", probe.display()) }).to_string();
 
         let out = Tool::Bash
-            .call(
-                &args,
-                &Cancel::new(),
-                &Bounds::new(Confine::Paths, root.clone()),
-            )
+            .call(&args, &Cancel::new(), &Bounds::new(false, root.clone()))
             .await
             .unwrap();
         let reached = probe.exists();
         let _ = std::fs::remove_file(&probe);
-        assert!(reached, "paths must not bound bash: {out:?}");
+        assert!(
+            reached,
+            "bash must be unbounded without the sandbox: {out:?}"
+        );
 
         let out = Tool::Bash
-            .call(
-                &args,
-                &Cancel::new(),
-                &Bounds::new(Confine::Fs, root.clone()),
-            )
+            .call(&args, &Cancel::new(), &Bounds::new(true, root.clone()))
             .await
             .unwrap();
         let reached = probe.exists();
         let _ = std::fs::remove_file(&probe);
-        assert!(!reached, "fs must bound bash: {out:?}");
+        assert!(!reached, "the sandbox must bound bash: {out:?}");
     }
 
     #[tokio::test]
@@ -457,7 +447,7 @@ mod tests {
             .call(
                 &serde_json::json!({ "path": path, "content": "x" }).to_string(),
                 &Cancel::new(),
-                &Bounds::new(Confine::Paths, std::path::PathBuf::from(root.file("."))),
+                &Bounds::new(true, std::path::PathBuf::from(root.file("."))),
             )
             .await
             .unwrap_err();
@@ -477,7 +467,7 @@ mod tests {
             .call(
                 &serde_json::json!({ "path": path }).to_string(),
                 &Cancel::new(),
-                &Bounds::new(Confine::Paths, std::path::PathBuf::from(root.file("."))),
+                &Bounds::new(true, std::path::PathBuf::from(root.file("."))),
             )
             .await
             .unwrap();

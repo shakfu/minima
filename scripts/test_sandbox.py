@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Real commands through `minima --confine fs`, checked on disk rather than as minima reports them.
+"""Real commands through `minima --sandbox`, checked on disk rather than as minima reports them.
 
     cargo build && scripts/test_sandbox.py
-    CONFINE=paths scripts/test_sandbox.py    # control: the outside bash writes should now land
+    SANDBOX=off scripts/test_sandbox.py    # control: the outside writes should now land
 
 A mock script plays the model, so no key is needed. Linux needs kernel 6.2 for Landlock; macOS uses
 Seatbelt. The outside target sits under $HOME, because the policy leaves $TMPDIR writable. Every
@@ -21,7 +21,7 @@ import uuid
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BIN = os.environ.get("BIN", os.path.join(ROOT, "target", "debug", "minima"))
-CONFINE = os.environ.get("CONFINE", "fs")
+SANDBOX = os.environ.get("SANDBOX", "on") != "off"
 
 home = os.path.expanduser("~")
 tag = uuid.uuid4().hex[:8]
@@ -95,7 +95,7 @@ cases = [
      lambda r: not exists(f"{extra}/w")),
 ]
 
-# A second session under `fs`, with a `CARGO_HOME` and `GOPATH` that exist but hold nothing and an
+# A second session under `--sandbox`, with a `CARGO_HOME` and `GOPATH` that exist but hold nothing and an
 # `XDG_CACHE_HOME` that does not exist, as on a new machine. The preflight must create the cache
 # entries, since a confined command cannot.
 # Whether cargo kept its last-use record is reported, not judged: Landlock cannot grant the journal
@@ -163,25 +163,25 @@ def judge(case_list, results):
     return failed
 
 
-bounds = ["--confine", "fs", "--writable", extra] if CONFINE == "fs" else ["--confine", CONFINE]
+bounds = ["--sandbox", "--writable", extra] if SANDBOX else []
 failed = 0
 total = len(cases) + 1
 try:
     results, final, run = session(cases, root, bounds)
     print(f"{sys.platform}: minima exit {run.returncode}; "
-          f"confine={final.get('confine')} writable={final.get('writable')}")
+          f"sandbox={final.get('sandbox')} writable={final.get('writable')}")
     failed += judge(cases, results)
     ran = exists(f"{tmpfile}.bg")
     ok = ran and not exists(f"{out}/bg")
     failed += not ok
     print(f"{'PASS' if ok else 'FAIL'}  background job ran (marker={ran}), outside write denied")
 
-    if CONFINE == "fs":
+    if SANDBOX:
         env = dict(os.environ, CARGO_HOME=os.path.join(fresh, "cargo"),
                    GOPATH=os.path.join(fresh, "gopath"), GOFLAGS="-modcacherw",
                    XDG_CACHE_HOME=os.path.join(fresh, "cache"))
         env.pop("GOMODCACHE", None)
-        results, _, _ = session(fresh_cases, fresh_root, ["--confine", "fs"], env)
+        results, _, _ = session(fresh_cases, fresh_root, ["--sandbox"], env)
         skipped = [tool for tool, has in (("go", has_go), ("uv", has_uv)) if not has]
         print("fresh stores:" + (f" (not installed, skipped: {', '.join(skipped)})" if skipped else ""))
         failed += judge(fresh_cases, results)
@@ -198,5 +198,5 @@ finally:
         except FileNotFoundError:
             pass
 
-print(f"{total - failed}/{total} passed" + ("" if CONFINE == "fs" else f" (control, --confine {CONFINE})"))
+print(f"{total - failed}/{total} passed" + ("" if SANDBOX else " (control, no --sandbox)"))
 sys.exit(1 if failed else 0)
