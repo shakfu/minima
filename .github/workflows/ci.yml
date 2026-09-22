@@ -15,7 +15,13 @@ env:
 
 jobs:
   lint:
-    runs-on: ubuntu-24.04
+    # Both platforms, because clippy sees only the code compiled for the host, and the Seatbelt
+    # backend is `cfg(target_os = "macos")`.
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, macos-15]
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -40,4 +46,10 @@ jobs:
       # rather than skip.
       - if: runner.os == 'Linux'
         run: cat /sys/kernel/security/lsm
+      # The sandbox tests skip when the cache they aim at is missing, and the runner images have
+      # Go without a GOPATH.
+      - run: command -v go && mkdir -p "$(go env GOPATH)/bin" "$(go env GOPATH)/pkg/mod" || true
       - run: make test
+      # Real commands under --confine fs, judged on disk. The cargo case fetches, so this needs
+      # the network.
+      - run: cargo build && scripts/test_sandbox.py

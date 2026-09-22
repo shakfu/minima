@@ -6,8 +6,8 @@
 
 A mock script plays the model, so no key is needed. Linux needs kernel 6.2 for Landlock; macOS uses
 Seatbelt. The outside target sits under $HOME, because the policy leaves $TMPDIR writable. Every
-check runs after the session, so the cases are ordered to leave evidence: the truncate case needs
-the original contents, which also proves the rm before it was denied.
+check runs after the session, so the rm and truncate cases each get their own file: on one shared
+file, a truncate that lands recreates what an rm removed.
 """
 
 import json
@@ -33,8 +33,9 @@ script = os.path.join(home, f"minima-sbx-{tag}.json")
 tmpfile = os.path.join(tempfile.gettempdir(), f"minima-sbx-{tag}")
 os.makedirs(out)
 os.makedirs(extra)
-with open(os.path.join(out, "existing"), "w") as f:
-    f.write("keep me\n")
+for name in ("existing", "removable"):
+    with open(os.path.join(out, name), "w") as f:
+        f.write("keep me\n")
 
 
 def exists(path):
@@ -70,8 +71,8 @@ cases = [
     ("python open() outside denied", "bash",
      {"command": f"python3 -c \"open('{out}/py','w').write('x')\""},
      lambda r: not exists(f"{out}/py")),
-    ("rm outside file denied", "bash", {"command": f"rm -f {out}/existing"},
-     lambda r: exists(f"{out}/existing")),
+    ("rm outside file denied", "bash", {"command": f"rm -f {out}/removable"},
+     lambda r: exists(f"{out}/removable")),
     ("truncate outside file denied", "bash", {"command": f": > {out}/existing"},
      lambda r: exists(f"{out}/existing") and open(f"{out}/existing").read() == "keep me\n"),
     # Judged after the session: the job leaves a marker in $TMPDIR, so a pass means it ran and was

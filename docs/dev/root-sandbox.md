@@ -310,6 +310,34 @@ profile that denied only `file-write*`:
 | proc macro under `RUSTC_WRAPPER=sccache`, incremental | denied | sccache does not cache it; rustc ran in the client |
 | the same, `CARGO_INCREMENTAL=0` | escaped, now denied | a cacheable compile ran in the sccache server, started outside |
 | file in `$CARGO_HOME/bin` | written | all of `$CARGO_HOME` is granted |
+| `launchctl bootout`, `kickstart`, `kill`, `stop`, `remove`, `unload`, `setenv` | denied | launchd refuses a sandboxed caller |
+| `launchctl disable`, `enable` | escaped, still open | launchd accepts them; the record survives reboot |
+| `open x.command` | denied by macOS | Terminal refuses a sandboxed caller, with a dialog; `open` still exits 0 |
+| `open P.app`, built in the root | escaped, now denied | launchd starts the app outside the sandbox; `(deny lsopen)` also blocks pages and URLs |
+
+`~/Library/Caches` held 157 entries on the measuring machine, almost all of them apps'. Measured
+2026-09-22, each workload with the directory denied, then granted with the entries it wrote listed:
+
+| Workload | Denied | Writes |
+|-|-|-|
+| `go build`, `go vet`, `go test` | succeeds, uncached | `go-build` |
+| `pip install` | succeeds, warns the cache is not writable | `pip` |
+| `/usr/bin/python3` | succeeds, no bytecode cache | `com.apple.python` |
+| `swift build` | see below | `org.swift.swiftpm` |
+| `ccache clang` | fails | `ccache` |
+| `deno` npm import | fails | `deno` |
+| `swiftc`, `bun add`, `brew info`, `Rscript` | succeeds | nothing there |
+
+The grant is those six entries. Tools not measured -- Yarn, pnpm, CocoaPods, Playwright -- need
+`--writable` until they are.
+
+`swift build` fails under `fs` whenever it compiles `Package.swift`: SwiftPM runs the manifest
+compiler under its own `sandbox-exec`, and Seatbelt refuses `sandbox_apply` inside a sandbox. A
+cached manifest in `org.swift.swiftpm` hides this on a rebuild. `--disable-sandbox` works; no
+environment variable was found that does the same, and `SWIFTC_DISABLE_SANDBOX` does not. A
+command that fails this way gets a note naming `--disable-sandbox`. SwiftPM also warns that
+`~/Library/org.swift.swiftpm/configuration` is not accessible; that is user configuration, not a
+cache, and stays denied.
 | `swiftc`, `clang -fmodules` | failed | module cache in `DARWIN_USER_CACHE_DIR`, beside `$TMPDIR` |
 
 The profile now adds `(deny user-preference-write)`, `(deny signal) (allow signal (target
@@ -326,7 +354,19 @@ next shell. The grant is now `registry/`, `git/`, `.package-cache`, `.package-ca
 logs `failed to acquire cache lock` and fetches unlocked; without the journal (the database is in
 `journal_mode=delete`) it cannot save last-use data for its garbage collector. The journal exists
 only during a write, which Landlock cannot grant, so on Linux the record is lost and the build
-still succeeds. `$GOPATH/bin` is the same case and is still open.
+still succeeds.
+
+`$GOPATH/bin` was the same case, and is closed the same way. The grant is `pkg/mod` and `pkg/sumdb`
+under the first `$GOPATH` entry, plus `$GOMODCACHE` when set. Measured 2026-09-22: with `pkg/mod`
+alone, fetching an uncached module fails with `verifying module: open
+.../pkg/sumdb/sum.golang.org/latest: operation not permitted`. With both, the fetch and build
+succeed and `go install` is denied.
+
+A fresh install has none of these entries, and a confined command cannot create them: go fails
+`mkdir .../pkg: operation not permitted`, measured 2026-09-22 on macOS. Cargo succeeded there,
+because a Seatbelt `subpath` on `registry/` lets cargo create it; Landlock drops the rule instead,
+so Linux is expected to fail too (inferred, not measured). The preflight therefore creates them,
+only under a `$CARGO_HOME` or `$GOPATH` that already exists.
 
 ### Build servers
 

@@ -1,0 +1,26 @@
+# scripts/test_sandbox_macos.py on demand: real toolchains and daemon-mediated escapes under
+# --confine fs. Not in ci.yml, because it takes minutes and fails on a slow package mirror.
+#
+# A runner has no login GUI session, so the `open`, `launchctl` and keychain cases may be refused
+# for that reason rather than by the profile, and pass either way. The unit tests cover `open`.
+name: sandbox-macos
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  sandbox:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: brew install uv ccache deno
+      - run: mkdir -p "$(go env GOPATH)/bin" "$(go env GOPATH)/pkg/mod"
+      - run: cargo build && scripts/test_sandbox_macos.py

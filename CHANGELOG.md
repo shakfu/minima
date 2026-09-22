@@ -10,7 +10,7 @@
 
   Reads are not bounded in any mode. The network is open either way, so denying reads would hide headers, toolchains and dependency sources without closing exfiltration. The caches are writable so that fetching a dependency works: measured on macOS, compilation itself survives a denied cache, but `cargo add`, `go get` and `npm install` do not, and a lost cache costs a re-download rather than work. `~/Library/Caches` is the macOS half of the `$XDG_CACHE_HOME` entry, where Go keeps its build cache.
 
-- `.github/workflows/ci.yml` runs `make lint` and `make test` on every push and pull request, on `ubuntu-24.04` and `macos-15`. The macOS runner is what makes the Seatbelt half of the sandbox a tested claim rather than an asserted one.
+- `.github/workflows/ci.yml` runs `make lint`, `make test` and `scripts/test_sandbox.py` on every push and pull request, on `ubuntu-24.04` and `macos-15`. The macOS runner is what makes the Seatbelt half of the sandbox a tested claim rather than an asserted one; lint runs there too, because clippy sees only the code compiled for the host. `.github/workflows/sandbox-macos.yml` runs `scripts/test_sandbox_macos.py` on demand, kept out of CI because it takes minutes and depends on package mirrors.
 
 - A command that fails under `--confine fs` with text that looks like a denied write gets a note naming the policy and `--writable`. The kernel returns `EPERM` or `EACCES` and the program prints its own message, which never mentions minima, so a model reads `Operation not permitted` and retries the command or reaches for `sudo`. Matching the message is a heuristic: an ordinary permission error gets the note too, and a translated system gets nothing, which is cheaper than the retry loop it replaces.
 
@@ -26,17 +26,29 @@
 
 - `scripts/test_sandbox.py` runs real commands under `--confine fs` and checks the disk rather than minima's report: a cargo build and a git commit that must succeed, and writes escaping the root by redirect, `cd ..`, symlink, Python, `rm`, truncation and a background job that must not. A mock plays the model, so it needs no key and runs unchanged on Linux and macOS. `CONFINE=paths` is the control, under which the escaping writes land. It was chosen over an integration test in `tests/` because the cargo case makes it slow and it needs a kernel with Landlock.
 
-- `scripts/test_sandbox_macos.py` runs real toolchains and daemon-mediated writes under `--confine fs` on macOS: dependency fetches through cargo, uv, pip, npm and go, swift and clang module builds, and `defaults`, `launchctl`, `security` and `kill` aimed outside the root. It also reports the one gap the policy cannot close: nested `sandbox-exec` is refused, so minima's own suite fails under `fs`.
+- `scripts/test_sandbox_macos.py` runs real toolchains and daemon-mediated writes under `--confine fs` on macOS: dependency fetches through cargo, uv, pip, npm and go, swift and clang module builds, and `defaults`, `launchctl`, `security` and `kill` aimed outside the root. It also reports two gaps the policy cannot close: nested `sandbox-exec` is refused, so minima's own suite fails under `fs`, and `launchctl disable` still marks a login agent disabled, a record that survives reboot. No SBPL rule tried blocks it; launchd refuses every other `launchctl` change from a sandboxed caller.
 
 ### Fixed
 
 - `--confine fs` on macOS denies preference writes and signals to processes outside the command's sandbox. `defaults write` and `kill` both escaped it, because cfprefsd writes the plist and a signal is not a file write. A command still signals its own descendants. macOS only: Landlock scopes signals from ABI 6, above the ABI 3 floor, and Linux has no preferences daemon.
 
+- `--confine fs` on macOS denies `open`. LaunchServices has launchd start the app, outside the sandbox, so a command could build an app bundle in the root and `open` it to write anywhere. Opening a page or URL for the user is denied too; a tool call gets a note saying so, because LaunchServices reports only `error -54`. Denying it outright rather than behind a flag, because the agent rarely needs `open` and the user can run it.
+
+- `--confine fs` on macOS grants the `go-build`, `pip`, `com.apple.python`, `org.swift.swiftpm`, `ccache` and `deno` entries of `~/Library/Caches`, not the whole directory. Every app keeps its cache there, and a confined `rm -rf ~/Library/Caches/*` reached all of them. Measured with the rest denied: `ccache` and `deno` fail without their entry, and go, pip, python and SwiftPM run uncached. A relocated cache such as `$GOCACHE` needs `--writable`.
+
+- A command under `--confine fs` that fails with `sandbox_apply: Operation not permitted` gets a note naming the nested `sandbox-exec` and `swift build --disable-sandbox`, in place of the denied-write note. SwiftPM compiles a changed `Package.swift` under its own `sandbox-exec`, which Seatbelt refuses inside a sandbox, and the denied-write note pointed at `--writable`, which cannot fix it.
+
 - `--confine fs` on macOS leaves the per-user cache directory (`getconf DARWIN_USER_CACHE_DIR`) writable. It sits beside `$TMPDIR` under `/var/folders`, not inside it, and `swiftc` and `clang -fmodules` failed writing their module cache there.
 
 - `--confine fs` grants `registry/`, `git/` and cargo's lock and last-use files under `$CARGO_HOME`, not the whole directory. `bin/` is on `PATH` for rustup users, so a file written there ran unconfined in the next shell. `cargo install` now fails under `fs`. Without the lock files cargo only warns and fetches unlocked, so they stay in the set.
 
+- `--confine fs` grants `pkg/mod` and `pkg/sumdb` under the first `$GOPATH` entry, and `$GOMODCACHE` if set, not the whole of `$GOPATH`. `bin/` is commonly on `PATH`, the same hole as `$CARGO_HOME/bin`. `go install` now fails under `fs`. `pkg/sumdb` is required: without it every new fetch fails verifying the module.
+
+- `--confine fs` creates `registry/`, `git/` and cargo's two lock files under `$CARGO_HOME`, and `pkg/mod` and `pkg/sumdb` under `$GOPATH`, at startup, when that directory exists. Confined, go cannot create `pkg/` on a fresh `$GOPATH`, so its first fetch failed; Landlock also drops a grant on a path that does not exist yet. Created by minima rather than documented as an unconfined first `cargo fetch`, which CI and new machines would miss.
+
 - `--confine fs` sets `RUSTC_WRAPPER` and `RUSTC_WORKSPACE_WRAPPER` empty for `bash`. Under sccache a cacheable compile, which is every registry dependency, ran in the sccache server with the server's bounds: unconfined if it was started outside, so a proc macro could write anywhere. A server started by a confined build kept that policy after minima exited, and every later cache hit on the machine failed with `Operation not permitted`. Empty rather than unset, because empty also overrides `build.rustc-wrapper` in cargo config. Confined builds lose sccache's cache.
+
+- `scripts/test_sandbox.py` gives its rm case its own target. Under `CONFINE=paths` the truncate case after it recreated the removed file, so the control reported the rm as denied.
 
 - A tool note in the REPL wraps instead of being cut at 80 columns. After a long stderr line the cut removed whatever the note appended, such as `--confine fs`'s hint on a denied write or the notice that background jobs are still running. A routine result is still cut to one line.
 

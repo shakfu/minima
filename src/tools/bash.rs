@@ -158,9 +158,21 @@ pub async fn call(args: Args, cancel: &Cancel, bounds: &Bounds) -> Result<Outcom
     };
     // Both are said to the model and the user: the denial so neither mistakes a bound for a
     // broken machine, the jobs so neither loses track of one it started.
-    if bounds.confine.sandboxes_bash() && looks_denied(&stderr) {
-        told = add(told, DENIED);
-        note = add(note, DENIED);
+    // The nested refusal also reads as a denied write, and `--writable` cannot fix it.
+    let denial = if stderr.contains(NESTED_REFUSED) {
+        Some(NESTED_DENIED)
+    } else {
+        looks_denied(&stderr).then_some(DENIED)
+    };
+    if bounds.confine.sandboxes_bash()
+        && let Some(denial) = denial
+    {
+        told = add(told, denial);
+        note = add(note, denial);
+    }
+    if bounds.confine.sandboxes_bash() && stderr.contains(OPEN_REFUSED) {
+        told = add(told, OPEN_DENIED);
+        note = add(note, OPEN_DENIED);
     }
     if left_running {
         told = add(told, LEFT_RUNNING);
@@ -187,17 +199,11 @@ fn plain_command(command: &str) -> Command {
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn writable_outside_root() -> Vec<std::path::PathBuf> {
     let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
-    let named = |var: &str, under_home: &str| {
-        std::env::var_os(var)
-            .map(std::path::PathBuf::from)
-            .or_else(|| home.as_ref().map(|h| h.join(under_home)))
-    };
     [
         // Reads TMPDIR, which on macOS is a per-user path under /var/folders rather than /tmp.
         Some(std::env::temp_dir()),
         Some(std::path::PathBuf::from("/dev/null")),
         named("XDG_CACHE_HOME", ".cache"),
-        named("GOPATH", "go"),
         home.as_ref().map(|h| h.join(".npm")),
     ]
     .into_iter()
@@ -207,8 +213,79 @@ fn writable_outside_root() -> Vec<std::path::PathBuf> {
     // a symlink to `/private/tmp`, and `$TMPDIR` carries a trailing slash that `subpath` will not
     // match. Dropping what does not resolve also drops what does not exist.
     .filter_map(|path| std::fs::canonicalize(path).ok())
-    .chain(named("CARGO_HOME", ".cargo").map_or_else(Vec::new, |h| cargo_caches(&h)))
+    .chain(cargo_home().map_or_else(Vec::new, |h| children(&h, CARGO_CACHES)))
+    .chain(go_caches(gopath()))
+    .chain(library_caches(home.as_deref()))
     .collect()
+}
+
+/// `$var`, or `under_home` below `$HOME` when it is unset.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn named(var: &str, under_home: &str) -> Option<std::path::PathBuf> {
+    std::env::var_os(var)
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(under_home)))
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn cargo_home() -> Option<std::path::PathBuf> {
+    named("CARGO_HOME", ".cargo")
+}
+
+/// The first entry: Go keeps `pkg/` there when `$GOPATH` is a list.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn gopath() -> Option<std::path::PathBuf> {
+    named("GOPATH", "go").and_then(|p| std::env::split_paths(&p).next())
+}
+
+/// Creates the cache entries the policy grants, under a `$CARGO_HOME` or `$GOPATH` that exists.
+/// Once confined, cargo cannot create `registry/` in a directory it may not write, nor go
+/// `pkg/mod`, so a fresh install would fail its first fetch; Landlock also drops a path that does
+/// not exist yet. `.global-cache` is left to cargo, which creates it as a database. Best effort:
+/// what cannot be created is denied later with the usual note.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn create_caches() {
+    create_under(
+        cargo_home().as_deref(),
+        &["registry", "git"],
+        &[".package-cache", ".package-cache-mutate"],
+    );
+    create_under(gopath().as_deref(), &["pkg/mod", "pkg/sumdb"], &[]);
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn create_caches() {}
+
+/// Nothing when `base` is missing: minima does not create `~/.cargo` for someone without Rust.
+/// A file is opened for append, so one that exists is never truncated.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn create_under(base: Option<&std::path::Path>, dirs: &[&str], files: &[&str]) {
+    let Some(base) = base.filter(|b| b.is_dir()) else {
+        return;
+    };
+    for dir in dirs {
+        let _ = std::fs::create_dir_all(base.join(dir));
+    }
+    for file in files {
+        let _ = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(base.join(file));
+    }
+}
+
+/// Resolved paths under `base`, kept when they do not exist yet: Seatbelt can still grant their
+/// creation, and Landlock drops them.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn children(base: &std::path::Path, names: &[&str]) -> Vec<std::path::PathBuf> {
+    let Ok(base) = std::fs::canonicalize(base) else {
+        return Vec::new();
+    };
+    names
+        .iter()
+        .map(|name| base.join(name))
+        .map(|path| std::fs::canonicalize(&path).unwrap_or(path))
+        .collect()
 }
 
 /// What cargo writes under `$CARGO_HOME` when it builds or fetches, and nothing else: `bin/` is on
@@ -218,40 +295,61 @@ fn writable_outside_root() -> Vec<std::path::PathBuf> {
 /// collector. The journal exists only during a write; Landlock drops a path that does not exist,
 /// so on Linux that record is lost and the build still succeeds.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-fn cargo_caches(cargo_home: &std::path::Path) -> Vec<std::path::PathBuf> {
-    let Ok(home) = std::fs::canonicalize(cargo_home) else {
-        return Vec::new();
-    };
-    [
-        "registry",
-        "git",
-        ".package-cache",
-        ".package-cache-mutate",
-        ".global-cache",
-        ".global-cache-journal",
-    ]
-    .iter()
-    .map(|name| home.join(name))
-    .map(|path| std::fs::canonicalize(&path).unwrap_or(path))
-    .collect()
+const CARGO_CACHES: &[&str] = &[
+    "registry",
+    "git",
+    ".package-cache",
+    ".package-cache-mutate",
+    ".global-cache",
+    ".global-cache-journal",
+];
+
+/// The module cache and the checksum database's state under the first `$GOPATH` entry, not
+/// `bin/`, which is on `PATH` as `~/.cargo/bin` is. Measured 2026-09-22 on macOS: without
+/// `pkg/sumdb` every new fetch fails verifying the module. `$GOMODCACHE` moves the module cache.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn go_caches(gopath: Option<std::path::PathBuf>) -> Vec<std::path::PathBuf> {
+    let mut paths = gopath.map_or_else(Vec::new, |g| children(&g, &["pkg/mod", "pkg/sumdb"]));
+    paths.extend(
+        std::env::var_os("GOMODCACHE")
+            .filter(|v| !v.is_empty())
+            .map(std::path::PathBuf::from)
+            .map(|c| std::fs::canonicalize(&c).unwrap_or(c)),
+    );
+    paths
 }
 
-/// macOS keeps user caches under `~/Library/Caches`, not `$XDG_CACHE_HOME`, so the entry above is
-/// the Linux half of one rule. Go's build cache is `~/Library/Caches/go-build` on a Mac, and
-/// measured 2026-09-20: `go build` fails outright when that directory does not yet exist and
-/// cannot be created, and silently stops caching when it exists but is not writable.
-///
 /// The per-user cache directory sits beside `$TMPDIR` under `/var/folders`, not inside it.
 /// Measured 2026-09-21: `swiftc` fails without it, unable to write its clang module cache there.
 #[cfg(target_os = "macos")]
-fn platform_caches(home: Option<&std::path::PathBuf>) -> Vec<std::path::PathBuf> {
-    [
-        home.map(|h| h.join("Library/Caches")),
-        darwin_user_cache_dir(),
-    ]
-    .into_iter()
-    .flatten()
-    .collect()
+fn platform_caches(_home: Option<&std::path::PathBuf>) -> Vec<std::path::PathBuf> {
+    darwin_user_cache_dir().into_iter().collect()
+}
+
+/// The toolchain entries of `~/Library/Caches`, the macOS half of `$XDG_CACHE_HOME`, and not the
+/// directory: every app on the machine keeps its cache there. Measured 2026-09-22 with the rest
+/// denied: `ccache` and `deno` fail without theirs; go, pip, python and swiftpm run uncached.
+/// A relocated cache (`$GOCACHE`, `$PIP_CACHE_DIR`, ...) needs `--writable`.
+#[cfg(target_os = "macos")]
+fn library_caches(home: Option<&std::path::Path>) -> Vec<std::path::PathBuf> {
+    home.map_or_else(Vec::new, |h| {
+        children(
+            &h.join("Library/Caches"),
+            &[
+                "go-build",
+                "pip",
+                "com.apple.python",
+                "org.swift.swiftpm",
+                "ccache",
+                "deno",
+            ],
+        )
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn library_caches(_home: Option<&std::path::Path>) -> Vec<std::path::PathBuf> {
+    Vec::new()
 }
 
 #[cfg(target_os = "macos")]
@@ -284,7 +382,18 @@ fn platform_caches(_home: Option<&std::path::PathBuf>) -> Vec<std::path::PathBuf
 /// reads "Operation not permitted" retries the command or reaches for `sudo`. Matching the text
 /// is a heuristic -- an ordinary permission error gets the line too, and a translated system gets
 /// nothing -- and one extra sentence costs less than a retry loop.
-const DENIED: &str = "if a write was denied: --confine fs permits writes under the root, $TMPDIR, /dev/null and the build caches; another directory needs --writable, or a store inside the root";
+const DENIED: &str = "if a write was denied: --confine fs permits writes under the root, $TMPDIR, /dev/null and the build caches, but not $CARGO_HOME/bin or $GOPATH/bin; another directory needs --writable, or a store inside the root";
+
+/// Seatbelt refuses a profile inside a sandbox. SwiftPM compiles `Package.swift` under its own
+/// `sandbox-exec`, so this is how `swift build` fails under `--confine fs`.
+const NESTED_REFUSED: &str = "sandbox_apply: Operation not permitted";
+const NESTED_DENIED: &str =
+    "--confine fs refuses a nested sandbox-exec; for `swift build`, pass --disable-sandbox";
+
+/// LaunchServices' own message when the profile denies `open`; it never says why.
+const OPEN_REFUSED: &str = "failed with error -54";
+const OPEN_DENIED: &str =
+    "--confine fs does not let a command open apps, documents or URLs; ask the user to open it";
 
 fn looks_denied(stderr: &str) -> bool {
     stderr.contains("Operation not permitted") || stderr.contains("Permission denied")
@@ -386,12 +495,14 @@ fn sandbox_command(bounds: &Bounds, command: &str) -> Result<Command> {
         profile.push_str(&format!(" ({form} \"{quoted}\")"));
     }
     profile.push(')');
-    // Two writes the file rules cannot see, both measured to escape them 2026-09-21: `defaults
-    // write` hands the plist to cfprefsd, and `kill` reaches the user's other processes. macOS
-    // only: Landlock scopes signals from ABI 6, above the ABI 3 floor, and has no preferences
-    // daemon to deny. A command still signals its own descendants, which share its sandbox.
+    // Three routes the file rules cannot see, each measured to escape them: `defaults write`
+    // hands the plist to cfprefsd, `kill` reaches the user's other processes, and `open` has
+    // launchd start an app, one the command just built included, outside the sandbox. macOS only:
+    // Landlock scopes signals from ABI 6, above the ABI 3 floor, and Linux has neither daemon. A
+    // command still signals its own descendants, which share its sandbox.
     profile.push_str(
-        " (deny user-preference-write) (deny signal) (allow signal (target same-sandbox))",
+        " (deny user-preference-write) (deny signal) (allow signal (target same-sandbox)) \
+         (deny lsopen)",
     );
 
     let mut process = Command::new(SANDBOX_EXEC);
@@ -407,6 +518,7 @@ fn sandbox_command(_bounds: &Bounds, _command: &str) -> Result<Command> {
 /// One confined command before the agent starts. A kernel without Landlock, or a macOS without
 /// `sandbox-exec`, fails here rather than on whichever tool call the model makes first.
 pub async fn preflight(bounds: &Bounds) -> Result<()> {
+    create_caches();
     let args = Args {
         command: "exit 0".into(),
         timeout_ms: Some(10_000),
@@ -928,6 +1040,95 @@ mod tests {
         assert_eq!(after, "kept", "a truncate reached the file: {out:?}");
     }
 
+    /// The Go counterpart: `pkg/mod` takes a fetch, `bin/` beside it does not.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[tokio::test]
+    async fn only_the_go_caches_are_writable_under_gopath() {
+        let gopath = std::env::var_os("GOPATH")
+            .and_then(|p| std::env::split_paths(&p).next())
+            .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join("go")));
+        let Some(gopath) = gopath.filter(|g| g.join("bin").is_dir() && g.join("pkg/mod").is_dir())
+        else {
+            return;
+        };
+        let name = format!(".minima-sandbox-{}", std::process::id());
+        let (bin, cache) = (
+            gopath.join("bin").join(&name),
+            gopath.join("pkg/mod").join(&name),
+        );
+        let out = run(&format!(
+            "touch {} && rm {} && echo CACHE; touch {}",
+            quoted(&cache),
+            quoted(&cache),
+            quoted(&bin)
+        ))
+        .await;
+        let wrote_bin = bin.exists();
+        let _ = std::fs::remove_file(&bin);
+        let _ = std::fs::remove_file(&cache);
+        assert!(
+            out.body.contains("CACHE"),
+            "the module cache was denied: {out:?}"
+        );
+        assert!(!wrote_bin, "a write reached $GOPATH/bin: {out:?}");
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn cache_entries_are_created_without_truncating_or_creating_the_base() {
+        let base = std::env::temp_dir().join(format!("minima-caches-{}", std::process::id()));
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::write(base.join(".lock"), "held").unwrap();
+        create_under(Some(&base), &["a/b"], &[".lock", ".new"]);
+        let missing = base.join("missing");
+        create_under(Some(&missing), &["a"], &[".new"]);
+
+        let kept = std::fs::read_to_string(base.join(".lock")).unwrap();
+        let (dir, new) = (base.join("a/b").is_dir(), base.join(".new").is_file());
+        let base_created = missing.exists();
+        let _ = std::fs::remove_dir_all(&base);
+        assert!(dir && new, "an entry was not created");
+        assert_eq!(kept, "held", "an existing file was truncated");
+        assert!(!base_created, "a missing base was created");
+    }
+
+    /// The nested refusal gets its own note, not the `--writable` one, which cannot fix it.
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn a_nested_sandbox_says_how_swift_avoids_it() {
+        let out = run("/usr/bin/sandbox-exec -p '(version 1) (allow default)' true").await;
+        let note = out.note.unwrap_or_default();
+        assert!(note.contains("--disable-sandbox"), "{note}");
+        assert!(!note.contains("--writable"), "{note}");
+    }
+
+    /// An app bundle the command builds would start through launchd, outside the sandbox.
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn open_is_denied_and_says_why() {
+        let Some(marker) = outside_root("opened") else {
+            return;
+        };
+        let out = run(&format!(
+            "d=$(mktemp -d) && mkdir -p \"$d/P.app/Contents/MacOS\" \
+             && printf '#!/bin/sh\\ntouch {}\\n' > \"$d/P.app/Contents/MacOS/P\" \
+             && chmod +x \"$d/P.app/Contents/MacOS/P\" \
+             && printf '<plist><dict><key>CFBundleExecutable</key><string>P</string>\
+<key>LSUIElement</key><true/></dict></plist>' > \"$d/P.app/Contents/Info.plist\" \
+             && open \"$d/P.app\"; rm -rf \"$d\"",
+            quoted(&marker)
+        ))
+        .await;
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        let launched = marker.exists();
+        let _ = std::fs::remove_file(&marker);
+        assert!(
+            !launched,
+            "open started an app outside the sandbox: {out:?}"
+        );
+        assert!(out.body.contains(OPEN_DENIED), "{out:?}");
+    }
+
     /// Set and empty, whatever minima inherited: unset would let cargo fall back to a wrapper
     /// named in config.
     #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -971,6 +1172,39 @@ mod tests {
             "the registry was denied: {out:?}"
         );
         assert!(!wrote_bin, "a write reached $CARGO_HOME/bin: {out:?}");
+    }
+
+    /// A toolchain's entry takes a write; `~/Library/Caches` itself, shared with every app, does not.
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn only_toolchain_entries_of_library_caches_are_writable() {
+        let Some(caches) = std::env::var_os("HOME")
+            .map(|h| std::path::PathBuf::from(h).join("Library/Caches"))
+            .filter(|c| c.is_dir())
+        else {
+            return;
+        };
+        let name = format!(".minima-sandbox-{}", std::process::id());
+        let (shared, pip) = (caches.join(&name), caches.join("pip").join(&name));
+        let out = run(&format!(
+            "mkdir -p {} && touch {} && rm {} && echo PIP; touch {}",
+            quoted(&caches.join("pip")),
+            quoted(&pip),
+            quoted(&pip),
+            quoted(&shared)
+        ))
+        .await;
+        let wrote_shared = shared.exists();
+        let _ = std::fs::remove_file(&shared);
+        let _ = std::fs::remove_file(&pip);
+        assert!(
+            out.body.contains("PIP"),
+            "the pip cache was denied: {out:?}"
+        );
+        assert!(
+            !wrote_shared,
+            "a write reached ~/Library/Caches itself: {out:?}"
+        );
     }
 
     /// `swiftc` writes its clang module cache here, beside `$TMPDIR` rather than inside it.
