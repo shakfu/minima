@@ -148,6 +148,10 @@ def judge(case_list, results):
         ok = check(result)
         failed += not ok
         print(f"{'PASS' if ok else 'FAIL'}  {name:48} {(result.get('note') or '')[:70]}")
+        if not ok:
+            # The note keeps only the first stderr line, which is often progress, not the cause.
+            tail = result["output"].strip().splitlines()[-8:]
+            print("\n".join(f"      {line[:200]}" for line in tail))
     if len(results) != len(case_list):
         print(f"FAIL  only {len(results)} of {len(case_list)} calls ran")
         failed += 1

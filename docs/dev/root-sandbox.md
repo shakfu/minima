@@ -447,10 +447,13 @@ Assessed 2026-09-22 at `31d6ea4`. Recommendation: merge, after the item under "B
 
 ### Before merging
 
-1. Read the Linux result of `scripts/test_sandbox.py` in `ci` on the next push. It now fetches into
-   an empty `CARGO_HOME` and `GOPATH` and prints `INFO  cargo last-use record saved|lost`, which
-   settles both Linux predictions above. On macOS it passes and prints `saved`. Record the Linux
-   result here.
+1. Fix the fresh-`GOPATH` case on Linux. `ci` run 35736572539 (`5a9af12`) settled the cargo
+   predictions: into an empty `CARGO_HOME` the fetch succeeds with the cache lock held, and the
+   last-use record is lost, as predicted. The Go fetch into an empty `GOPATH` fails on Linux and
+   passes on macOS. The log kept only Go's first progress line; the script now prints a failed
+   case's output, so the next run shows the cause. Suspected, not confirmed: the runner has no
+   `~/.cache`, so `~/.cache/go-build` cannot be created, since a writable path is granted only if
+   it exists.
 
 Done: the CHANGELOG's `--confine` entry states the new default as a change in behaviour.
 
