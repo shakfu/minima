@@ -312,12 +312,11 @@ Assessed 2026-09-22 at `31d6ea4`, updated at `935b4f9` for the switch from `--co
 
 ### What merging changes for users
 
-- **Nothing, by default.** The sandbox is off unless `--sandbox` is passed, and off bounds nothing,
-  as on `main`. `scripts/test_sandbox.py` with `SANDBOX=off` confirms it: every escaping write
-  lands, the `write` tool's included.
+- **Nothing, by default.** The sandbox is off unless `--sandbox` is passed, and off bounds nothing, as on `main`. `scripts/test_sandbox.py` with `SANDBOX=off` confirms it: every escaping write lands, the `write` tool's included.
+
 - `--sandbox`, `--writable` and `--root` are opt-in.
-- The `--json` result record gains `sandbox` and `writable`. Additive; a strict schema consumer
-  would see new fields.
+
+- The `--json` result record gains `sandbox` and `writable`. Additive; a strict schema consumer would see new fields.
 
 ### For merging
 
@@ -355,8 +354,4 @@ Done: the default no longer changes. `--confine none|paths|fs` became `--sandbox
 
 ### Before releasing
 
-1. Fold the Unreleased "Fixed" entries into "Added". Every one of them fixes a feature that has not shipped, so no user has met the bug; as written they read as regressions in 0.4.0.
-
-2. Bump the minor version: a new flag and a new field in the `--json` result, with no default changed.
-
-3. After the merge, start `sandbox-macos` by hand once from `main`, since `workflow_dispatch` only works from the default branch.
+Done for 0.5.0: the sandbox's "Fixed" entries were folded into "Added", the version bumped to 0.5.0, and `sandbox-macos` started once from `main` (run 35748201651, 25/25 plus 3 known).

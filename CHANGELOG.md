@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.0
 
 ### Added
 
@@ -8,11 +8,23 @@
 
   A switch rather than the three modes this work first had, `--confine none|paths|fs`. The middle mode bounded `write` and `edit` but not `bash`, and read as confinement while every command still reached the whole filesystem. Off by default because Landlock needs kernel 6.2 and the preflight refuses to start below it; Debian 12, RHEL 9 and Ubuntu 22.04 GA sit under that floor. Falling back quietly instead would leave the user believing there is a boundary.
 
-  Reads are never bounded. The network is open either way, so denying reads would hide headers, toolchains and dependency sources without closing exfiltration. The caches are writable so that fetching a dependency works: measured on macOS, compilation itself survives a denied cache, but `cargo add`, `go get` and `npm install` do not, and a lost cache costs a re-download rather than work. `~/Library/Caches` is the macOS half of the `$XDG_CACHE_HOME` entry, where Go keeps its build cache.
+  Reads are never bounded. The network is open either way, so denying reads would hide headers, toolchains and dependency sources without closing exfiltration. The caches are writable so that fetching a dependency works: measured on macOS, compilation itself survives a denied cache, but `cargo add`, `go get` and `npm install` do not, and a lost cache costs a re-download rather than work.
+
+- The writable caches are the entries a fetch or build writes, not their parents: `registry/`, `git/` and the lock and last-use files under `$CARGO_HOME`; `pkg/mod` and `pkg/sumdb` under the first `$GOPATH` entry, and `$GOMODCACHE`; `$XDG_CACHE_HOME` and `~/.npm`; and on macOS the per-user cache directory beside `$TMPDIR` and the `go-build`, `pip`, `com.apple.python`, `org.swift.swiftpm`, `ccache` and `deno` entries of `~/Library/Caches`. `$CARGO_HOME/bin` and `$GOPATH/bin` are on `PATH`, so a file written there would run unconfined in the next shell, and `~/Library/Caches` holds every app's cache. So `cargo install` and `go install` fail under `--sandbox`, and a relocated cache such as `$GOCACHE` needs `--writable`.
+
+  Measured with the rest denied: cargo without its lock files warns and fetches unlocked; go without `pkg/sumdb` fails verifying every new module; `ccache` and `deno` fail without their entry; `swiftc` and `clang -fmodules` fail without the per-user cache directory; go, pip, python and SwiftPM run uncached.
+
+- At startup `--sandbox` creates those cache entries under a `$CARGO_HOME` or `$GOPATH` that exists, and `$XDG_CACHE_HOME` when its parent does. A confined command cannot create them, so on a new machine the first fetch would fail; Landlock also drops a grant on a path that does not exist yet. Created by minima rather than documented as an unconfined first `cargo fetch`, which CI and new machines would miss.
+
+- On macOS `--sandbox` also denies preference writes, `open`, and signals to processes outside the command's sandbox. None of them is a file write: `defaults write` hands the plist to cfprefsd, `open` has launchd start an app, one the command just built included, and `kill` reaches the user's other processes. A command still signals its own descendants. `open` is denied outright rather than behind a flag, because the agent rarely needs it and the user can run it; a denied `open` gets a note, since LaunchServices reports only `error -54`. macOS only: Landlock scopes signals from ABI 6, above the ABI 3 floor, and Linux has neither daemon.
+
+- `--sandbox` sets `RUSTC_WRAPPER` and `RUSTC_WORKSPACE_WRAPPER` empty for `bash`. Under sccache a cacheable compile, which is every registry dependency, runs in the sccache server with the server's bounds: unconfined if it was started outside, so a proc macro could write anywhere, and a server a confined build starts keeps that policy after minima exits, failing every later cache hit on the machine. Empty rather than unset, because empty also overrides `build.rustc-wrapper` in cargo config. Confined builds lose sccache's cache.
 
 - `.github/workflows/ci.yml` runs `make lint`, `make test` and `scripts/test_sandbox.py` on every push and pull request, on `ubuntu-24.04` and `macos-15`. The macOS runner is what makes the Seatbelt half of the sandbox a tested claim rather than an asserted one; lint runs there too, because clippy sees only the code compiled for the host. `.github/workflows/sandbox-macos.yml` runs `scripts/test_sandbox_macos.py` on demand, kept out of CI because it takes minutes and depends on package mirrors.
 
 - A command that fails under `--sandbox` with text that looks like a denied write gets a note naming the policy and `--writable`. The kernel returns `EPERM` or `EACCES` and the program prints its own message, which never mentions minima, so a model reads `Operation not permitted` and retries the command or reaches for `sudo`. Matching the message is a heuristic: an ordinary permission error gets the note too, and a translated system gets nothing, which is cheaper than the retry loop it replaces.
+
+  A command that fails with `sandbox_apply: Operation not permitted` gets a note naming the nested `sandbox-exec` and `swift build --disable-sandbox` instead. SwiftPM compiles a changed `Package.swift` under its own `sandbox-exec`, which Seatbelt refuses inside a sandbox, and `--writable` cannot fix that.
 
 - `--writable DIR`, repeatable, adds a directory to the set `--sandbox` leaves writable for `bash`. The built-in set covers the caches a dependency fetch needs, and cannot cover every ecosystem: R, OCaml, Haskell and Stack keep installed packages in a user-level store, and enumerating them in minima would be a list that drifts. The flag is what makes an incomplete built-in set safe, so the person who knows they use `~/.opam` says so.
 
@@ -29,26 +41,6 @@
 - `scripts/test_sandbox_macos.py` runs real toolchains and daemon-mediated writes under `--sandbox` on macOS: dependency fetches through cargo, uv, pip, npm and go, swift and clang module builds, and `defaults`, `launchctl`, `security` and `kill` aimed outside the root. It also reports two gaps the policy cannot close: nested `sandbox-exec` is refused, so minima's own suite fails under `--sandbox`, and `launchctl disable` still marks a login agent disabled, a record that survives reboot. No SBPL rule tried blocks it; launchd refuses every other `launchctl` change from a sandboxed caller.
 
 ### Fixed
-
-- `--sandbox` on macOS denies preference writes and signals to processes outside the command's sandbox. `defaults write` and `kill` both escaped it, because cfprefsd writes the plist and a signal is not a file write. A command still signals its own descendants. macOS only: Landlock scopes signals from ABI 6, above the ABI 3 floor, and Linux has no preferences daemon.
-
-- `--sandbox` on macOS denies `open`. LaunchServices has launchd start the app, outside the sandbox, so a command could build an app bundle in the root and `open` it to write anywhere. Opening a page or URL for the user is denied too; a tool call gets a note saying so, because LaunchServices reports only `error -54`. Denying it outright rather than behind a flag, because the agent rarely needs `open` and the user can run it.
-
-- `--sandbox` on macOS grants the `go-build`, `pip`, `com.apple.python`, `org.swift.swiftpm`, `ccache` and `deno` entries of `~/Library/Caches`, not the whole directory. Every app keeps its cache there, and a confined `rm -rf ~/Library/Caches/*` reached all of them. Measured with the rest denied: `ccache` and `deno` fail without their entry, and go, pip, python and SwiftPM run uncached. A relocated cache such as `$GOCACHE` needs `--writable`.
-
-- A command under `--sandbox` that fails with `sandbox_apply: Operation not permitted` gets a note naming the nested `sandbox-exec` and `swift build --disable-sandbox`, in place of the denied-write note. SwiftPM compiles a changed `Package.swift` under its own `sandbox-exec`, which Seatbelt refuses inside a sandbox, and the denied-write note pointed at `--writable`, which cannot fix it.
-
-- `--sandbox` on macOS leaves the per-user cache directory (`getconf DARWIN_USER_CACHE_DIR`) writable. It sits beside `$TMPDIR` under `/var/folders`, not inside it, and `swiftc` and `clang -fmodules` failed writing their module cache there.
-
-- `--sandbox` grants `registry/`, `git/` and cargo's lock and last-use files under `$CARGO_HOME`, not the whole directory. `bin/` is on `PATH` for rustup users, so a file written there ran unconfined in the next shell. `cargo install` now fails under `--sandbox`. Without the lock files cargo only warns and fetches unlocked, so they stay in the set.
-
-- `--sandbox` grants `pkg/mod` and `pkg/sumdb` under the first `$GOPATH` entry, and `$GOMODCACHE` if set, not the whole of `$GOPATH`. `bin/` is commonly on `PATH`, the same hole as `$CARGO_HOME/bin`. `go install` now fails under `--sandbox`. `pkg/sumdb` is required: without it every new fetch fails verifying the module.
-
-- `--sandbox` creates `registry/`, `git/` and cargo's two lock files under `$CARGO_HOME`, and `pkg/mod` and `pkg/sumdb` under `$GOPATH`, at startup, when that directory exists; and `$XDG_CACHE_HOME` itself when its parent does. Confined, go cannot create `pkg/` on a fresh `$GOPATH`, nor uv or go's Linux build cache a missing `~/.cache`, so a first fetch failed; Landlock also drops a grant on a path that does not exist yet. Created by minima rather than documented as an unconfined first `cargo fetch`, which CI and new machines would miss.
-
-- `--sandbox` sets `RUSTC_WRAPPER` and `RUSTC_WORKSPACE_WRAPPER` empty for `bash`. Under sccache a cacheable compile, which is every registry dependency, ran in the sccache server with the server's bounds: unconfined if it was started outside, so a proc macro could write anywhere. A server started by a confined build kept that policy after minima exited, and every later cache hit on the machine failed with `Operation not permitted`. Empty rather than unset, because empty also overrides `build.rustc-wrapper` in cargo config. Confined builds lose sccache's cache.
-
-- `scripts/test_sandbox.py` gives its rm case its own target. In the control run without the sandbox the truncate case after it recreated the removed file, so the control reported the rm as denied.
 
 - A tool note in the REPL wraps instead of being cut at 80 columns. After a long stderr line the cut removed whatever the note appended, such as `--sandbox`'s hint on a denied write or the notice that background jobs are still running. A routine result is still cut to one line.
 
