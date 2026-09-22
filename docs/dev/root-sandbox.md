@@ -296,6 +296,50 @@ A build tool that hands work to a long-lived server runs that work with the serv
 
 This bounds a mistake, not a model that means to escape: a command can set the wrapper again or connect to any server itself. Gradle's daemon and Bazel's server have the same shape and are not handled.
 
+## Bubblewrap instead of Landlock
+
+Assessed 2026-09-22 from documentation and kernel semantics. Nothing here was measured; the Linux cells below are for CI to settle. Decision: keep Landlock.
+
+The candidate is the shape [Codex's Linux sandbox](https://github.com/openai/codex/blob/main/codex-rs/linux-sandbox/README.md) now uses by default ([openai/codex#13996](https://github.com/openai/codex/pull/13996)):
+
+```
+bwrap --ro-bind / / --dev /dev --proc /proc \
+      --bind <root> <root> --bind <tmp> <tmp> [--bind <cache> <cache> ...] \
+      --ro-bind <root>/.git <root>/.git \
+      --unshare-user [--unshare-pid] --die-with-parent -- bash -c '<cmd>'
+```
+
+What it would gain:
+
+- **Protected paths in `bash`.** Mounts stack, so a read-only bind of `<root>/.git` after the writable bind of the root subtracts write access. Landlock unions its rules and cannot (see "Protected paths"). Codex re-binds `.git`, resolved `gitdir:` targets and `.codex` read-only this way.
+
+- **A lower kernel floor.** Unprivileged user namespaces replace Landlock ABI 3. Debian 12, RHEL 9 and Ubuntu 22.04 GA, the reason `--sandbox` is opt-in, likely clear it (inferred from their default sysctls).
+
+- **No ABI gaps.** A read-only mount covers truncate, cross-directory rename and device ioctls.
+
+What it would cost:
+
+- **User namespaces are blocked more often than Landlock is absent.** Ubuntu 23.10 onward, 24.04 included, sets `kernel.apparmor_restrict_unprivileged_userns=1`, and bwrap fails without an AppArmor profile ([sandbox-runtime#74](https://github.com/anthropic-experimental/sandbox-runtime/issues/74), [vscode#316046](https://github.com/microsoft/vscode/issues/316046)). The `bwrap-userns-restrict` profile added in 24.04.2 denies namespaces to bwrap's children, so a nested bwrap fails ([himiko.cube.sg](https://himiko.cube.sg/wp/2024/07/ubuntu-24-04-lts-issues-with-apparmor-bwrap-and-an-intermediate-solution/)). Other projects needed the sysctl set to 0 on GitHub runners ([orbweaver#164](https://github.com/becomesaflame/orbweaver/pull/164)); not checked on this project's `ubuntu-24.04` runner.
+
+- **Docker's default seccomp profile refuses `unshare` and `clone(CLONE_NEWUSER)`** without `CAP_SYS_ADMIN` ([moby#42441](https://github.com/moby/moby/issues/42441)). The README sends untrusted prompts to a container, so bwrap fails where minima is advised to run. The default profile is believed to allow the `landlock_*` syscalls (unverified).
+
+- **An external binary.** `bwrap` is absent from minimal Debian and RHEL images. It would be required or bundled, as Codex bundles it, and spawned by absolute path for the reason `SANDBOX_EXEC` is.
+
+- **`--unshare-pid` kills background jobs.** When a PID namespace's init exits, the kernel kills every process left in it ([pid_namespaces(7)](https://man7.org/linux/man-pages/man7/pid_namespaces.7.html)). That breaks the rule in `src/tools/bash.rs` that a clean exit leaves a server running for the next call. Without the flag, a command can signal the user's other processes, as under Landlock now.
+
+- **A new denial text.** Writes fail with `EROFS`, "Read-only file system", which `looks_denied` does not match.
+
+- **Missing paths are no better.** `--bind` needs an existing source, as a Landlock rule does, so `create_caches` and the lost cargo journal record stay.
+
+| Environment | Landlock ABI 3 | bwrap |
+|-|-|-|
+| Debian 12, RHEL 9, Ubuntu 22.04 GA | refused | likely works (inferred) |
+| Ubuntu 24.04 | works | needs an AppArmor profile |
+| Docker, default seccomp | likely works (unverified) | fails |
+| Nested, e.g. minima's suite under `--sandbox` | stacks | fails under `bwrap-userns-restrict` |
+
+Protected paths are the one gain Landlock cannot match. It does not justify an external binary and a floor that fails in containers, for a threat model limited to accidents. Signals have a narrower fix: Landlock ABI 6 `Scope::Signal` (kernel 6.12), applied when available, keeps background jobs alive. Codex's hybrid, bwrap with a Landlock fallback, was not taken. It means two Linux backends to test, and a boundary that differs by machine, which "The intersection policy" argues against.
+
 ## Merge readiness: `sandbox` into `main`
 
 Assessed 2026-09-22 at `31d6ea4`, updated at `935b4f9` for the switch from `--confine` to `--sandbox`. Recommendation: merge. `ci` passes on `935b4f9` (run 35744601974), with `scripts/test_sandbox.py` at 22/22 on both runners. Do not tag a release from the merge without the items under "Before releasing".
