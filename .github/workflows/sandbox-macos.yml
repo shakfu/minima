@@ -7,10 +7,6 @@ name: sandbox-macos
 
 on:
   workflow_dispatch:
-  # Temporary: workflow_dispatch works only once this file is on the default branch. Remove before
-  # merging, or every push to `sandbox` runs this job.
-  push:
-    branches: [sandbox]
 
 permissions:
   contents: read
