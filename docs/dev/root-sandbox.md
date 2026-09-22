@@ -298,7 +298,7 @@ This bounds a mistake, not a model that means to escape: a command can set the w
 
 ## Merge readiness: `sandbox` into `main`
 
-Assessed 2026-09-22 at `31d6ea4`, updated at `70e3585` and for the switch from `--confine` to `--sandbox`. Recommendation: merge once `ci` passes on the commit carrying that switch. Do not tag a release from the merge without the items under "Before releasing".
+Assessed 2026-09-22 at `31d6ea4`, updated at `935b4f9` for the switch from `--confine` to `--sandbox`. Recommendation: merge. `ci` passes on `935b4f9` (run 35744601974), with `scripts/test_sandbox.py` at 22/22 on both runners. Do not tag a release from the merge without the items under "Before releasing".
 
 ### State of the branch
 
