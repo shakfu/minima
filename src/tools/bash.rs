@@ -87,7 +87,14 @@ pub async fn call(args: Args, cancel: &Cancel, bounds: &Bounds) -> Result<Outcom
         .min(MAX_TIMEOUT);
 
     let mut command = if bounds.confine.sandboxes_bash() {
-        sandbox_command(bounds, &args.command)?
+        let mut command = sandbox_command(bounds, &args.command)?;
+        // A wrapper such as sccache hands the compile to a server with its own bounds: unconfined
+        // if started outside, or pinned to this root after minima exits if started here. Empty
+        // rather than removed, because empty also overrides `build.rustc-wrapper` in config.
+        command
+            .env("RUSTC_WRAPPER", "")
+            .env("RUSTC_WORKSPACE_WRAPPER", "");
+        command
     } else {
         plain_command(&args.command)
     };
@@ -189,18 +196,43 @@ fn writable_outside_root() -> Vec<std::path::PathBuf> {
         // Reads TMPDIR, which on macOS is a per-user path under /var/folders rather than /tmp.
         Some(std::env::temp_dir()),
         Some(std::path::PathBuf::from("/dev/null")),
-        named("CARGO_HOME", ".cargo"),
         named("XDG_CACHE_HOME", ".cache"),
         named("GOPATH", "go"),
         home.as_ref().map(|h| h.join(".npm")),
-        platform_cache(home.as_ref()),
     ]
     .into_iter()
     .flatten()
+    .chain(platform_caches(home.as_ref()))
     // Canonical, because Seatbelt matches a profile against the resolved path: on macOS `/tmp` is
     // a symlink to `/private/tmp`, and `$TMPDIR` carries a trailing slash that `subpath` will not
     // match. Dropping what does not resolve also drops what does not exist.
     .filter_map(|path| std::fs::canonicalize(path).ok())
+    .chain(named("CARGO_HOME", ".cargo").map_or_else(Vec::new, |h| cargo_caches(&h)))
+    .collect()
+}
+
+/// What cargo writes under `$CARGO_HOME` when it builds or fetches, and nothing else: `bin/` is on
+/// `PATH` for every rustup user, so a file written there runs unconfined in the next shell, and
+/// `cargo install` is a global change. Measured 2026-09-22 on macOS: without the lock files cargo
+/// warns and runs unlocked, and without the journal it cannot record last use for its garbage
+/// collector. The journal exists only during a write; Landlock drops a path that does not exist,
+/// so on Linux that record is lost and the build still succeeds.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn cargo_caches(cargo_home: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let Ok(home) = std::fs::canonicalize(cargo_home) else {
+        return Vec::new();
+    };
+    [
+        "registry",
+        "git",
+        ".package-cache",
+        ".package-cache-mutate",
+        ".global-cache",
+        ".global-cache-journal",
+    ]
+    .iter()
+    .map(|name| home.join(name))
+    .map(|path| std::fs::canonicalize(&path).unwrap_or(path))
     .collect()
 }
 
@@ -208,14 +240,43 @@ fn writable_outside_root() -> Vec<std::path::PathBuf> {
 /// the Linux half of one rule. Go's build cache is `~/Library/Caches/go-build` on a Mac, and
 /// measured 2026-09-20: `go build` fails outright when that directory does not yet exist and
 /// cannot be created, and silently stops caching when it exists but is not writable.
+///
+/// The per-user cache directory sits beside `$TMPDIR` under `/var/folders`, not inside it.
+/// Measured 2026-09-21: `swiftc` fails without it, unable to write its clang module cache there.
 #[cfg(target_os = "macos")]
-fn platform_cache(home: Option<&std::path::PathBuf>) -> Option<std::path::PathBuf> {
-    home.map(|h| h.join("Library/Caches"))
+fn platform_caches(home: Option<&std::path::PathBuf>) -> Vec<std::path::PathBuf> {
+    [
+        home.map(|h| h.join("Library/Caches")),
+        darwin_user_cache_dir(),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
+}
+
+#[cfg(target_os = "macos")]
+fn darwin_user_cache_dir() -> Option<std::path::PathBuf> {
+    use std::os::unix::ffi::OsStrExt;
+    let mut buf = [0u8; libc::PATH_MAX as usize];
+    // SAFETY: confstr writes at most `buf.len()` bytes, NUL included, into a buffer we own.
+    let len = unsafe {
+        libc::confstr(
+            libc::_CS_DARWIN_USER_CACHE_DIR,
+            buf.as_mut_ptr().cast(),
+            buf.len(),
+        )
+    };
+    // 0 is failure; a length past the buffer means the value was cut.
+    if len == 0 || len > buf.len() {
+        return None;
+    }
+    let path = std::ffi::OsStr::from_bytes(&buf[..len - 1]);
+    Some(std::path::PathBuf::from(path))
 }
 
 #[cfg(target_os = "linux")]
-fn platform_cache(_home: Option<&std::path::PathBuf>) -> Option<std::path::PathBuf> {
-    None
+fn platform_caches(_home: Option<&std::path::PathBuf>) -> Vec<std::path::PathBuf> {
+    Vec::new()
 }
 
 /// What a denied open looks like from inside the command. Seatbelt returns `EPERM` and Landlock
@@ -309,7 +370,13 @@ fn sandbox_command(bounds: &Bounds, command: &str) -> Result<Command> {
         .chain(writable_outside_root())
         .chain(bounds.writable.iter().cloned());
     for path in named {
-        let form = if path.is_dir() { "subpath" } else { "literal" };
+        // A path that does not exist yet, such as cargo's journal, takes `subpath` so it can be
+        // created as either a file or a directory.
+        let form = if path.is_dir() || !path.exists() {
+            "subpath"
+        } else {
+            "literal"
+        };
         // The backslash is replaced first, or it would escape the quote that follows it.
         let quoted = path
             .display()
@@ -319,6 +386,13 @@ fn sandbox_command(bounds: &Bounds, command: &str) -> Result<Command> {
         profile.push_str(&format!(" ({form} \"{quoted}\")"));
     }
     profile.push(')');
+    // Two writes the file rules cannot see, both measured to escape them 2026-09-21: `defaults
+    // write` hands the plist to cfprefsd, and `kill` reaches the user's other processes. macOS
+    // only: Landlock scopes signals from ABI 6, above the ABI 3 floor, and has no preferences
+    // daemon to deny. A command still signals its own descendants, which share its sandbox.
+    profile.push_str(
+        " (deny user-preference-write) (deny signal) (allow signal (target same-sandbox))",
+    );
 
     let mut process = Command::new(SANDBOX_EXEC);
     process.args(["-p", &profile, "bash", "-c", command]);
@@ -852,6 +926,104 @@ mod tests {
         let after = std::fs::read_to_string(&path).unwrap_or_default();
         let _ = std::fs::remove_file(&path);
         assert_eq!(after, "kept", "a truncate reached the file: {out:?}");
+    }
+
+    /// Set and empty, whatever minima inherited: unset would let cargo fall back to a wrapper
+    /// named in config.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[tokio::test]
+    async fn rustc_wrappers_are_cleared() {
+        let out = run("echo \"[${RUSTC_WRAPPER-unset}][${RUSTC_WORKSPACE_WRAPPER-unset}]\"").await;
+        assert_eq!(out.body.trim(), "[][]", "{out:?}");
+    }
+
+    /// `bin/` is on `PATH`, so a file there would run unconfined in the next shell; the registry
+    /// beside it is where a dependency fetch writes.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[tokio::test]
+    async fn only_the_cargo_caches_are_writable_under_cargo_home() {
+        let home = std::env::var_os("CARGO_HOME")
+            .map(std::path::PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".cargo"))
+            });
+        let Some(home) = home.filter(|h| h.join("bin").is_dir() && h.join("registry").is_dir())
+        else {
+            return;
+        };
+        let name = format!(".minima-sandbox-{}", std::process::id());
+        let (bin, registry) = (
+            home.join("bin").join(&name),
+            home.join("registry").join(&name),
+        );
+        let out = run(&format!(
+            "touch {} && rm {} && echo REGISTRY; touch {}",
+            quoted(&registry),
+            quoted(&registry),
+            quoted(&bin)
+        ))
+        .await;
+        let wrote_bin = bin.exists();
+        let _ = std::fs::remove_file(&bin);
+        let _ = std::fs::remove_file(&registry);
+        assert!(
+            out.body.contains("REGISTRY"),
+            "the registry was denied: {out:?}"
+        );
+        assert!(!wrote_bin, "a write reached $CARGO_HOME/bin: {out:?}");
+    }
+
+    /// `swiftc` writes its clang module cache here, beside `$TMPDIR` rather than inside it.
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn the_user_cache_directory_stays_writable() {
+        let dir = darwin_user_cache_dir().expect("confstr names the user cache directory");
+        let out = run(&format!(
+            "f=$(mktemp {}/minima-XXXXXX) && rm \"$f\" && echo WRITABLE",
+            quoted(&dir)
+        ))
+        .await;
+        assert!(out.body.contains("WRITABLE"), "{out:?}");
+    }
+
+    /// cfprefsd writes the plist, so the file rules never see it.
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn a_preference_write_is_denied() {
+        let domain = format!("minima.sandbox.test.{}", std::process::id());
+        let out = run(&format!("defaults write {domain} k -string x")).await;
+        let read = std::process::Command::new("defaults")
+            .args(["read", &domain, "k"])
+            .output()
+            .unwrap();
+        let _ = std::process::Command::new("defaults")
+            .args(["delete", &domain])
+            .output();
+        assert!(!read.status.success(), "a preference write landed: {out:?}");
+    }
+
+    /// A process outside the sandbox cannot be signalled; the command's own children can.
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn only_the_commands_own_processes_can_be_signalled() {
+        let mut outside = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let out = run(&format!(
+            "kill {}; sleep 30 & kill $! && wait $!; echo OWN=$?",
+            outside.id()
+        ))
+        .await;
+        let survived = outside.try_wait().unwrap().is_none();
+        let _ = outside.kill();
+        let _ = outside.wait();
+        assert!(
+            survived,
+            "a signal reached a process outside the sandbox: {out:?}"
+        );
+        // 143 is 128 + SIGTERM: the child was signalled.
+        assert!(out.body.contains("OWN=143"), "{out:?}");
     }
 
     /// Resolution through `PATH` would let a shim named `sandbox-exec` run the command

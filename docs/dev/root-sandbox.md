@@ -295,3 +295,56 @@ Recorded as written on 2026-09-19. Reason 2 was answered: `.github/workflows/ci.
 4. **It contradicts the project's thesis.** The README states minima "tests how small a usable agent harness can be when the ecosystem carries its capabilities". Sandboxing is such a capability, and the sibling project carries it.
 
 The strongest argument on the other side, recorded so it is not lost: with no `rm` or `mv` tool, every destructive operation already reaches `bash`, so a kernel policy is the only thing that could prevent `rm -rf` outside the root. It is not enough, given the caches above and reason 2.
+
+## Writes the file rules do not see (macOS)
+
+Measured 2026-09-21 on macOS 26.7 with `scripts/test_sandbox_macos.py`, against the allow-default
+profile that denied only `file-write*`:
+
+| Command | Result | Why |
+|-|-|-|
+| `defaults write` | escaped | cfprefsd writes the plist, outside the sandbox |
+| `kill` of a user process outside | escaped | a signal is not a file write |
+| `launchctl submit` | denied | launchd refuses a sandboxed caller, exit 1 |
+| `security add-generic-password` | denied | securityd returns `EPERM` |
+| proc macro under `RUSTC_WRAPPER=sccache`, incremental | denied | sccache does not cache it; rustc ran in the client |
+| the same, `CARGO_INCREMENTAL=0` | escaped, now denied | a cacheable compile ran in the sccache server, started outside |
+| file in `$CARGO_HOME/bin` | written | all of `$CARGO_HOME` is granted |
+| `swiftc`, `clang -fmodules` | failed | module cache in `DARWIN_USER_CACHE_DIR`, beside `$TMPDIR` |
+
+The profile now adds `(deny user-preference-write)`, `(deny signal) (allow signal (target
+same-sandbox))`, and the user cache directory. This departs from the intersection policy. The
+signal rule needs Landlock ABI 6 (`Scope::Signal`), above the ABI 3 floor. The preference rule has
+no Linux counterpart; dotfile config there is an ordinary file write, already denied. Both close
+accident-class escapes, which is the threat model, so a macOS-only rule is not a boundary Linux
+users would be misled into trusting.
+
+`$CARGO_HOME/bin` was open, and is now closed. It is an installed environment by the table above,
+not a cache, and rustup puts it on `PATH`, so a file written there ran unconfined in the user's
+next shell. The grant is now `registry/`, `git/`, `.package-cache`, `.package-cache-mutate`,
+`.global-cache` and `.global-cache-journal`. Measured 2026-09-22: without the two lock files cargo
+logs `failed to acquire cache lock` and fetches unlocked; without the journal (the database is in
+`journal_mode=delete`) it cannot save last-use data for its garbage collector. The journal exists
+only during a write, which Landlock cannot grant, so on Linux the record is lost and the build
+still succeeds. `$GOPATH/bin` is the same case and is still open.
+
+### Build servers
+
+A build tool that hands work to a long-lived server runs that work with the server's bounds.
+Measured with sccache, which `RUSTC_WRAPPER` often names:
+
+- Server started outside: every cacheable compile, which is every registry dependency, runs
+  unconfined, proc macros and all.
+- Server started by a confined build: it keeps that build's policy after minima exits. Every later
+  cache hit, confined or not, then fails with `error writing dependencies ... Operation not
+  permitted`, because the root it was allowed to write no longer matches. Stopping the server is
+  the fix.
+
+`fs` now sets `RUSTC_WRAPPER` and `RUSTC_WORKSPACE_WRAPPER` empty. Measured 2026-09-22: empty
+overrides `build.rustc-wrapper` and `build.rustc-workspace-wrapper` in cargo config, and unset does
+not. Denying loopback connections in SBPL was the alternative: it covers every server, but only on
+macOS, and it breaks the local dev server an agent starts to test against.
+
+This bounds a mistake, not a model that means to escape: a command can set the wrapper again or
+connect to any server itself. Gradle's daemon and Bazel's server have the same shape and are not
+handled.

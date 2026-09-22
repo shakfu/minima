@@ -26,7 +26,17 @@
 
 - `scripts/test_sandbox.py` runs real commands under `--confine fs` and checks the disk rather than minima's report: a cargo build and a git commit that must succeed, and writes escaping the root by redirect, `cd ..`, symlink, Python, `rm`, truncation and a background job that must not. A mock plays the model, so it needs no key and runs unchanged on Linux and macOS. `CONFINE=paths` is the control, under which the escaping writes land. It was chosen over an integration test in `tests/` because the cargo case makes it slow and it needs a kernel with Landlock.
 
+- `scripts/test_sandbox_macos.py` runs real toolchains and daemon-mediated writes under `--confine fs` on macOS: dependency fetches through cargo, uv, pip, npm and go, swift and clang module builds, and `defaults`, `launchctl`, `security` and `kill` aimed outside the root. It also reports the one gap the policy cannot close: nested `sandbox-exec` is refused, so minima's own suite fails under `fs`.
+
 ### Fixed
+
+- `--confine fs` on macOS denies preference writes and signals to processes outside the command's sandbox. `defaults write` and `kill` both escaped it, because cfprefsd writes the plist and a signal is not a file write. A command still signals its own descendants. macOS only: Landlock scopes signals from ABI 6, above the ABI 3 floor, and Linux has no preferences daemon.
+
+- `--confine fs` on macOS leaves the per-user cache directory (`getconf DARWIN_USER_CACHE_DIR`) writable. It sits beside `$TMPDIR` under `/var/folders`, not inside it, and `swiftc` and `clang -fmodules` failed writing their module cache there.
+
+- `--confine fs` grants `registry/`, `git/` and cargo's lock and last-use files under `$CARGO_HOME`, not the whole directory. `bin/` is on `PATH` for rustup users, so a file written there ran unconfined in the next shell. `cargo install` now fails under `fs`. Without the lock files cargo only warns and fetches unlocked, so they stay in the set.
+
+- `--confine fs` sets `RUSTC_WRAPPER` and `RUSTC_WORKSPACE_WRAPPER` empty for `bash`. Under sccache a cacheable compile, which is every registry dependency, ran in the sccache server with the server's bounds: unconfined if it was started outside, so a proc macro could write anywhere. A server started by a confined build kept that policy after minima exited, and every later cache hit on the machine failed with `Operation not permitted`. Empty rather than unset, because empty also overrides `build.rustc-wrapper` in cargo config. Confined builds lose sccache's cache.
 
 - A tool note in the REPL wraps instead of being cut at 80 columns. After a long stderr line the cut removed whatever the note appended, such as `--confine fs`'s hint on a denied write or the notice that background jobs are still running. A routine result is still cut to one line.
 
