@@ -388,3 +388,77 @@ macOS, and it breaks the local dev server an agent starts to test against.
 This bounds a mistake, not a model that means to escape: a command can set the wrapper again or
 connect to any server itself. Gradle's daemon and Bazel's server have the same shape and are not
 handled.
+
+## Merge readiness: `sandbox` into `main`
+
+Assessed 2026-09-22 at `31d6ea4`. Recommendation: merge, after the item under "Before merging". Do not tag a release from the merge without the items under "Before releasing".
+
+### State of the branch
+
+- 12 commits ahead of `main`, 0 behind. The merge is a fast-forward; `git merge-tree` reports no
+  conflicts.
+- 18 files, +2,170 / -118. `src/` is +1,344 / -65 across 8 files, tests included. `src/tools/bash.rs`
+  went from 519 lines to 674 non-test and 613 test lines. The estimate under "Cost" was 200-260
+  lines; the difference is the writable-set work, the macOS rules and the notes.
+- One new dependency, Linux only: `landlock = "0.4.7"`.
+- CI at `b4d43d7`: `ci` passes lint and test on `ubuntu-24.04` and `macos-15`, including
+  `scripts/test_sandbox.py` at 19/19 on both. `sandbox-macos` passes `scripts/test_sandbox_macos.py`
+  at 25/25 plus 3 known. `31d6ea4` only removes that workflow's temporary push trigger; `ci` passes
+  there too (run 35734868981).
+
+### What merging changes for users
+
+- **The default changes.** `main` has no confinement. After the merge, `--confine paths` is the
+  default: `write` and `edit` refuse a path outside the working directory, and a `.git` or `.env`
+  path inside it. A user who relied on `write` reaching `~/notes` must pass `--root` or
+  `--confine none`. This is the one change every user meets.
+- `--confine fs`, `--writable` and `--root` are opt-in and change nothing unless passed.
+- The `--json` result record gains `confine` and `writable`. Additive; a strict schema consumer
+  would see new fields.
+
+### For merging
+
+- Both backends run in CI on every push, and the macOS end-to-end script has a workflow. The
+  rejection's reason 2, "the macOS half cannot be tested here", no longer holds.
+- Every escape found on macOS is either closed and covered by a test, or recorded below as known.
+  Each closing rule was checked by removing it and watching its test fail.
+- `fs` fails at startup when the platform cannot install the sandbox, so no user is told there is a
+  boundary when there is none.
+- The branch is behind nothing, so it will not grow harder to merge; it will only diverge further
+  from `main` while it waits.
+
+### Against merging now
+
+- **Linux is less measured than macOS.** Every writable-set measurement in this document was taken
+  on macOS. Two Linux behaviours are predicted, not measured: cargo losing its last-use record,
+  because Landlock cannot grant `.global-cache-journal`, and a first fetch into an empty
+  `$CARGO_HOME` succeeding because the preflight created `registry/`. The `TODO.md` entry on the
+  Linux audit is still open.
+- **The macOS policy is no longer the intersection policy.** Preference writes, signals and `open`
+  are denied on macOS only. The rule this document set was that a boundary holding on one platform
+  would be trusted on the other. The departure is argued in "Writes the file rules do not see", but
+  it is a departure.
+- **`fs` has known costs on macOS:** `swift build` needs `--disable-sandbox`, minima's own suite
+  cannot run confined, `open` is unavailable to the agent, and confined builds lose sccache.
+- **Known gaps remain:** `launchctl disable` and `enable` (reproduced on the CI runner), build
+  servers other than sccache, `$GOCACHE` and other relocated caches, and the open network.
+- Reasons 1, 3 and 4 under "Why it was rejected first" still hold. They argued against building
+  the feature; merging it is the smaller decision.
+
+### Before merging
+
+1. Read the Linux result of `scripts/test_sandbox.py` in `ci` on the next push. It now fetches into
+   an empty `CARGO_HOME` and `GOPATH` and prints `INFO  cargo last-use record saved|lost`, which
+   settles both Linux predictions above. On macOS it passes and prints `saved`. Record the Linux
+   result here.
+
+Done: the CHANGELOG's `--confine` entry states the new default as a change in behaviour.
+
+### Before releasing
+
+1. Fold the Unreleased "Fixed" entries into "Added". Every one of them fixes a feature that has not
+   shipped, so no user has met the bug; as written they read as regressions in 0.4.0.
+2. Bump the version; the default change in "What merging changes for users" argues for a minor
+   version, not a patch.
+3. After the merge, start `sandbox-macos` by hand once from `main`, since `workflow_dispatch` only
+   works from the default branch.

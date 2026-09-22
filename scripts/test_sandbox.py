@@ -95,44 +95,91 @@ cases = [
      lambda r: not exists(f"{extra}/w")),
 ]
 
-usage = {"usage": {"prompt_tokens": 1, "completion_tokens": 1}}
-turns = [
-    [{"tool_call": {"index": 0, "id": f"c{i}", "name": tool, "arguments": json.dumps(args)}}, usage]
-    for i, (_, tool, args, _) in enumerate(cases)
+# A second session under `fs`, with a `CARGO_HOME` and `GOPATH` that exist but hold nothing, as on
+# a new machine. The preflight must create the cache entries, since a confined command cannot.
+# Whether cargo kept its last-use record is reported, not judged: Landlock cannot grant the journal
+# sqlite creates beside `.global-cache`, so on Linux the record is expected to be lost.
+fresh = tempfile.mkdtemp(prefix="minima-sbx-fresh-", dir=home)
+fresh_root = os.path.join(fresh, "root")
+for name in ("root", "cargo", "gopath"):
+    os.makedirs(os.path.join(fresh, name))
+has_go = shutil.which("go") is not None
+fresh_cases = [
+    ("fresh CARGO_HOME: cargo add + build, locked", "bash",
+     {"command": "cargo new -q --vcs none f && cd f && cargo add -q itoa && CARGO_LOG="
+                 "cargo::util::cache_lock=warn,cargo::core::global_cache_tracker=warn cargo build -q"
+                 " 2>&1 | grep WARN; test -x target/debug/f && echo BUILT", "timeout_ms": 600000},
+     lambda r: "BUILT" in r["output"] and "failed to acquire cache lock" not in r["output"]),
+    ("fresh GOPATH: go mod tidy + build", "bash",
+     {"command": "mkdir g && cd g && go mod init x >/dev/null 2>&1 && printf 'package main\\n"
+                 "import _ \"github.com/google/uuid\"\\nfunc main(){}\\n' > main.go"
+                 " && go mod tidy && go build -o x . && echo BUILT" if has_go else "echo BUILT",
+      "timeout_ms": 600000},
+     lambda r: "BUILT" in r["output"]),
 ]
-turns.append([{"text": "done\n"}, usage])
-with open(script, "w") as f:
-    json.dump(turns, f)
 
-bounds = ["--confine", "fs", "--writable", extra] if CONFINE == "fs" else ["--confine", CONFINE]
-failed = 0
-try:
+
+def session(case_list, cwd, bounds, env=None):
+    """One mock-driven minima run over `case_list`; returns its tool results and final record."""
+    usage = {"usage": {"prompt_tokens": 1, "completion_tokens": 1}}
+    turns = [
+        [{"tool_call": {"index": 0, "id": f"c{i}", "name": tool, "arguments": json.dumps(args)}},
+         usage]
+        for i, (_, tool, args, _) in enumerate(case_list)
+    ]
+    turns.append([{"text": "done\n"}, usage])
+    with open(script, "w") as f:
+        json.dump(turns, f)
     run = subprocess.run(
         [BIN, "--mock", script, "--context", "1000000", "--max-turns", "64", *bounds,
          "-p", "go", "--json"],
-        cwd=root, capture_output=True, text=True, timeout=1200,
+        cwd=cwd, capture_output=True, text=True, timeout=1200, env=env,
     )
     time.sleep(0.5)
     records = [json.loads(line) for line in run.stdout.splitlines() if line.startswith("{")]
-    results = [r for r in records if r["type"] == "tool_result"]
-    final = records[-1] if records else {}
-    print(f"{sys.platform}: minima exit {run.returncode}; "
-          f"confine={final.get('confine')} writable={final.get('writable')}")
     if run.stderr.strip():
         print("stderr:", run.stderr.strip()[:400])
-    for (name, _, _, check), result in zip(cases, results):
+    return [r for r in records if r["type"] == "tool_result"], (records[-1] if records else {}), run
+
+
+def judge(case_list, results):
+    failed = 0
+    for (name, _, _, check), result in zip(case_list, results):
         ok = check(result)
         failed += not ok
         print(f"{'PASS' if ok else 'FAIL'}  {name:48} {(result.get('note') or '')[:70]}")
+    if len(results) != len(case_list):
+        print(f"FAIL  only {len(results)} of {len(case_list)} calls ran")
+        failed += 1
+    return failed
+
+
+bounds = ["--confine", "fs", "--writable", extra] if CONFINE == "fs" else ["--confine", CONFINE]
+failed = 0
+total = len(cases) + 1
+try:
+    results, final, run = session(cases, root, bounds)
+    print(f"{sys.platform}: minima exit {run.returncode}; "
+          f"confine={final.get('confine')} writable={final.get('writable')}")
+    failed += judge(cases, results)
     ran = exists(f"{tmpfile}.bg")
     ok = ran and not exists(f"{out}/bg")
     failed += not ok
     print(f"{'PASS' if ok else 'FAIL'}  background job ran (marker={ran}), outside write denied")
-    if len(results) != len(cases):
-        print(f"FAIL  only {len(results)} of {len(cases)} calls ran")
-        failed += 1
+
+    if CONFINE == "fs":
+        env = dict(os.environ, CARGO_HOME=os.path.join(fresh, "cargo"),
+                   GOPATH=os.path.join(fresh, "gopath"), GOFLAGS="-modcacherw")
+        env.pop("GOMODCACHE", None)
+        results, _, _ = session(fresh_cases, fresh_root, ["--confine", "fs"], env)
+        print("fresh stores:" + ("" if has_go else " (no go: its case is skipped)"))
+        failed += judge(fresh_cases, results)
+        total += len(fresh_cases)
+        if results:
+            lost = "failed to save last-use data" in results[0]["output"]
+            print(f"INFO  cargo last-use record {'lost' if lost else 'saved'}")
 finally:
-    for path in (out, extra, root):
+    for path in (out, extra, root, fresh):
         shutil.rmtree(path, ignore_errors=True)
     for path in (tmpfile, f"{tmpfile}.bg", script):
         try:
@@ -140,6 +187,5 @@ finally:
         except FileNotFoundError:
             pass
 
-total = len(cases) + 1
 print(f"{total - failed}/{total} passed" + ("" if CONFINE == "fs" else f" (control, --confine {CONFINE})"))
 sys.exit(1 if failed else 0)
