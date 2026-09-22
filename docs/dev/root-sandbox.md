@@ -447,13 +447,18 @@ Assessed 2026-09-22 at `31d6ea4`. Recommendation: merge, after the item under "B
 
 ### Before merging
 
-1. Fix the fresh-`GOPATH` case on Linux. `ci` run 35736572539 (`5a9af12`) settled the cargo
-   predictions: into an empty `CARGO_HOME` the fetch succeeds with the cache lock held, and the
-   last-use record is lost, as predicted. The Go fetch into an empty `GOPATH` fails on Linux and
-   passes on macOS. The log kept only Go's first progress line; the script now prints a failed
-   case's output, so the next run shows the cause. Suspected, not confirmed: the runner has no
-   `~/.cache`, so `~/.cache/go-build` cannot be created, since a writable path is granted only if
-   it exists.
+1. Confirm `ci` passes with the `$XDG_CACHE_HOME` fix below.
+
+Linux results, from `ci` runs 35736572539 (`5a9af12`) and 35738450862 (`e73ebef`):
+
+- Into an empty `CARGO_HOME` the fetch succeeds with the cache lock held, and cargo's last-use
+  record is lost. Both as predicted.
+- Into an empty `GOPATH`, go fetched the module and then failed: `failed to initialize build cache
+  at /home/runner/.cache/go-build: mkdir /home/runner/.cache: permission denied`. The runner has
+  no `~/.cache`, and a writable path is granted only if it exists. Not a Linux-only fault: uv on
+  macOS fails the same way with a missing `$XDG_CACHE_HOME`, reproduced locally. The preflight now
+  creates `$XDG_CACHE_HOME` when its parent exists, and the script runs its fresh session with that
+  directory missing, so the case no longer depends on the runner image.
 
 Done: the CHANGELOG's `--confine` entry states the new default as a change in behaviour.
 

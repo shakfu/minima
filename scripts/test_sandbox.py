@@ -95,8 +95,9 @@ cases = [
      lambda r: not exists(f"{extra}/w")),
 ]
 
-# A second session under `fs`, with a `CARGO_HOME` and `GOPATH` that exist but hold nothing, as on
-# a new machine. The preflight must create the cache entries, since a confined command cannot.
+# A second session under `fs`, with a `CARGO_HOME` and `GOPATH` that exist but hold nothing and an
+# `XDG_CACHE_HOME` that does not exist, as on a new machine. The preflight must create the cache
+# entries, since a confined command cannot.
 # Whether cargo kept its last-use record is reported, not judged: Landlock cannot grant the journal
 # sqlite creates beside `.global-cache`, so on Linux the record is expected to be lost.
 fresh = tempfile.mkdtemp(prefix="minima-sbx-fresh-", dir=home)
@@ -104,6 +105,7 @@ fresh_root = os.path.join(fresh, "root")
 for name in ("root", "cargo", "gopath"):
     os.makedirs(os.path.join(fresh, name))
 has_go = shutil.which("go") is not None
+has_uv = shutil.which("uv") is not None
 fresh_cases = [
     ("fresh CARGO_HOME: cargo add + build, locked", "bash",
      {"command": "cargo new -q --vcs none f && cd f && cargo add -q itoa && CARGO_LOG="
@@ -116,6 +118,9 @@ fresh_cases = [
                  " && go mod tidy && go build -o x . && echo BUILT" if has_go else "echo BUILT",
       "timeout_ms": 600000},
      lambda r: "BUILT" in r["output"]),
+    ("fresh XDG_CACHE_HOME: uv venv", "bash",
+     {"command": "uv venv -q v && echo MADE" if has_uv else "echo MADE", "timeout_ms": 600000},
+     lambda r: "MADE" in r["output"]),
 ]
 
 
@@ -173,10 +178,12 @@ try:
 
     if CONFINE == "fs":
         env = dict(os.environ, CARGO_HOME=os.path.join(fresh, "cargo"),
-                   GOPATH=os.path.join(fresh, "gopath"), GOFLAGS="-modcacherw")
+                   GOPATH=os.path.join(fresh, "gopath"), GOFLAGS="-modcacherw",
+                   XDG_CACHE_HOME=os.path.join(fresh, "cache"))
         env.pop("GOMODCACHE", None)
         results, _, _ = session(fresh_cases, fresh_root, ["--confine", "fs"], env)
-        print("fresh stores:" + ("" if has_go else " (no go: its case is skipped)"))
+        skipped = [tool for tool, has in (("go", has_go), ("uv", has_uv)) if not has]
+        print("fresh stores:" + (f" (not installed, skipped: {', '.join(skipped)})" if skipped else ""))
         failed += judge(fresh_cases, results)
         total += len(fresh_cases)
         if results:

@@ -243,8 +243,14 @@ fn gopath() -> Option<std::path::PathBuf> {
 /// `pkg/mod`, so a fresh install would fail its first fetch; Landlock also drops a path that does
 /// not exist yet. `.global-cache` is left to cargo, which creates it as a database. Best effort:
 /// what cannot be created is denied later with the usual note.
+///
+/// `$XDG_CACHE_HOME` too, and only when its parent exists. Measured 2026-09-22 on a CI runner with
+/// no `~/.cache`: go fetched the module, then failed `mkdir ~/.cache` for its build cache.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn create_caches() {
+    if let Some(cache) = named("XDG_CACHE_HOME", ".cache") {
+        let _ = std::fs::create_dir(cache);
+    }
     create_under(
         cargo_home().as_deref(),
         &["registry", "git"],
