@@ -21,6 +21,10 @@ const MAX_RETRIES: u32 = 4;
 /// A server that asks for a longer wait than this is reported rather than waited out.
 const MAX_BACKOFF: Duration = Duration::from_secs(60);
 
+/// For text no provider has counted yet. Code tokenizes denser than this, so the estimate runs low:
+/// undercounting sends a request the provider refuses, overcounting refuses one that would fit.
+const BYTES_PER_TOKEN: usize = 4;
+
 const CONTEXT_FULL: &str = "not run: the context window is full";
 const TRUNCATED: &str = "not run: the response hit the output token limit before the call was \
 complete; split the work into smaller calls";
@@ -33,6 +37,8 @@ pub struct Agent {
     tools: Vec<serde_json::Value>,
     /// Total tokens the last turn reported. Checked before each send once it nears the window.
     used: u32,
+    /// Estimated tokens of the prompt and tool results appended since `used` was reported.
+    pending: u32,
     on_first_turn: Option<FirstTurn>,
 }
 
@@ -47,6 +53,7 @@ impl Agent {
             bounds,
             messages: vec![Message::system(system_prompt())],
             used: 0,
+            pending: 0,
             on_first_turn: None,
         }
     }
@@ -79,7 +86,9 @@ impl Agent {
     ) -> Result<()> {
         cancel.reset();
         // Refused before sending: a request past the window would be paid for and then fail.
-        self.check_context()?;
+        let prompt_tokens = estimate(prompt);
+        self.check_context(prompt_tokens)?;
+        self.pending += prompt_tokens;
         self.messages.push(Message::user(prompt));
 
         for _ in 0..self.config.max_turns {
@@ -94,6 +103,7 @@ impl Agent {
             frontend.turn_end(turn.usage);
             if turn.usage.total_tokens > 0 {
                 self.used = turn.usage.total_tokens;
+                self.pending = 0;
             }
             if let Some(f) = self.on_first_turn.take() {
                 f(&self.config);
@@ -117,7 +127,7 @@ impl Agent {
                 (!text.is_empty()).then_some(text),
                 calls.clone(),
             ));
-            let full = self.check_context();
+            let full = self.check_context(0);
 
             if calls.is_empty() {
                 full?;
@@ -141,8 +151,7 @@ impl Agent {
                     skip
                 };
                 if let Some(reason) = reason {
-                    self.messages
-                        .push(Message::tool_result(call.id.clone(), reason));
+                    self.answer(&call.id, reason.to_string());
                     continue;
                 }
                 let name = call.name.as_str();
@@ -164,10 +173,10 @@ impl Agent {
                 };
 
                 frontend.tool_end(&body, note.as_deref(), ok);
-                self.messages
-                    .push(Message::tool_result(call.id.clone(), body));
+                self.answer(&call.id, body);
             }
-            full?;
+            // Again, with the results counted: one turn of calls can add several capped outputs.
+            self.check_context(0)?;
             // Before the next turn, so a cancelled tool does not cost another request.
             if cancel.is_cancelled() {
                 frontend.cancelled();
@@ -220,7 +229,7 @@ impl Agent {
         if !assembler.is_done() {
             bail!("the provider closed the stream before the response was complete");
         }
-        Ok(Some(assembler.finish()))
+        assembler.finish().map(Some)
     }
 
     /// Retries the connection only. A stream that dies mid-response is not replayed, because the
@@ -264,18 +273,30 @@ impl Agent {
         }
     }
 
-    /// minima reports and refuses. Compaction is not implemented.
-    fn check_context(&self) -> Result<()> {
-        let used = self.used;
-        if used > 0 && used + CONTEXT_MARGIN >= self.config.context {
+    fn answer(&mut self, call_id: &str, body: String) {
+        self.pending = self.pending.saturating_add(estimate(&body));
+        self.messages.push(Message::tool_result(call_id, body));
+    }
+
+    /// minima reports and refuses. Compaction is not implemented. `extra` is text about to be
+    /// appended.
+    fn check_context(&self, extra: u32) -> Result<()> {
+        let unreported = self.pending.saturating_add(extra);
+        let used = self.used.saturating_add(unreported);
+        if used.saturating_add(CONTEXT_MARGIN) >= self.config.context {
+            let about = if unreported > 0 { "about " } else { "" };
             bail!(
-                "{used} tokens used of {} for {}; start a new session",
+                "{about}{used} tokens used of {} for {}; start a new session",
                 self.config.context,
                 self.config.model
             );
         }
         Ok(())
     }
+}
+
+fn estimate(text: &str) -> u32 {
+    u32::try_from(text.len() / BYTES_PER_TOKEN).unwrap_or(u32::MAX)
 }
 
 #[cfg(test)]
@@ -479,6 +500,69 @@ mod tests {
         assert!(second.contains("start a new session"), "{second}");
     }
 
+    /// A file of `bytes` under a scratch directory, in lines, so `read` returns all of it.
+    fn big_file(dir: &Scratch, bytes: usize) -> String {
+        let path = dir.file("big.txt");
+        std::fs::write(&path, format!("{}\n", "x".repeat(79)).repeat(bytes / 80)).unwrap();
+        path
+    }
+
+    /// 3000 reported, plus 32 KiB of capped output at 4 bytes a token, plus the margin, is past
+    /// 12000. The script has no second turn, so a request would fail with another error.
+    #[tokio::test]
+    async fn tool_results_that_fill_the_window_are_refused_before_the_next_send() {
+        let dir = Scratch::new("agent-results");
+        let path = big_file(&dir, 40_000);
+        let mut agent = agent_with(&format!(
+            r#"[[{}, {{"usage": {{"total_tokens": 3000}}}}]]"#,
+            call("c1", "read", serde_json::json!({ "path": path }))
+        ));
+        agent.config.context = 12_000;
+
+        let err = run(&mut agent).await.expect_err("full").to_string();
+        assert!(
+            err.contains("about") && err.contains("start a new session"),
+            "{err}"
+        );
+        assert!(results(&agent)[0].1.len() > 30_000, "the call ran");
+    }
+
+    #[tokio::test]
+    async fn a_prompt_too_large_for_the_window_is_refused_before_it_is_sent() {
+        let mut agent = agent_with("[]");
+        agent.config.context = 12_000;
+
+        let err = agent
+            .run(&"x".repeat(48_000), &mut Quiet::default(), &Cancel::new())
+            .await
+            .expect_err("full")
+            .to_string();
+        assert!(err.contains("start a new session"), "{err}");
+        assert_eq!(agent.messages.len(), 1, "only the system message");
+    }
+
+    /// Two reads of about 8k tokens each would pass 20000 as estimates, but the provider's count
+    /// after the first replaces it.
+    #[tokio::test]
+    async fn a_reported_count_replaces_the_estimate() {
+        let dir = Scratch::new("agent-reported");
+        let path = big_file(&dir, 40_000);
+        let read = call("c1", "read", serde_json::json!({ "path": path }));
+        let mut agent = agent_with(&format!(
+            r#"[[{read}, {{"usage": {{"total_tokens": 3000}}}}],
+                [{}, {{"usage": {{"total_tokens": 4000}}}}],
+                [{{"text": "done"}}]]"#,
+            read.replace("c1", "c2")
+        ));
+        agent.config.context = 20_000;
+
+        run(&mut agent).await.expect("fits");
+        assert_eq!(
+            agent.messages.last().unwrap().content.as_deref(),
+            Some("done")
+        );
+    }
+
     #[tokio::test]
     async fn calls_cut_off_at_the_output_limit_are_answered_but_not_run() {
         let dir = Scratch::new("agent-truncated");
@@ -543,6 +627,27 @@ mod tests {
 
         assert!(run(&mut agent).await.is_err());
         assert!(!std::path::Path::new(&path).exists(), "the call ran");
+    }
+
+    /// The named call is not run either: it may be half of a pair.
+    #[tokio::test]
+    async fn a_nameless_call_in_a_complete_response_is_an_error_and_nothing_runs() {
+        let dir = Scratch::new("agent-nameless");
+        let path = dir.file("never.txt");
+        let mut agent = agent_with(&format!(
+            "[[{}, {}]]",
+            call(
+                "c1",
+                "write",
+                serde_json::json!({ "path": path, "content": "x" })
+            ),
+            call("c2", "", serde_json::json!({})).replace("\"index\":0", "\"index\":1")
+        ));
+
+        let err = run(&mut agent).await.expect_err("nameless").to_string();
+        assert!(err.contains("no name"), "{err}");
+        assert_eq!(agent.messages.len(), 2, "only the system and user messages");
+        assert!(!std::path::Path::new(&path).exists(), "the named call ran");
     }
 
     #[tokio::test]

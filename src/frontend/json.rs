@@ -20,7 +20,8 @@ pub struct Json<W: Write = std::io::Stdout> {
     bounds: Bounds,
     /// Assistant text of the provider round-trip in progress.
     text: String,
-    /// Text of the last completed round-trip. When the run ends, this is the answer.
+    /// Text of the last completed round-trip. It is the answer only when the run completes: any
+    /// earlier round-trip in a run asked for tools.
     last: String,
     turns: u32,
     input: u64,
@@ -53,6 +54,7 @@ impl<W: Write> Json<W> {
 
     /// The final record. `outcome` is `complete`, `cancelled` or `error`.
     pub fn result(&mut self, result: &anyhow::Result<()>, cancelled: bool) {
+        let complete = result.is_ok() && !cancelled;
         let (outcome, error) = match result {
             Err(e) => ("error", Some(format!("{e:#}"))),
             Ok(()) if cancelled => ("cancelled", None),
@@ -68,7 +70,7 @@ impl<W: Write> Json<W> {
                 .iter()
                 .map(|p| p.display().to_string())
                 .collect::<Vec<_>>(),
-            "text": self.last,
+            "text": if complete { self.last.as_str() } else { "" },
             "error": error,
             "turns": self.turns,
             "input_tokens": self.input,
@@ -236,6 +238,22 @@ mod tests {
         let result = &records(&json)[0];
         assert_eq!(result["outcome"], "cancelled");
         assert_eq!(result["text"], "");
+    }
+
+    /// The turn record keeps the text; only the result stops calling it the answer.
+    #[test]
+    fn a_failure_after_a_tool_turn_reports_no_answer() {
+        for (result, cancelled) in [(Err(anyhow::anyhow!("HTTP 500")), false), (Ok(()), true)] {
+            let mut json = Json::new(Vec::new(), &off());
+            json.text("let me look");
+            json.turn_end(Usage::default());
+            json.tool_start("bash", "{}");
+            json.tool_end("", None, true);
+            json.result(&result, cancelled);
+            let records = records(&json);
+            assert_eq!(records[0]["text"], "let me look");
+            assert_eq!(records[3]["text"], "", "{:?}", records[3]["outcome"]);
+        }
     }
 
     #[test]

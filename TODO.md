@@ -6,6 +6,8 @@
 
 ## Medium
 
+- [ ] **Kernel-enforced `write` and `edit` under `--sandbox`.** `confine_path` checks a path that `atomic::replace` reopens by name in minima's unconfined process, so a symlink swapped in by a background `bash` job moves the write outside the root. Run the replacement in a sandboxed child via a hidden `__replace` subcommand. See `docs/dev/atomic-writes.md`.
+
 - [ ] **`message_delta` usage is a correction, not a total.** Handled in `turn.rs::merge_usage`, but the rule is a convention rather than something the wire states. A provider reporting only a total and no halves falls back to the reported figure.
 
 - [ ] **Session resume**. Note `src/cache.rs` has an XDG path, a schema version, an endpoint-keyed filename and a tmp-plus-rename atomic write, and `config::restrict_to_owner` already sets 0700/0600 for the history file. Persistence is open; this widens what is stored, not whether anything is. (Estimated 120-180 lines.)

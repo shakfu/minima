@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Fixed
+
+- The context check counted only the token total the previous response reported. Tool results and a new prompt added since were not counted, so one turn of large outputs could send a request past the window. They are now estimated at 4 bytes a token until the next response reports a total. The estimate errs low, because refusing a request that would have fit costs more than sending one the provider rejects.
+
+- A tool call streamed with an id or arguments but no name was dropped without notice. If it was the only call, the plan text was reported as the answer. It now fails the turn, and none of that turn's calls run. A fragment with no id, name or arguments is still ignored. The turn fails instead of running the calls that did arrive, because they may depend on the lost one.
+
+- With `--json`, the `result` record's `text` held the last turn's text even when the run failed or was cancelled after a turn that called tools. That text was the model's plan, not an answer. `text` is now empty unless `outcome` is `complete`. The `turn` records still carry it.
+
 ### Changed
 
 - Tool call lines read `[tool] <name> <detail>`, as in myra: `[tool] read src/lib.rs:1-400`, `[tool] bash cargo test`. The prefix marks them apart from the answer text; bash lost its `$ ` form so every tool follows one pattern.

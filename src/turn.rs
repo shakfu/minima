@@ -1,5 +1,7 @@
 //! Borrowed stream events in, one owned assistant message out. No I/O, no presentation.
 
+use anyhow::{Result, bail};
+
 use crate::provider::{Event, ToolCall, Usage};
 
 #[derive(Debug, Default, Clone)]
@@ -82,23 +84,30 @@ impl Assembler {
         }
     }
 
-    pub fn finish(self) -> Turn {
-        let calls = self
-            .calls
-            .into_iter()
-            .filter(|p| !p.name.is_empty())
-            .map(|p| ToolCall {
+    /// A fragment that carried nothing is dropped. A call with an id or arguments but no name
+    /// is an error rather than dropped: the model asked for something, and the rest of its calls
+    /// may depend on it.
+    pub fn finish(self) -> Result<Turn> {
+        let mut calls = Vec::new();
+        for p in self.calls {
+            if p.name.is_empty() {
+                if p.id.is_empty() && p.arguments.is_empty() {
+                    continue;
+                }
+                bail!("the provider sent a tool call with no name (id {:?})", p.id);
+            }
+            calls.push(ToolCall {
                 id: p.id,
                 name: p.name,
                 arguments: p.arguments,
-            })
-            .collect();
-        Turn {
+            });
+        }
+        Ok(Turn {
             text: self.text,
             calls,
             usage: self.usage,
             truncated: self.truncated,
-        }
+        })
     }
 }
 
@@ -159,7 +168,7 @@ mod tests {
         let mut a = Assembler::new();
         a.push(Event::Text("he".into()));
         a.push(Event::Text("llo".into()));
-        assert_eq!(a.finish().text, "hello");
+        assert_eq!(a.finish().unwrap().text, "hello");
     }
 
     #[test]
@@ -167,7 +176,7 @@ mod tests {
         let mut a = Assembler::new();
         a.push(delta("0", Some("c1"), Some("read"), Some("{\"pa")));
         a.push(delta("0", None, None, Some("th\":\"x\"}")));
-        let turn = a.finish();
+        let turn = a.finish().unwrap();
         assert_eq!(turn.calls.len(), 1);
         assert_eq!(turn.calls[0].id, "c1");
         assert_eq!(turn.calls[0].arguments, "{\"path\":\"x\"}");
@@ -182,7 +191,7 @@ mod tests {
         a.push(delta("item_9", Some("b"), Some("write"), Some("{\"x\":1}")));
         a.push(delta("item_2", Some("a"), Some("read"), Some("{}")));
         a.push(delta("item_9", None, None, Some("")));
-        let turn = a.finish();
+        let turn = a.finish().unwrap();
         let names: Vec<_> = turn.calls.iter().map(|c| c.name.as_str()).collect();
         assert_eq!(names, ["write", "read"]);
     }
@@ -194,7 +203,7 @@ mod tests {
         let mut a = Assembler::new();
         a.push(Event::Usage(Usage::from_parts(120, 0)));
         a.push(Event::Usage(Usage::from_parts(0, 45)));
-        let usage = a.finish().usage;
+        let usage = a.finish().unwrap().usage;
         assert_eq!(usage.prompt_tokens, 120);
         assert_eq!(usage.completion_tokens, 45);
         assert_eq!(usage.total_tokens, 165);
@@ -206,16 +215,26 @@ mod tests {
         a.push(delta("a", Some("a"), Some("read"), Some("{}")));
         a.push(delta("b", Some("b"), Some("write"), Some("{\"pa")));
         a.push(delta("", None, None, Some("th\":1}")));
-        let turn = a.finish();
+        let turn = a.finish().unwrap();
         assert_eq!(turn.calls.len(), 2);
         assert_eq!(turn.calls[1].arguments, "{\"path\":1}");
     }
 
     #[test]
-    fn drops_calls_that_never_got_a_name() {
+    fn a_call_that_never_got_a_name_is_an_error() {
         let mut a = Assembler::new();
-        a.push(delta("0", Some("c1"), None, Some("{}")));
-        assert!(a.finish().calls.is_empty());
+        a.push(delta("0", Some("c1"), Some("read"), Some("{}")));
+        a.push(delta("1", Some("c2"), None, Some("{}")));
+        let err = a.finish().expect_err("nameless").to_string();
+        assert!(err.contains("no name") && err.contains("c2"), "{err}");
+    }
+
+    #[test]
+    fn an_empty_fragment_opens_no_call() {
+        let mut a = Assembler::new();
+        a.push(delta("", None, None, None));
+        a.push(delta("0", Some("c1"), Some("read"), Some("{}")));
+        assert_eq!(a.finish().unwrap().calls.len(), 1);
     }
 
     #[test]
@@ -224,6 +243,6 @@ mod tests {
         a.push(Event::Usage(Usage::from_parts(7, 3)));
         a.push(Event::Done);
         assert!(a.is_done());
-        assert_eq!(a.finish().usage.total_tokens, 10);
+        assert_eq!(a.finish().unwrap().usage.total_tokens, 10);
     }
 }

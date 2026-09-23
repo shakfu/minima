@@ -85,7 +85,7 @@ Options:
 
 - **Skills:** `skills/<name>/SKILL.md` in the config directory. The system prompt lists each skill's path and frontmatter; the model reads the file when a task matches.
 
-- **Context:** the window comes from `--context`, the provider's model list, or OpenRouter's list for an OpenAI model, whose own list gives none. Once the last turn's token count nears the window, the next request is refused before sending. There is no compaction.
+- **Context:** the window comes from `--context`, the provider's model list, or OpenRouter's list for an OpenAI model, whose own list gives none. Once the last reported token count, plus an estimate of the prompt and tool output added since, nears the window, the next request is refused before sending. There is no compaction.
 
 - **Network:** up to 4 connection retries with backoff. Requests time out after 10 s to connect or 300 s without data. With `openai` or `anthropic`, minima also fetches OpenRouter's public model list, without a key and at most once a day, for prices and missing context windows. `--base-url` turns this off.
 

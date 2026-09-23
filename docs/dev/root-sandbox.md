@@ -123,7 +123,7 @@ One spawn site, `src/tools/bash.rs:86-98`. `tokio::process::Command::as_std_mut`
 
 Nothing else changes. `process_group(0)` still makes `bash` a group leader, so the timeout and cancel paths still reach the whole group. The login-shell refusal is unaffected, because the command text does not change.
 
-The file tools keep their userspace check. minima's own process must stay unconfined; it reads the config directory, the model cache and the prompt history. One policy, two places it is enforced.
+The file tools keep their userspace check. minima's own process must stay unconfined; it reads the config directory, the model cache and the prompt history. One policy, two places it is enforced. `docs/dev/atomic-writes.md` proposes closing the check-to-use window this leaves.
 
 ## What it does not fix
 
