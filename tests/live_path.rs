@@ -353,7 +353,7 @@ fn every_dialect_sends_its_own_shape_and_reassembles_fragments() {
         // only if the joined arguments parse, so the dialect's grouping key survived reassembly.
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert!(
-            stderr.lines().any(|line| line == "read notes.txt"),
+            stderr.lines().any(|line| line == "[tool] read notes.txt"),
             "{}: fragments did not reassemble, stderr {stderr}",
             case.dialect
         );

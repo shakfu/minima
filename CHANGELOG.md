@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- Tool call lines read `[tool] <name> <detail>`, as in myra: `[tool] read src/lib.rs:1-400`, `[tool] bash cargo test`. The prefix marks them apart from the answer text; bash lost its `$ ` form so every tool follows one pattern.
+
 ## 0.5.0
 
 ### Added

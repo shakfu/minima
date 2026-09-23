@@ -77,7 +77,7 @@ Options:
 
 - **JSON output:** one record per line: `turn`, `tool_call`, `tool_result`, `retry`, then a final `result`. `turn` and `result` carry token counts, `cost` in USD or null, and `cost_estimated`; `result` also names the bounds the run used, as `sandbox` and `writable`.
 
-- **Display:** one line per tool call, such as `read src/lib.rs:1-400 -> 400 lines` or `$ cargo test -> exit 101: ...`. A routine result is cut to fit; a note or an error wraps onto further rows, so a hint at its end is never lost. After each prompt, one line gives context used, tokens in and out, and the cost. OpenRouter reports the cost; for OpenAI and Anthropic it is estimated from OpenRouter's public price list and marked `~`. The status bar shows the working directory, or a spinner and elapsed time during a turn, then the model, context used and the session's cost.
+- **Display:** one line per tool call, such as `[tool] read src/lib.rs:1-400 -> 400 lines` or `[tool] bash cargo test -> exit 101: ...`. A routine result is cut to fit; a note or an error wraps onto further rows, so a hint at its end is never lost. After each prompt, one line gives context used, tokens in and out, and the cost. OpenRouter reports the cost; for OpenAI and Anthropic it is estimated from OpenRouter's public price list and marked `~`. The status bar shows the working directory, or a spinner and elapsed time during a turn, then the model, context used and the session's cost.
 
 - **Cancellation:** Esc or Ctrl-C cancels a REPL turn, including a pending request or a retry wait. A cancelled `-p` run exits 130.
 
