@@ -12,6 +12,8 @@
 
 ### Changed
 
+- The `--sandbox` kernel policy and the `write`/`edit` path check moved to the [`sanduk-sandbox`](https://github.com/shakfu/sanduk-rs) crate, so sanduk and pma share one implementation. Behaviour is unchanged, except that a protected-path refusal now reads `.git is not writable` without naming the tools. The policy tests moved with the code; the tests of minima's own notes stay here.
+
 - Tool call lines read `[tool] <name> <detail>`, as in myra: `[tool] read src/lib.rs:1-400`, `[tool] bash cargo test`. The prefix marks them apart from the answer text; bash lost its `$ ` form so every tool follows one pattern.
 
 ## 0.5.0

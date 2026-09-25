@@ -14,8 +14,7 @@ use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Command;
 use tokio::task::JoinHandle;
 
-#[cfg(target_os = "linux")]
-use std::os::unix::process::CommandExt;
+use sanduk_sandbox::{Denial, Policy};
 
 use super::Outcome;
 use crate::cancel::Cancel;
@@ -87,14 +86,7 @@ pub async fn call(args: Args, cancel: &Cancel, bounds: &Bounds) -> Result<Outcom
         .min(MAX_TIMEOUT);
 
     let mut command = if bounds.sandbox {
-        let mut command = sandbox_command(bounds, &args.command)?;
-        // A wrapper such as sccache hands the compile to a server with its own bounds: unconfined
-        // if started outside, or pinned to this root after minima exits if started here. Empty
-        // rather than removed, because empty also overrides `build.rustc-wrapper` in config.
-        command
-            .env("RUSTC_WRAPPER", "")
-            .env("RUSTC_WORKSPACE_WRAPPER", "");
-        command
+        sandbox_command(bounds, &args.command)?
     } else {
         plain_command(&args.command)
     };
@@ -158,21 +150,16 @@ pub async fn call(args: Args, cancel: &Cancel, bounds: &Bounds) -> Result<Outcom
     };
     // Both are said to the model and the user: the denial so neither mistakes a bound for a
     // broken machine, the jobs so neither loses track of one it started.
-    // The nested refusal also reads as a denied write, and `--writable` cannot fix it.
-    let denial = if stderr.contains(NESTED_REFUSED) {
-        Some(NESTED_DENIED)
-    } else {
-        looks_denied(&stderr).then_some(DENIED)
-    };
-    if bounds.sandbox
-        && let Some(denial) = denial
-    {
-        told = add(told, denial);
-        note = add(note, denial);
-    }
-    if bounds.sandbox && stderr.contains(OPEN_REFUSED) {
-        told = add(told, OPEN_DENIED);
-        note = add(note, OPEN_DENIED);
+    if bounds.sandbox {
+        for denial in sanduk_sandbox::denials(&stderr) {
+            let text = match denial {
+                Denial::Write => DENIED,
+                Denial::Nested => NESTED_DENIED,
+                Denial::Open => OPEN_DENIED,
+            };
+            told = add(told, text);
+            note = add(note, text);
+        }
     }
     if left_running {
         told = add(told, LEFT_RUNNING);
@@ -191,340 +178,35 @@ fn plain_command(command: &str) -> Command {
     process
 }
 
-/// Paths outside the root that stay writable. A shell needs the temp directory and `/dev/null`;
-/// a build needs the ecosystem caches. Measured 2026-09-19: an offline `cargo build` opens
-/// `$CARGO_HOME/.package-cache` with `O_RDWR|O_CREAT` on every run, so a policy without the
-/// caches denies the build, not just the dependency fetch. A lost cache costs a re-download
-/// rather than work, which is why they sit on the permissive side of the line.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-fn writable_outside_root() -> Vec<std::path::PathBuf> {
-    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
-    [
-        // Reads TMPDIR, which on macOS is a per-user path under /var/folders rather than /tmp.
-        Some(std::env::temp_dir()),
-        Some(std::path::PathBuf::from("/dev/null")),
-        named("XDG_CACHE_HOME", ".cache"),
-        home.as_ref().map(|h| h.join(".npm")),
-    ]
-    .into_iter()
-    .flatten()
-    .chain(platform_caches(home.as_ref()))
-    // Canonical, because Seatbelt matches a profile against the resolved path: on macOS `/tmp` is
-    // a symlink to `/private/tmp`, and `$TMPDIR` carries a trailing slash that `subpath` will not
-    // match. Dropping what does not resolve also drops what does not exist.
-    .filter_map(|path| std::fs::canonicalize(path).ok())
-    .chain(cargo_home().map_or_else(Vec::new, |h| children(&h, CARGO_CACHES)))
-    .chain(go_caches(gopath()))
-    .chain(library_caches(home.as_deref()))
-    .collect()
-}
-
-/// `$var`, or `under_home` below `$HOME` when it is unset.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-fn named(var: &str, under_home: &str) -> Option<std::path::PathBuf> {
-    std::env::var_os(var)
-        .map(std::path::PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(under_home)))
-}
-
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-fn cargo_home() -> Option<std::path::PathBuf> {
-    named("CARGO_HOME", ".cargo")
-}
-
-/// The first entry: Go keeps `pkg/` there when `$GOPATH` is a list.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-fn gopath() -> Option<std::path::PathBuf> {
-    named("GOPATH", "go").and_then(|p| std::env::split_paths(&p).next())
-}
-
-/// Creates the cache entries the policy grants, under a `$CARGO_HOME` or `$GOPATH` that exists.
-/// Once confined, cargo cannot create `registry/` in a directory it may not write, nor go
-/// `pkg/mod`, so a fresh install would fail its first fetch; Landlock also drops a path that does
-/// not exist yet. `.global-cache` is left to cargo, which creates it as a database. Best effort:
-/// what cannot be created is denied later with the usual note.
-///
-/// `$XDG_CACHE_HOME` too, and only when its parent exists. Measured 2026-09-22 on a CI runner with
-/// no `~/.cache`: go fetched the module, then failed `mkdir ~/.cache` for its build cache.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-fn create_caches() {
-    if let Some(cache) = named("XDG_CACHE_HOME", ".cache") {
-        let _ = std::fs::create_dir(cache);
-    }
-    create_under(
-        cargo_home().as_deref(),
-        &["registry", "git"],
-        &[".package-cache", ".package-cache-mutate"],
-    );
-    create_under(gopath().as_deref(), &["pkg/mod", "pkg/sumdb"], &[]);
-}
-
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
-fn create_caches() {}
-
-/// Nothing when `base` is missing: minima does not create `~/.cargo` for someone without Rust.
-/// A file is opened for append, so one that exists is never truncated.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-fn create_under(base: Option<&std::path::Path>, dirs: &[&str], files: &[&str]) {
-    let Some(base) = base.filter(|b| b.is_dir()) else {
-        return;
-    };
-    for dir in dirs {
-        let _ = std::fs::create_dir_all(base.join(dir));
-    }
-    for file in files {
-        let _ = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(base.join(file));
-    }
-}
-
-/// Resolved paths under `base`, kept when they do not exist yet: Seatbelt can still grant their
-/// creation, and Landlock drops them.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-fn children(base: &std::path::Path, names: &[&str]) -> Vec<std::path::PathBuf> {
-    let Ok(base) = std::fs::canonicalize(base) else {
-        return Vec::new();
-    };
-    names
-        .iter()
-        .map(|name| base.join(name))
-        .map(|path| std::fs::canonicalize(&path).unwrap_or(path))
-        .collect()
-}
-
-/// What cargo writes under `$CARGO_HOME` when it builds or fetches, and nothing else: `bin/` is on
-/// `PATH` for every rustup user, so a file written there runs unconfined in the next shell, and
-/// `cargo install` is a global change. Measured 2026-09-22 on macOS: without the lock files cargo
-/// warns and runs unlocked, and without the journal it cannot record last use for its garbage
-/// collector. The journal exists only during a write; Landlock drops a path that does not exist,
-/// so on Linux that record is lost and the build still succeeds.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-const CARGO_CACHES: &[&str] = &[
-    "registry",
-    "git",
-    ".package-cache",
-    ".package-cache-mutate",
-    ".global-cache",
-    ".global-cache-journal",
-];
-
-/// The module cache and the checksum database's state under the first `$GOPATH` entry, not
-/// `bin/`, which is on `PATH` as `~/.cargo/bin` is. Measured 2026-09-22 on macOS: without
-/// `pkg/sumdb` every new fetch fails verifying the module. `$GOMODCACHE` moves the module cache.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-fn go_caches(gopath: Option<std::path::PathBuf>) -> Vec<std::path::PathBuf> {
-    let mut paths = gopath.map_or_else(Vec::new, |g| children(&g, &["pkg/mod", "pkg/sumdb"]));
-    paths.extend(
-        std::env::var_os("GOMODCACHE")
-            .filter(|v| !v.is_empty())
-            .map(std::path::PathBuf::from)
-            .map(|c| std::fs::canonicalize(&c).unwrap_or(c)),
-    );
-    paths
-}
-
-/// The per-user cache directory sits beside `$TMPDIR` under `/var/folders`, not inside it.
-/// Measured 2026-09-21: `swiftc` fails without it, unable to write its clang module cache there.
-#[cfg(target_os = "macos")]
-fn platform_caches(_home: Option<&std::path::PathBuf>) -> Vec<std::path::PathBuf> {
-    darwin_user_cache_dir().into_iter().collect()
-}
-
-/// The toolchain entries of `~/Library/Caches`, the macOS half of `$XDG_CACHE_HOME`, and not the
-/// directory: every app on the machine keeps its cache there. Measured 2026-09-22 with the rest
-/// denied: `ccache` and `deno` fail without theirs; go, pip, python and swiftpm run uncached.
-/// A relocated cache (`$GOCACHE`, `$PIP_CACHE_DIR`, ...) needs `--writable`.
-#[cfg(target_os = "macos")]
-fn library_caches(home: Option<&std::path::Path>) -> Vec<std::path::PathBuf> {
-    home.map_or_else(Vec::new, |h| {
-        children(
-            &h.join("Library/Caches"),
-            &[
-                "go-build",
-                "pip",
-                "com.apple.python",
-                "org.swift.swiftpm",
-                "ccache",
-                "deno",
-            ],
-        )
-    })
-}
-
-#[cfg(target_os = "linux")]
-fn library_caches(_home: Option<&std::path::Path>) -> Vec<std::path::PathBuf> {
-    Vec::new()
-}
-
-#[cfg(target_os = "macos")]
-fn darwin_user_cache_dir() -> Option<std::path::PathBuf> {
-    use std::os::unix::ffi::OsStrExt;
-    let mut buf = [0u8; libc::PATH_MAX as usize];
-    // SAFETY: confstr writes at most `buf.len()` bytes, NUL included, into a buffer we own.
-    let len = unsafe {
-        libc::confstr(
-            libc::_CS_DARWIN_USER_CACHE_DIR,
-            buf.as_mut_ptr().cast(),
-            buf.len(),
-        )
-    };
-    // 0 is failure; a length past the buffer means the value was cut.
-    if len == 0 || len > buf.len() {
-        return None;
-    }
-    let path = std::ffi::OsStr::from_bytes(&buf[..len - 1]);
-    Some(std::path::PathBuf::from(path))
-}
-
-#[cfg(target_os = "linux")]
-fn platform_caches(_home: Option<&std::path::PathBuf>) -> Vec<std::path::PathBuf> {
-    Vec::new()
-}
-
-/// What a denied open looks like from inside the command. Seatbelt returns `EPERM` and Landlock
-/// `EACCES`, and the program prints its own message, which never names the policy: a model that
-/// reads "Operation not permitted" retries the command or reaches for `sudo`. Matching the text
-/// is a heuristic -- an ordinary permission error gets the line too, and a translated system gets
-/// nothing -- and one extra sentence costs less than a retry loop.
+/// What minima says about a denial, to the model and the user. `Operation not permitted` on its
+/// own tells neither of them anything: a model that reads it retries the command or reaches for
+/// `sudo`. Which stderr gets which note is `sanduk_sandbox::denials`.
 const DENIED: &str = "if a write was denied: --sandbox permits writes under the root, $TMPDIR, /dev/null and the build caches, but not $CARGO_HOME/bin or $GOPATH/bin; another directory needs --writable, or a store inside the root";
-
-/// Seatbelt refuses a profile inside a sandbox. SwiftPM compiles `Package.swift` under its own
-/// `sandbox-exec`, so this is how `swift build` fails under `--sandbox`.
-const NESTED_REFUSED: &str = "sandbox_apply: Operation not permitted";
 const NESTED_DENIED: &str =
     "--sandbox refuses a nested sandbox-exec; for `swift build`, pass --disable-sandbox";
-
-/// LaunchServices' own message when the profile denies `open`; it never says why.
-const OPEN_REFUSED: &str = "failed with error -54";
 const OPEN_DENIED: &str =
     "--sandbox does not let a command open apps, documents or URLs; ask the user to open it";
 
-fn looks_denied(stderr: &str) -> bool {
-    stderr.contains("Operation not permitted") || stderr.contains("Permission denied")
-}
-
-/// Reads are allowed everywhere; writes only under the root and `writable_outside_root`. The
-/// policy bounds what a command can destroy, not what it can see. Headers, toolchains and
-/// dependency sources sit outside the root, and the network is open either way, so denying reads
-/// would cost capability without closing exfiltration.
-#[cfg(target_os = "linux")]
+/// `bash -c command` under the kernel policy: writes only under the root, the paths
+/// `sanduk_sandbox::caches` names, and `--writable`. Reads and the network stay open.
 fn sandbox_command(bounds: &Bounds, command: &str) -> Result<Command> {
-    use landlock::{
-        ABI, Access, AccessFs, CompatLevel, Compatible, PathBeneath, PathFd, Ruleset, RulesetAttr,
-        RulesetCreatedAttr, RulesetStatus, path_beneath_rules,
-    };
-
-    // V3 is the floor. V1 denies every rename across directories, which would break `mv` inside
-    // the root, and without V3's `Truncate` a read-only grant still permits truncating any file
-    // on the system. `IoctlDev` arrives in V5 and is not handled, so ioctls on device files the
-    // command can open stay unrestricted.
-    let abi = ABI::V3;
-    let write = AccessFs::from_all(abi);
-    let ruleset = Ruleset::default()
-        .set_compatibility(CompatLevel::HardRequirement)
-        .handle_access(write)
-        .context("configuring the Linux filesystem sandbox")?
-        .create()
-        .context("creating the Linux filesystem sandbox")?
-        .add_rule(PathBeneath::new(
-            PathFd::new("/").context("opening /")?,
-            AccessFs::from_read(abi),
-        ))
-        .context("allowing reads")?
-        .add_rule(PathBeneath::new(
-            PathFd::new(&bounds.root).context("opening the sandbox root")?,
-            write,
-        ))
-        .context("allowing the sandbox root")?
-        // Drops a path that does not open, and masks the directory-only rights that would be
-        // rejected on a file, which `/dev/null` is. A `--writable` path is already resolved, and
-        // is added here rather than earlier so a missing one is reported by its own flag.
-        .add_rules(path_beneath_rules(writable_outside_root(), write))
-        .context("allowing the writable paths outside the root")?
-        .add_rules(path_beneath_rules(bounds.writable.clone(), write))
-        .context("allowing the paths --writable named")?;
-
-    let mut ruleset = Some(ruleset);
-    let mut process = Command::new("bash");
+    let mut policy = Policy::new(&bounds.root).context("resolving the sandbox root")?;
+    for dir in &bounds.writable {
+        policy = policy
+            .writable(dir)
+            .with_context(|| format!("resolving --writable {}", dir.display()))?;
+    }
+    let mut process = policy
+        .command("bash")
+        .context("installing the filesystem sandbox")?;
     process.arg("-c").arg(command);
-    // SAFETY: the closure only consumes the prebuilt ruleset and performs syscalls in the child.
-    unsafe {
-        process.as_std_mut().pre_exec(move || {
-            let status = ruleset
-                .take()
-                .ok_or_else(|| std::io::Error::other("sandbox pre-exec ran twice"))?
-                .restrict_self()
-                .map_err(std::io::Error::other)?;
-            if status.ruleset != RulesetStatus::FullyEnforced {
-                return Err(std::io::Error::other(
-                    "Linux filesystem sandbox was not fully enforced",
-                ));
-            }
-            Ok(())
-        });
-    }
-    Ok(process)
-}
-
-/// Absolute, not `sandbox-exec` on `PATH`: a shim earlier in the search path would exec its
-/// argument unconfined, and `preflight` would take its exit 0 as a working sandbox.
-#[cfg(target_os = "macos")]
-const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
-
-/// The macOS policy in SBPL. Allow-default with writes denied, rather than deny-default: a
-/// deny-default profile has to name every path a toolchain reads, and a missing one fails the
-/// command outright. `.github/workflows/ci.yml` runs the suite on macOS, so the profile is
-/// tested, but an allow-default profile is the shape whose mistakes are recoverable.
-#[cfg(target_os = "macos")]
-fn sandbox_command(bounds: &Bounds, command: &str) -> Result<Command> {
-    let mut profile =
-        String::from("(version 1) (allow default) (deny file-write*) (allow file-write*");
-    let named = std::iter::once(bounds.root.clone())
-        .chain(writable_outside_root())
-        .chain(bounds.writable.iter().cloned());
-    for path in named {
-        // A path that does not exist yet, such as cargo's journal, takes `subpath` so it can be
-        // created as either a file or a directory.
-        let form = if path.is_dir() || !path.exists() {
-            "subpath"
-        } else {
-            "literal"
-        };
-        // The backslash is replaced first, or it would escape the quote that follows it.
-        let quoted = path
-            .display()
-            .to_string()
-            .replace('\\', "\\\\")
-            .replace('"', "\\\"");
-        profile.push_str(&format!(" ({form} \"{quoted}\")"));
-    }
-    profile.push(')');
-    // Three routes the file rules cannot see, each measured to escape them: `defaults write`
-    // hands the plist to cfprefsd, `kill` reaches the user's other processes, and `open` has
-    // launchd start an app, one the command just built included, outside the sandbox. macOS only:
-    // Landlock scopes signals from ABI 6, above the ABI 3 floor, and Linux has neither daemon. A
-    // command still signals its own descendants, which share its sandbox.
-    profile.push_str(
-        " (deny user-preference-write) (deny signal) (allow signal (target same-sandbox)) \
-         (deny lsopen)",
-    );
-
-    let mut process = Command::new(SANDBOX_EXEC);
-    process.args(["-p", &profile, "bash", "-c", command]);
-    Ok(process)
-}
-
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
-fn sandbox_command(_bounds: &Bounds, _command: &str) -> Result<Command> {
-    bail!("this platform has no filesystem sandbox; run without --sandbox")
+    Ok(Command::from(process))
 }
 
 /// One confined command before the agent starts. A kernel without Landlock, or a macOS without
 /// `sandbox-exec`, fails here rather than on whichever tool call the model makes first.
 pub async fn preflight(bounds: &Bounds) -> Result<()> {
-    create_caches();
+    sanduk_sandbox::caches::create();
     let args = Args {
         command: "exit 0".into(),
         timeout_ms: Some(10_000),
@@ -919,52 +601,6 @@ mod tests {
         assert!(!groups().contains(&group));
     }
 
-    /// The policy bounds writes, not reads. A toolchain, its headers and its dependency sources
-    /// all sit outside the root.
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    #[tokio::test]
-    async fn reads_outside_the_root_are_allowed() {
-        let out = run("ls /usr >/dev/null && echo READABLE").await;
-        assert!(out.body.contains("READABLE"), "{out:?}");
-    }
-
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    #[tokio::test]
-    async fn the_temp_directory_and_dev_null_stay_writable() {
-        let out = run(
-            "f=$(mktemp) && echo x >\"$f\" && echo y >/dev/null && rm \"$f\" \
-                       && echo WRITABLE",
-        )
-        .await;
-        assert!(out.body.contains("WRITABLE"), "{out:?}");
-    }
-
-    /// Landlock denies every rename across directories below ABI 2, so `mv` is how a floor that
-    /// slipped to V1 would show itself.
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    #[tokio::test]
-    async fn a_rename_across_directories_is_allowed() {
-        let out = run(
-            "d=$(mktemp -d) && mkdir \"$d/a\" \"$d/b\" && touch \"$d/a/x\" \
-                       && mv \"$d/a/x\" \"$d/b/x\" && rm -rf \"$d\" && echo RENAMED",
-        )
-        .await;
-        assert!(out.body.contains("RENAMED"), "{out:?}");
-    }
-
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    #[tokio::test]
-    async fn writes_outside_the_root_are_denied() {
-        let Some(path) = outside_root("write") else {
-            return;
-        };
-        let out = run(&format!("touch {} && echo WROTE", quoted(&path))).await;
-        let created = path.exists();
-        let _ = std::fs::remove_file(&path);
-        assert!(!created, "a write reached {}", path.display());
-        assert!(!out.body.contains("WROTE"), "{out:?}");
-    }
-
     /// A denied write reaches the model as whatever the command printed, which never names the
     /// policy. The note is what tells it the difference between a broken machine and a bound one.
     #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -1028,73 +664,6 @@ mod tests {
         );
     }
 
-    /// Landlock handles `Truncate` only from ABI 3. Below it the read grant on `/` still permits
-    /// `: > file` anywhere, which destroys the file without ever writing to it.
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    #[tokio::test]
-    async fn truncating_a_file_outside_the_root_is_denied() {
-        let Some(path) = outside_root("truncate") else {
-            return;
-        };
-        std::fs::write(&path, "kept").unwrap();
-        let out = run(&format!(": > {}", quoted(&path))).await;
-        let after = std::fs::read_to_string(&path).unwrap_or_default();
-        let _ = std::fs::remove_file(&path);
-        assert_eq!(after, "kept", "a truncate reached the file: {out:?}");
-    }
-
-    /// The Go counterpart: `pkg/mod` takes a fetch, `bin/` beside it does not.
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    #[tokio::test]
-    async fn only_the_go_caches_are_writable_under_gopath() {
-        let gopath = std::env::var_os("GOPATH")
-            .and_then(|p| std::env::split_paths(&p).next())
-            .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join("go")));
-        let Some(gopath) = gopath.filter(|g| g.join("bin").is_dir() && g.join("pkg/mod").is_dir())
-        else {
-            return;
-        };
-        let name = format!(".minima-sandbox-{}", std::process::id());
-        let (bin, cache) = (
-            gopath.join("bin").join(&name),
-            gopath.join("pkg/mod").join(&name),
-        );
-        let out = run(&format!(
-            "touch {} && rm {} && echo CACHE; touch {}",
-            quoted(&cache),
-            quoted(&cache),
-            quoted(&bin)
-        ))
-        .await;
-        let wrote_bin = bin.exists();
-        let _ = std::fs::remove_file(&bin);
-        let _ = std::fs::remove_file(&cache);
-        assert!(
-            out.body.contains("CACHE"),
-            "the module cache was denied: {out:?}"
-        );
-        assert!(!wrote_bin, "a write reached $GOPATH/bin: {out:?}");
-    }
-
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    #[test]
-    fn cache_entries_are_created_without_truncating_or_creating_the_base() {
-        let base = std::env::temp_dir().join(format!("minima-caches-{}", std::process::id()));
-        std::fs::create_dir_all(&base).unwrap();
-        std::fs::write(base.join(".lock"), "held").unwrap();
-        create_under(Some(&base), &["a/b"], &[".lock", ".new"]);
-        let missing = base.join("missing");
-        create_under(Some(&missing), &["a"], &[".new"]);
-
-        let kept = std::fs::read_to_string(base.join(".lock")).unwrap();
-        let (dir, new) = (base.join("a/b").is_dir(), base.join(".new").is_file());
-        let base_created = missing.exists();
-        let _ = std::fs::remove_dir_all(&base);
-        assert!(dir && new, "an entry was not created");
-        assert_eq!(kept, "held", "an existing file was truncated");
-        assert!(!base_created, "a missing base was created");
-    }
-
     /// The nested refusal gets its own note, not the `--writable` one, which cannot fix it.
     #[cfg(target_os = "macos")]
     #[tokio::test]
@@ -1130,152 +699,6 @@ mod tests {
             "open started an app outside the sandbox: {out:?}"
         );
         assert!(out.body.contains(OPEN_DENIED), "{out:?}");
-    }
-
-    /// Set and empty, whatever minima inherited: unset would let cargo fall back to a wrapper
-    /// named in config.
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    #[tokio::test]
-    async fn rustc_wrappers_are_cleared() {
-        let out = run("echo \"[${RUSTC_WRAPPER-unset}][${RUSTC_WORKSPACE_WRAPPER-unset}]\"").await;
-        assert_eq!(out.body.trim(), "[][]", "{out:?}");
-    }
-
-    /// `bin/` is on `PATH`, so a file there would run unconfined in the next shell; the registry
-    /// beside it is where a dependency fetch writes.
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    #[tokio::test]
-    async fn only_the_cargo_caches_are_writable_under_cargo_home() {
-        let home = std::env::var_os("CARGO_HOME")
-            .map(std::path::PathBuf::from)
-            .or_else(|| {
-                std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".cargo"))
-            });
-        let Some(home) = home.filter(|h| h.join("bin").is_dir() && h.join("registry").is_dir())
-        else {
-            return;
-        };
-        let name = format!(".minima-sandbox-{}", std::process::id());
-        let (bin, registry) = (
-            home.join("bin").join(&name),
-            home.join("registry").join(&name),
-        );
-        let out = run(&format!(
-            "touch {} && rm {} && echo REGISTRY; touch {}",
-            quoted(&registry),
-            quoted(&registry),
-            quoted(&bin)
-        ))
-        .await;
-        let wrote_bin = bin.exists();
-        let _ = std::fs::remove_file(&bin);
-        let _ = std::fs::remove_file(&registry);
-        assert!(
-            out.body.contains("REGISTRY"),
-            "the registry was denied: {out:?}"
-        );
-        assert!(!wrote_bin, "a write reached $CARGO_HOME/bin: {out:?}");
-    }
-
-    /// A toolchain's entry takes a write; `~/Library/Caches` itself, shared with every app, does not.
-    #[cfg(target_os = "macos")]
-    #[tokio::test]
-    async fn only_toolchain_entries_of_library_caches_are_writable() {
-        let Some(caches) = std::env::var_os("HOME")
-            .map(|h| std::path::PathBuf::from(h).join("Library/Caches"))
-            .filter(|c| c.is_dir())
-        else {
-            return;
-        };
-        let name = format!(".minima-sandbox-{}", std::process::id());
-        let (shared, pip) = (caches.join(&name), caches.join("pip").join(&name));
-        let out = run(&format!(
-            "mkdir -p {} && touch {} && rm {} && echo PIP; touch {}",
-            quoted(&caches.join("pip")),
-            quoted(&pip),
-            quoted(&pip),
-            quoted(&shared)
-        ))
-        .await;
-        let wrote_shared = shared.exists();
-        let _ = std::fs::remove_file(&shared);
-        let _ = std::fs::remove_file(&pip);
-        assert!(
-            out.body.contains("PIP"),
-            "the pip cache was denied: {out:?}"
-        );
-        assert!(
-            !wrote_shared,
-            "a write reached ~/Library/Caches itself: {out:?}"
-        );
-    }
-
-    /// `swiftc` writes its clang module cache here, beside `$TMPDIR` rather than inside it.
-    #[cfg(target_os = "macos")]
-    #[tokio::test]
-    async fn the_user_cache_directory_stays_writable() {
-        let dir = darwin_user_cache_dir().expect("confstr names the user cache directory");
-        let out = run(&format!(
-            "f=$(mktemp {}/minima-XXXXXX) && rm \"$f\" && echo WRITABLE",
-            quoted(&dir)
-        ))
-        .await;
-        assert!(out.body.contains("WRITABLE"), "{out:?}");
-    }
-
-    /// cfprefsd writes the plist, so the file rules never see it.
-    #[cfg(target_os = "macos")]
-    #[tokio::test]
-    async fn a_preference_write_is_denied() {
-        let domain = format!("minima.sandbox.test.{}", std::process::id());
-        let out = run(&format!("defaults write {domain} k -string x")).await;
-        let read = std::process::Command::new("defaults")
-            .args(["read", &domain, "k"])
-            .output()
-            .unwrap();
-        let _ = std::process::Command::new("defaults")
-            .args(["delete", &domain])
-            .output();
-        assert!(!read.status.success(), "a preference write landed: {out:?}");
-    }
-
-    /// A process outside the sandbox cannot be signalled; the command's own children can.
-    #[cfg(target_os = "macos")]
-    #[tokio::test]
-    async fn only_the_commands_own_processes_can_be_signalled() {
-        let mut outside = std::process::Command::new("sleep")
-            .arg("30")
-            .spawn()
-            .unwrap();
-        let out = run(&format!(
-            "kill {}; sleep 30 & kill $! && wait $!; echo OWN=$?",
-            outside.id()
-        ))
-        .await;
-        let survived = outside.try_wait().unwrap().is_none();
-        let _ = outside.kill();
-        let _ = outside.wait();
-        assert!(
-            survived,
-            "a signal reached a process outside the sandbox: {out:?}"
-        );
-        // 143 is 128 + SIGTERM: the child was signalled.
-        assert!(out.body.contains("OWN=143"), "{out:?}");
-    }
-
-    /// Resolution through `PATH` would let a shim named `sandbox-exec` run the command
-    /// unconfined, with `preflight` reading its exit 0 as a working sandbox.
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn the_sandbox_is_spawned_by_absolute_path() {
-        let command =
-            sandbox_command(&Bounds::new(true, std::path::PathBuf::from("/")), "exit 0").unwrap();
-        let program = command.as_std().get_program();
-        assert_eq!(program, SANDBOX_EXEC);
-        assert!(
-            std::path::Path::new(SANDBOX_EXEC).is_file(),
-            "{SANDBOX_EXEC} is missing"
-        );
     }
 
     #[tokio::test]

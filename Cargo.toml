@@ -57,13 +57,14 @@ thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
+# The kernel policy under `--sandbox`, and the path check on `write` and `edit`.
+sanduk-sandbox = "0.1.0"
+
 # `killpg` for the bash tool's process group, which std does not expose. Already in the tree
 # through tokio.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
-[target.'cfg(target_os = "linux")'.dependencies]
-landlock = "0.4.7"
 
 [profile.release]
 lto = true

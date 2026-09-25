@@ -11,8 +11,10 @@ mod write;
 
 pub use bash::{kill_background, preflight};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use serde::Deserialize;
+
+use sanduk_sandbox::confine_path;
 
 use crate::cancel::Cancel;
 use crate::config::{Bounds, TOOL_OUTPUT_CAP};
@@ -127,68 +129,6 @@ impl Tool {
             note: out.note,
         })
     }
-}
-
-/// Resolve an existing path, or the nearest existing parent of a new path, before a tool opens it.
-/// This follows symlinks and removes `..`, so the check is about the filesystem location.
-///
-/// The bound is the root alone, not the wider set of paths `bash` may write: nothing needs the
-/// `write` tool to reach a build cache. Enforced in minima's own process, so unlike the kernel
-/// policy it has a window between this check and the open.
-fn confine_path(root: &std::path::Path, raw: &str) -> Result<std::path::PathBuf> {
-    let requested = std::path::Path::new(raw);
-    let requested = if requested.is_absolute() {
-        requested.to_path_buf()
-    } else {
-        root.join(requested)
-    };
-
-    let mut existing = requested.clone();
-    let mut missing = Vec::new();
-    while !existing.exists() {
-        let Some(name) = existing.file_name() else {
-            bail!("path {raw:?} has no existing parent")
-        };
-        missing.push(name.to_os_string());
-        existing.pop();
-    }
-    let mut resolved =
-        std::fs::canonicalize(&existing).with_context(|| format!("resolving {raw}"))?;
-    for name in missing.iter().rev() {
-        resolved.push(name);
-    }
-    if !resolved.starts_with(root) {
-        bail!("path {raw:?} is outside root {}", root.display());
-    }
-    if let Some(name) = protected(root, &resolved) {
-        bail!("path {raw:?} is protected: {name} is not writable through write or edit");
-    }
-    Ok(resolved)
-}
-
-/// The protected component of a resolved path, if it has one.
-///
-/// `.git` because a damaged object store loses history nothing can rebuild, and `.env` because a
-/// replaced secret is not in the repository to restore. `.git` matches whole, leaving `.github`
-/// and `.gitignore` alone. `.env` matches as a prefix, so `.env.production` is covered, minus the
-/// names that hold no secret by convention: a template and `.envrc` are committed files, and
-/// blocking them would refuse the edit that adding a config variable actually needs. Only
-/// components below the root count: a root that itself sits under a `.git` directory is the
-/// user's choice.
-///
-/// `bash` ignores this, on both platforms. Landlock grants access by union over the rules met
-/// walking a path, so the rule granting the root cannot have a hole cut in it, and a boundary
-/// that held only on macOS would be worse than none. See `docs/dev/root-sandbox.md`.
-fn protected(root: &std::path::Path, resolved: &std::path::Path) -> Option<String> {
-    const COMMITTED: [&str; 3] = ["example", "sample", "template"];
-    let relative = resolved.strip_prefix(root).ok()?;
-    relative.components().find_map(|component| {
-        let name = component.as_os_str().to_str()?;
-        let secret = name.starts_with(".env")
-            && name != ".envrc"
-            && !COMMITTED.iter().any(|kind| name.contains(kind));
-        (name == ".git" || secret).then(|| name.to_string())
-    })
 }
 
 pub fn specs(dialect: Dialect) -> Vec<serde_json::Value> {
@@ -318,41 +258,6 @@ mod tests {
         assert_eq!(Tool::from_name("grep"), None);
     }
 
-    #[test]
-    fn a_path_outside_root_is_refused() {
-        let root = Scratch::new("root-boundary");
-        let outside = Scratch::new("outside-boundary");
-        let path = outside.file("secret.txt");
-        std::fs::write(&path, "secret").unwrap();
-
-        let err = confine_path(std::path::Path::new(&root.file(".")), &path).unwrap_err();
-        assert!(err.to_string().contains("outside root"), "{err}");
-    }
-
-    #[test]
-    fn a_protected_path_under_the_root_is_refused_and_a_lookalike_is_not() {
-        let dir = Scratch::new("protected");
-        // `confine_path` resolves the path and not the root, as `Cli::resolve_root` does that once.
-        let root = std::fs::canonicalize(dir.file("")).unwrap();
-        std::fs::create_dir_all(root.join(".git")).unwrap();
-
-        for path in [".git", ".git/config", ".env", ".env.local", "sub/.env"] {
-            let err = confine_path(&root, path).unwrap_err();
-            assert!(err.to_string().contains("is protected"), "{path}: {err}");
-        }
-        for path in [
-            ".github/ci.yml",
-            ".gitignore",
-            "env.sample",
-            "src/environment.rs",
-            ".env.example",
-            ".env.local.template",
-            ".envrc",
-        ] {
-            confine_path(&root, path).unwrap_or_else(|e| panic!("{path}: {e}"));
-        }
-    }
-
     /// The guard bounds the two file tools. `read` is untouched, and so is `bash`.
     #[tokio::test]
     async fn a_protected_file_survives_write_and_stays_readable() {
@@ -472,20 +377,6 @@ mod tests {
             .await
             .unwrap();
         assert!(out.body.contains("visible"), "{out:?}");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn a_symlink_outside_root_is_refused() {
-        let root = Scratch::new("root-symlink");
-        let outside = Scratch::new("outside-symlink");
-        let target = outside.file("secret.txt");
-        std::fs::write(&target, "secret").unwrap();
-        let link = root.file("link.txt");
-        std::os::unix::fs::symlink(&target, &link).unwrap();
-
-        let err = confine_path(std::path::Path::new(&root.file(".")), &link).unwrap_err();
-        assert!(err.to_string().contains("outside root"), "{err}");
     }
 
     #[test]

@@ -4,6 +4,8 @@ Whether `bash` can be confined to one directory, and whether a path guard on the
 
 `--root DIR` defaults to the working directory. `--sandbox`, off by default, enforces it: Landlock on Linux and Seatbelt on macOS on `bash`, and a path check on `write` and `edit`. Until 2026-09-22 this was `--confine none|paths|fs` with `paths` the default; the middle mode bounded the file tools but not `bash`, and was dropped as misleading. Sections below written before then use the old names.
 
+Since 2026-09-25 the policy and the path check live in `sanduk-sandbox` (`sanduk-rs/crates/sanduk-sandbox`). Function names and line numbers below refer to `src/tools/bash.rs` before the move.
+
 ## The problem
 
 A path guard in minima's own process can refuse `write` and `edit` outside one directory. `bash` ignores it, because a shell can run any program on the machine.
