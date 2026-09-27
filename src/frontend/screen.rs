@@ -103,6 +103,9 @@ impl Screen {
     /// One logical line built from differently styled parts. Wrapped as a whole.
     pub fn spans(&mut self, parts: Vec<(Tone, String)>) -> Result<()> {
         self.flush()?;
+        // Any other line ends the answer, so a fence it left open, as a response that died
+        // mid-way or was cancelled can, does not turn the next one into code.
+        self.stream.reset();
         let parts: Parts = parts
             .into_iter()
             .map(|(t, text)| (tone(t), text.replace('\t', "    ")))
@@ -333,6 +336,13 @@ impl Stream {
         self.render(&line, width)
     }
 
+    /// Forgets block state: an open fence, a partly committed line.
+    fn reset(&mut self) {
+        if let Some(md) = &mut self.markdown {
+            *md = Markdown::default();
+        }
+    }
+
     /// The last row of the unfinished line, for the viewport.
     fn tail(&self, width: usize) -> String {
         let rows = wrap(&self.pending, width);
@@ -509,6 +519,15 @@ mod tests {
         stream.push("**done**", 80);
         assert_eq!(texts(&stream.finish(80)), ["done"]);
         assert!(stream.finish(80).is_empty());
+    }
+
+    /// A response that died inside a fence would otherwise leave the retried one as code.
+    #[test]
+    fn a_reset_closes_a_fence_the_last_answer_left_open() {
+        let mut stream = Stream::new(true);
+        stream.push("```\nhalf\n", 80);
+        stream.reset();
+        assert_eq!(texts(&stream.push("**b**\n", 80)), ["b"]);
     }
 
     /// With colour off the text is shown as typed: dropping `**` with no bold to show would lose it.

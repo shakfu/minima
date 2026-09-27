@@ -101,7 +101,7 @@ pub struct Cli {
     pub mock: Option<PathBuf>,
 
     /// Max provider round-trips per user turn.
-    #[arg(long, default_value_t = 32, value_name = "N")]
+    #[arg(long, default_value_t = 100, value_name = "N")]
     pub max_turns: u32,
 
     /// Re-fetch the model list, ignoring the cache.

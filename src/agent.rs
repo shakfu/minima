@@ -62,6 +62,13 @@ pub struct Agent {
 
 type FirstTurn = Box<dyn FnOnce(&Config)>;
 
+enum Attempt {
+    Done(Turn),
+    Cancelled,
+    /// The connection failed mid-response, which a second request may not repeat.
+    Dropped(anyhow::Error),
+}
+
 /// What a compaction did. Token counts are estimates of what the next request carries.
 pub enum Compaction {
     Done {
@@ -187,7 +194,9 @@ impl Agent {
                     call
                 })
                 .collect();
-            let mut message = Message::assistant((!text.is_empty()).then_some(text), recorded);
+            // Whitespace alone is no answer, and Anthropic rejects a text block of it.
+            let text = (!text.trim().is_empty()).then_some(text);
+            let mut message = Message::assistant(text, recorded);
             message.replay = replay;
             self.messages.push(message);
             // A full window after an answer is left to the next prompt, which compacts first.
@@ -256,7 +265,8 @@ impl Agent {
         }
 
         bail!(
-            "stopped after {} turns without a final answer",
+            "stopped after {} turns without a final answer; the work so far is kept, so a prompt \
+             such as \"continue\" resumes it, and --max-turns raises the limit",
             self.config.max_turns
         )
     }
@@ -388,7 +398,8 @@ impl Agent {
         }
     }
 
-    /// `Ok(None)` means the user cancelled.
+    /// `Ok(None)` means the user cancelled. A response that dies mid-way is requested again: no
+    /// call from it has run and nothing of it is recorded, so only the text shown repeats.
     async fn one_turn(
         &self,
         messages: &[Message],
@@ -396,32 +407,66 @@ impl Agent {
         frontend: &mut dyn Frontend,
         cancel: &Cancel,
     ) -> Result<Option<Turn>> {
+        let mut attempt = 0;
+        loop {
+            let dropped = match self.attempt(messages, room, frontend, cancel).await? {
+                Attempt::Done(turn) => return Ok(Some(turn)),
+                Attempt::Cancelled => return Ok(None),
+                Attempt::Dropped(e) => e,
+            };
+            if attempt >= MAX_RETRIES {
+                bail!(
+                    "{dropped:#}; nothing from this response was run or recorded, so a prompt \
+                     such as \"continue\" retries it"
+                );
+            }
+            attempt += 1;
+            let delay = Duration::from_secs(1 << attempt);
+            frontend.retry(attempt, delay);
+            tokio::select! {
+                () = tokio::time::sleep(delay) => {}
+                () = cancel.cancelled() => return Ok(None),
+            }
+        }
+    }
+
+    /// One request and its response.
+    async fn attempt(
+        &self,
+        messages: &[Message],
+        room: u32,
+        frontend: &mut dyn Frontend,
+        cancel: &Cancel,
+    ) -> Result<Attempt> {
         let Some(mut stream) = self.connect(messages, room, frontend, cancel).await? else {
-            return Ok(None);
+            return Ok(Attempt::Cancelled);
         };
         let mut assembler = Assembler::new();
+        let mut shown = Visible::default();
 
         loop {
             // Biased, so events already buffered are not shown after a cancel.
             let next = tokio::select! {
                 biased;
-                () = cancel.cancelled() => return Ok(None),
+                () = cancel.cancelled() => return Ok(Attempt::Cancelled),
                 item = stream.next() => item,
             };
             let Some(item) = next else { break };
 
-            match item? {
-                crate::provider::Event::Text(text) => {
-                    frontend.text(&text);
+            match item {
+                Err(e) if e.is_retryable() => return Ok(Attempt::Dropped(e.into())),
+                Err(e) => return Err(e.into()),
+                Ok(crate::provider::Event::Text(text)) => {
+                    if let Some(text) = shown.pass(&text) {
+                        frontend.text(&text);
+                    }
                     assembler.push(crate::provider::Event::Text(text));
                 }
-                crate::provider::Event::Break => {
-                    if assembler.has_text() {
-                        frontend.text(crate::turn::PARAGRAPH);
-                    }
+                Ok(crate::provider::Event::Break) => {
+                    shown.pass(crate::turn::PARAGRAPH);
                     assembler.push(crate::provider::Event::Break);
                 }
-                event => {
+                Ok(event) => {
                     // Only the stream's own terminator ends the read. A stop reason does not:
                     // Chat sends its usage frame after it.
                     let last = event == crate::provider::Event::Done;
@@ -437,13 +482,15 @@ impl Agent {
         // complete-looking tool call, and running it would act on a request the model never
         // finished making.
         if !assembler.is_done() {
-            bail!("the provider closed the stream before the response was complete");
+            return Ok(Attempt::Dropped(anyhow::anyhow!(
+                "the provider closed the stream before the response was complete"
+            )));
         }
-        assembler.finish().map(Some)
+        assembler.finish().map(Attempt::Done)
     }
 
-    /// Retries the connection only. A stream that dies mid-response is not replayed, because the
-    /// partial assistant text has already been shown. `Ok(None)` means the user cancelled.
+    /// Retries until a response starts; `one_turn` retries one that dies after. `Ok(None)` means
+    /// the user cancelled.
     async fn connect(
         &self,
         messages: &[Message],
@@ -528,6 +575,37 @@ fn size(m: &Message) -> u32 {
 
 fn sum(messages: &[Message]) -> u32 {
     messages.iter().map(size).fold(0, u32::saturating_add)
+}
+
+/// Holds whitespace back until visible text follows it. Some models send `"\n\n"` alone before
+/// their tool calls, which printed as runs of blank rows between tool lines. Leading newlines of a
+/// turn are dropped; indentation is kept, since an answer can open with an indented block.
+#[derive(Default)]
+struct Visible {
+    started: bool,
+    held: String,
+}
+
+impl Visible {
+    /// The text to show now, if any.
+    fn pass(&mut self, delta: &str) -> Option<String> {
+        let delta = if self.started {
+            delta
+        } else {
+            delta.trim_start_matches(['\n', '\r'])
+        };
+        let body = delta.trim_end();
+        if body.is_empty() {
+            if self.started {
+                self.held.push_str(delta);
+            }
+            return None;
+        }
+        self.started = true;
+        let out = std::mem::take(&mut self.held) + body;
+        self.held = delta[body.len()..].to_string();
+        Some(out)
+    }
 }
 
 /// The summary request's frontend: its text is not an answer and is not shown. Retries are.
@@ -954,6 +1032,53 @@ mod tests {
         assert_eq!(agent.messages[2].replay, [block]);
     }
 
+    #[test]
+    fn whitespace_is_shown_only_between_visible_text() {
+        let mut v = Visible::default();
+        let shown: Vec<_> = ["\n\n", "  ", "  code", "\n\n", "", "next\n", "\n"]
+            .iter()
+            .map(|d| v.pass(d))
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                None,
+                None,
+                Some("  code".into()),
+                None,
+                None,
+                Some("\n\nnext".into()),
+                None
+            ]
+        );
+    }
+
+    /// A turn of only whitespace before its calls shows nothing and records no text.
+    #[tokio::test]
+    async fn a_whitespace_only_turn_is_neither_shown_nor_recorded() {
+        #[derive(Default)]
+        struct Shown(String);
+        impl Frontend for Shown {
+            fn text(&mut self, t: &str) {
+                self.0.push_str(t);
+            }
+            fn tool_start(&mut self, _: &str, _: &str) {}
+            fn tool_end(&mut self, _: &str, _: Option<&str>, _: bool) {}
+            fn retry(&mut self, _: u32, _: Duration) {}
+            fn turn_end(&mut self, _: Usage) {}
+            fn compacted(&mut self, _: u32, _: u32) {}
+            fn cancelled(&mut self) {}
+        }
+        let mut agent = agent_with(&format!(
+            r#"[[{{"text": "\n\n"}}, {}], [{{"text": "\ndone"}}]]"#,
+            call("c1", "read", serde_json::json!({"path": "/nonexistent"}))
+        ));
+        let mut shown = Shown::default();
+        agent.run("go", &mut shown, &Cancel::new()).await.unwrap();
+        assert_eq!(shown.0, "done");
+        assert_eq!(agent.messages[2].content, None);
+    }
+
     #[tokio::test]
     async fn text_cut_off_at_the_output_limit_is_an_error() {
         let mut agent = agent_with(r#"[[{"text": "half an ans"}, "truncated"]]"#);
@@ -962,17 +1087,68 @@ mod tests {
     }
 
     /// A stream that ends without a terminal event is a dropped connection, not an answer. The
-    /// text has already been shown, but it must not be recorded as the model's reply.
-    #[tokio::test]
+    /// text has already been shown, but it must not be recorded as the model's reply. Once the
+    /// retries are spent, the error says the session can go on.
+    #[tokio::test(start_paused = true)]
     async fn a_stream_that_ends_without_a_terminal_event_is_an_error() {
-        let mut agent = agent_with(r#"[[{"text": "half an ans"}, "cut"]]"#);
-        let err = run(&mut agent).await.expect_err("incomplete");
-        assert!(err.to_string().contains("before the response"), "{err}");
+        let cut = r#"[{"text": "half an ans"}, "cut"]"#;
+        let mut agent = agent_with(&format!("[{}]", [cut; 5].join(",")));
+        let err = run(&mut agent).await.expect_err("incomplete").to_string();
+        assert!(err.contains("before the response"), "{err}");
+        assert!(err.contains("\"continue\""), "{err}");
         assert_eq!(agent.messages.len(), 2, "only the system and user messages");
     }
 
+    /// Nothing of a dropped response ran, so the retry is the first time its calls run.
+    #[tokio::test(start_paused = true)]
+    async fn a_response_dropped_mid_way_is_requested_again_and_its_calls_run_once() {
+        #[derive(Default)]
+        struct Retries(u32);
+        impl Frontend for Retries {
+            fn text(&mut self, _: &str) {}
+            fn tool_start(&mut self, _: &str, _: &str) {}
+            fn tool_end(&mut self, _: &str, _: Option<&str>, _: bool) {}
+            fn retry(&mut self, _: u32, _: Duration) {
+                self.0 += 1;
+            }
+            fn turn_end(&mut self, _: Usage) {}
+            fn compacted(&mut self, _: u32, _: u32) {}
+            fn cancelled(&mut self) {}
+        }
+        let dir = Scratch::new("agent-dropped");
+        let path = dir.file("once.txt");
+        let write = call(
+            "c1",
+            "edit",
+            serde_json::json!({ "path": path, "old": "a", "new": "aa" }),
+        );
+        std::fs::write(&path, "a").unwrap();
+        let mut agent = agent_with(&format!(
+            r#"[[{{"text": "writing"}}, {write}, "drop"],
+                [{{"text": "writing"}}, {write}],
+                [{{"text": "done"}}]]"#
+        ));
+        let mut frontend = Retries::default();
+        agent
+            .run("go", &mut frontend, &Cancel::new())
+            .await
+            .unwrap();
+        assert_eq!(frontend.0, 1);
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "aa",
+            "the edit ran once"
+        );
+        let assistants = agent
+            .messages
+            .iter()
+            .filter(|m| m.role == Role::Assistant)
+            .count();
+        assert_eq!(assistants, 2, "the dropped response is not recorded");
+    }
+
     /// The worse half: a call can look complete and still be the front of a longer list.
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_tool_call_cut_off_by_a_dropped_stream_is_not_run() {
         let dir = Scratch::new("agent-cut");
         let path = dir.file("never.txt");

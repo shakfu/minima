@@ -43,7 +43,7 @@ Options:
       --context <N>     Context window in tokens. Default: the cached value for
                         the model [env: MINIMA_CONTEXT=]
       --mock <PATH>     Replay a scripted JSON stream instead of the network
-      --max-turns <N>   Max provider round-trips per user turn [default: 32]
+      --max-turns <N>   Max provider round-trips per user turn [default: 100]
       --refresh-models  Re-fetch the model list, ignoring the cache
   -h, --help            Print help (see more with '--help')
   -V, --version         Print version
@@ -106,7 +106,7 @@ Options:
 
 - **Prompt caching:** Anthropic caches only marked content, so minima marks each request with `anthropic`, and with `openrouter` for `anthropic/` models. OpenAI caches unmarked; minima sends a per-session `prompt_cache_key` on both OpenAI dialects.
 
-- **Network:** up to 4 retries with backoff after a rate limit, a 5xx response, or a request that fails before any response arrives. A `Retry-After` up to 60 s is honoured; a longer one is reported. A response that fails mid-stream is not retried. Requests time out after 10 s to connect or 300 s without data. With `openai` or `anthropic`, minima also fetches OpenRouter's public model list, without a key and at most once a day, for prices, missing context windows and output limits. After a failed fetch it waits an hour before trying again. `--base-url` turns this off.
+- **Network:** up to 4 retries with backoff after a rate limit, a 5xx response, or a request that fails before any response arrives. A `Retry-After` up to 60 s is honoured; a longer one is reported. A response whose connection fails mid-stream is requested again, up to 4 times: none of its tool calls has run, so only its text is shown twice. Requests time out after 10 s to connect or 300 s without data. With `openai` or `anthropic`, minima also fetches OpenRouter's public model list, without a key and at most once a day, for prices, missing context windows and output limits. After a failed fetch it waits an hour before trying again. `--base-url` turns this off.
 
 - **Persistence:** a model list cache, prompt history, the last provider, and the last model per provider. See [Build](#build) for where they live.
 

@@ -5,7 +5,7 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::anyhow;
-use eventsource_stream::Eventsource;
+use eventsource_stream::{EventStreamError, Eventsource};
 use futures_util::StreamExt;
 use reqwest::header::RETRY_AFTER;
 
@@ -94,6 +94,11 @@ impl Http {
             .bytes_stream()
             .eventsource()
             .map(move |frame| match frame {
+                // A dropped connection may not recur, and no part of a response has run yet, so
+                // the agent retries the whole request. A malformed stream would recur.
+                Err(EventStreamError::Transport(e)) => vec![Err(Error::Transport(
+                    anyhow!(e).context("reading the event stream"),
+                ))],
                 Err(e) => vec![Err(Error::Other(
                     anyhow!(e).context("reading the event stream"),
                 ))],

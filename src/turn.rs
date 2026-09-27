@@ -50,11 +50,6 @@ impl Assembler {
         self.done
     }
 
-    /// Text is already shown, so a `Break` must also reach the frontend.
-    pub fn has_text(&self) -> bool {
-        !self.text.is_empty()
-    }
-
     pub fn push(&mut self, event: Event) {
         match event {
             Event::Text(t) => self.text.push_str(&t),

@@ -12,6 +12,8 @@
 
 ### Fixed
 
+- Whitespace a model sent on its own, such as `"\n\n"` before its tool calls, printed as runs of blank rows between tool lines, and was recorded as the turn's text. Whitespace is now shown only between visible text, and a turn of only whitespace records none.
+
 - Under `--sandbox` on Linux, every snap-packaged program failed with a `snap-confine` permissions error that named neither the sandbox nor a fix. Landlock requires `no_new_privs`, under which `snap-confine` lacks the capability it needs, so no policy change can allow it. Such a failure now gets a note naming the cause, and the README states the limit.
 
 - On `openai`, a response with two messages, such as a preamble and an answer, printed them as one run-on line, and every assistant message was replayed as text without its `phase`. OpenAI asks for `phase` to be kept, so a preamble is not read as an answer later in a tool-use turn. The messages are now set apart by a blank line, and replayed as received.
@@ -41,6 +43,12 @@
 - A failed fetch of OpenRouter's price list was retried on every start. Behind a firewall that drops packets, each start waited out the 10 s connect timeout. The next attempt now waits an hour.
 
 ### Changed
+
+- A response whose connection failed mid-stream ended the run: one reset ended a review 37 tool calls in, just as the model began writing its output. The request is now repeated, with the same backoff and limit as a failed connection. This was not done before because the text already shown appears again. That was the wrong trade: no tool call of an incomplete response has run, so nothing but text repeats, and in `-p` nobody is there to retry. With `--json`, the `turn` record keeps only the text of the attempt that completed. A stream that closes without its end marker counts as a failure too. When the retries run out, the error says nothing ran and that a prompt such as "continue" retries.
+
+- `--max-turns` defaults to 100, from 32. A project review stopped at 32 round-trips, just after writing its output file and before its answer, and reported an error for finished work. The cap is kept as a guard against a model that loops. When it is reached, the error now says the work is kept and that a prompt such as "continue" resumes it.
+
+- A tool line leaves out the working directory: a leading `cd <root> &&` on a command, and the root on a path, since `bash` already runs there. Models that open every command with the `cd` filled the 56 columns with it, and every line read the same. The command still runs as sent.
 
 - The `--sandbox` kernel policy and the `write`/`edit` path check moved to the [`sanduk-sandbox`](https://github.com/shakfu/sanduk-rs) crate, so sanduk and pma share one implementation. Behaviour is unchanged, except that a protected-path refusal now reads `.git is not writable` without naming the tools. The policy tests moved with the code; the tests of minima's own notes stay here.
 

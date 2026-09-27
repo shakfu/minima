@@ -51,6 +51,8 @@ enum Step {
     Truncated,
     /// Replays a dropped connection: the turn ends here with no terminal event.
     Cut,
+    /// Replays a connection reset mid-response: a transport error, then nothing.
+    Drop,
 }
 
 pub struct Mock {
@@ -88,6 +90,11 @@ impl Mock {
                 Step::Cut => {
                     cut = true;
                     continue;
+                }
+                Step::Drop => {
+                    events.push(Err(Error::Transport(anyhow!("connection reset"))));
+                    cut = true;
+                    break;
                 }
                 Step::Text(t) => Event::Text(t),
                 Step::Truncated => Event::Truncated,

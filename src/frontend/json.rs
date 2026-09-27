@@ -96,6 +96,9 @@ impl<W: Write> Frontend for Json<W> {
     }
 
     fn retry(&mut self, attempt: u32, delay: Duration) {
+        // A retry repeats the round-trip; text from an attempt that died mid-response is not
+        // part of the answer.
+        self.text.clear();
         self.emit(json!({"type": "retry", "attempt": attempt, "delay": delay.as_secs_f64()}));
     }
 
@@ -148,6 +151,18 @@ mod tests {
             .lines()
             .map(|line| serde_json::from_str(line).expect("one JSON value per line"))
             .collect()
+    }
+
+    /// Text from an attempt that died mid-response is shown again by the retry; the turn
+    /// record carries it once.
+    #[test]
+    fn a_retry_discards_the_failed_attempts_text() {
+        let mut json = Json::new(Vec::new(), &off());
+        json.text("half an");
+        json.retry(1, Duration::from_secs(2));
+        json.text("whole answer");
+        json.turn_end(Usage::from_parts(1, 1));
+        assert_eq!(records(&json)[1]["text"], "whole answer");
     }
 
     #[test]

@@ -83,8 +83,11 @@ pub fn one_line(text: &str, width: usize) -> String {
 pub fn describe(name: &str, arguments: &str, width: usize) -> String {
     let args: serde_json::Value = serde_json::from_str(arguments).unwrap_or_default();
     let path = args["path"].as_str();
+    let root = std::env::current_dir().unwrap_or_default();
+    let root = root.to_string_lossy();
+    let path = path.map(|p| relative(p, &root));
     let detail = match (name, path, args["command"].as_str()) {
-        ("bash", _, Some(command)) => command.to_string(),
+        ("bash", _, Some(command)) => without_cd(command, &root).to_string(),
         ("read", Some(path), _) => {
             let start = args["offset"].as_u64().unwrap_or(1).max(1);
             match args["limit"].as_u64() {
@@ -99,9 +102,75 @@ pub fn describe(name: &str, arguments: &str, width: usize) -> String {
     one_line(&format!("[tool] {name} {detail}"), width)
 }
 
+/// A path under the working directory, relative to it. The line has 80 columns, and the root
+/// would take most of them.
+fn relative<'a>(path: &'a str, root: &str) -> &'a str {
+    match path.strip_prefix(root).and_then(|p| p.strip_prefix('/')) {
+        Some(rest) if !root.is_empty() && !rest.is_empty() => rest,
+        _ => path,
+    }
+}
+
+/// Models often open every command with `cd <root> &&`, though `bash` already runs there. Shown,
+/// it fills the cut line and hides the command. Only the display drops it.
+fn without_cd<'a>(command: &'a str, root: &str) -> &'a str {
+    let Some(rest) = command.trim_start().strip_prefix("cd ") else {
+        return command;
+    };
+    let rest = rest.trim_start();
+    for dir in [format!("'{root}'"), format!("\"{root}\""), root.to_string()] {
+        if let Some(after) = rest.strip_prefix(dir.as_str()) {
+            let after = after.trim_start();
+            if let Some(tail) = after.strip_prefix("&&").or_else(|| after.strip_prefix(';')) {
+                return tail.trim_start();
+            }
+        }
+    }
+    command
+}
+
 #[cfg(test)]
 mod tests {
     use super::{describe, one_line, printable};
+
+    /// The root is what a model repeats and what the cut line cannot spare.
+    #[test]
+    fn the_working_directory_is_left_out_of_the_line() {
+        let root = std::env::current_dir().unwrap().display().to_string();
+        let d = |name, args: serde_json::Value| describe(name, &args.to_string(), 80);
+        assert_eq!(
+            d(
+                "bash",
+                serde_json::json!({"command": format!("cd {root} && ls -la")})
+            ),
+            "[tool] bash ls -la"
+        );
+        assert_eq!(
+            d(
+                "bash",
+                serde_json::json!({"command": format!("cd '{root}'; make")})
+            ),
+            "[tool] bash make"
+        );
+        assert_eq!(
+            d(
+                "bash",
+                serde_json::json!({"command": "cd /elsewhere && ls"})
+            ),
+            "[tool] bash cd /elsewhere && ls"
+        );
+        assert_eq!(
+            d(
+                "write",
+                serde_json::json!({"path": format!("{root}/docs/REVIEW.md")})
+            ),
+            "[tool] write docs/REVIEW.md"
+        );
+        assert_eq!(
+            d("read", serde_json::json!({"path": format!("{root}x/a")})),
+            format!("[tool] read {root}x/a")
+        );
+    }
 
     #[test]
     fn describes_known_calls_by_their_target() {

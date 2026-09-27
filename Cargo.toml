@@ -72,6 +72,10 @@ sanduk-sandbox = "=0.1.0"
 libc = "0.2"
 
 
+[dev-dependencies]
+# Paused time, so tests of retry backoff do not sleep for real.
+tokio = { version = "1.53", features = ["test-util"] }
+
 [profile.release]
 lto = true
 codegen-units = 1
