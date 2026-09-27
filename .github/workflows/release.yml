@@ -54,9 +54,21 @@ jobs:
     permissions:
       contents: write
     steps:
+      # For CHANGELOG.md and the script that cuts the release notes from it.
+      - uses: actions/checkout@v7
       - uses: actions/download-artifact@v7
         with:
           merge-multiple: true
-      - run: gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --notes "See CHANGELOG.md." minima-*
+      # release_notes.py exits 2 and writes nothing when CHANGELOG.md has no section for the tag
+      # or for Unreleased. A release with generated notes beats a failed release.
+      - name: Release notes from CHANGELOG.md
+        run: |
+          if python3 scripts/release_notes.py "$GITHUB_REF_NAME" --output release-notes.md; then
+            echo "NOTES=--notes-file=release-notes.md" >> "$GITHUB_ENV"
+          else
+            echo "::warning::no CHANGELOG section for $GITHUB_REF_NAME; using generated notes"
+            echo "NOTES=--generate-notes" >> "$GITHUB_ENV"
+          fi
+      - run: gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" "$NOTES" minima-*
         env:
           GH_TOKEN: ${{ github.token }}

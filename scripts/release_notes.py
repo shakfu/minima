@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """Extract a versioned section from CHANGELOG.md into a release-notes file.
 
-Looks up the literal `## [<version>]` heading in CHANGELOG.md, captures
-the block up to the next `## [` heading, strips leading/trailing blank
-lines, prepends a `## Changes since the last Release` header
-(configurable), and writes the result to the output path.
+Looks up the literal `## [<version>]` or `## <version>` heading in
+CHANGELOG.md, captures the block up to the next `## ` heading, strips
+leading/trailing blank lines, prepends a `## Changes since the last Release`
+header (configurable), and writes the result to the output path. Both
+heading styles are accepted: cyllama brackets its versions, minima does not.
 
-Falls back to `## [Unreleased]` if the version-named section is missing
+Falls back to `## [Unreleased]` (or `## Unreleased`) if the version-named section is missing
 or empty — useful when a tag was pushed before the heading was renamed.
 
 Exit codes:
@@ -28,20 +29,21 @@ from typing import Optional
 
 
 def extract_section(changelog_text: str, version: str) -> Optional[str]:
-    """Return the body under `## [<version>]`, or None if the heading is absent.
+    """Return the body under `## [<version>]` or `## <version>`, or None if absent.
 
     The body is everything between the matched heading and the next
-    `## [` heading (or end of file), inclusive of blank lines. The
-    caller is responsible for trimming and decorating.
+    `## ` heading (or end of file), inclusive of blank lines. `### `
+    subsections stay in the body. The caller is responsible for trimming
+    and decorating.
     """
-    header = f"## [{version}]"
+    headers = {f"## [{version}]", f"## {version}"}
     out: list[str] = []
     in_section = False
     for line in changelog_text.splitlines():
-        if line == header:
+        if line.rstrip() in headers:
             in_section = True
             continue
-        if in_section and line.startswith("## ["):
+        if in_section and line.startswith("## "):
             break
         if in_section:
             out.append(line)

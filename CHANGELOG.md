@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- A GitHub release's notes are the tag's section of CHANGELOG.md, cut by `scripts/release_notes.py`, instead of "See CHANGELOG.md." A tag with no section gets GitHub's generated notes rather than a failed release. The script accepts both `## 0.6.0` and `## [0.6.0]` headings.
+
 ## 0.6.0
 
 ### Added
