@@ -1,5 +1,10 @@
 //! minima: a minimal agent harness.
 
+// Process groups, owner-only files and the exit signals are Unix. A non-Unix build would run
+// without them and break what the README promises, so it does not build.
+#[cfg(not(unix))]
+compile_error!("minima supports Unix only (Linux and macOS)");
+
 mod agent;
 mod cache;
 mod cancel;
@@ -56,7 +61,6 @@ fn start() -> Result<ExitCode> {
         .enable_all()
         .build()?;
 
-    #[cfg(unix)]
     exit_on_hangup_or_terminate(&runtime)?;
 
     let bounds = cli.bounds(root)?;
@@ -104,7 +108,6 @@ impl Drop for KillBackgroundJobs {
 /// `process::exit` runs no destructors, so this kills the jobs and restores the terminal itself.
 /// Without it, closing the terminal would leave the jobs running: they are in their own process
 /// groups, which the hangup does not reach.
-#[cfg(unix)]
 fn exit_on_hangup_or_terminate(runtime: &tokio::runtime::Runtime) -> Result<()> {
     use tokio::signal::unix::{SignalKind, signal};
 
@@ -139,6 +142,12 @@ async fn headless(
         async move {
             if tokio::signal::ctrl_c().await.is_ok() {
                 cancel.cancel();
+                // tokio's handler stays installed, so without this a run the cancel did not end
+                // could only be killed from another terminal.
+                if tokio::signal::ctrl_c().await.is_ok() {
+                    tools::kill_background();
+                    std::process::exit(130);
+                }
             }
         }
     });

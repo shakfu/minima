@@ -137,7 +137,13 @@ pub enum Error {
     #[error("rate limited")]
     RateLimited { retry_after: Option<Duration> },
     #[error("provider returned HTTP {status}")]
-    Server { status: u16 },
+    Server {
+        status: u16,
+        retry_after: Option<Duration>,
+    },
+    /// The request failed before a response arrived: a reset, a DNS failure, a timeout.
+    #[error("{0:#}")]
+    Transport(anyhow::Error),
     #[error("request exceeds the model's context window")]
     ContextExceeded,
     #[error(transparent)]
@@ -146,12 +152,15 @@ pub enum Error {
 
 impl Error {
     pub fn is_retryable(&self) -> bool {
-        matches!(self, Error::RateLimited { .. } | Error::Server { .. })
+        matches!(
+            self,
+            Error::RateLimited { .. } | Error::Server { .. } | Error::Transport(_)
+        )
     }
 
     pub fn retry_after(&self) -> Option<Duration> {
         match self {
-            Error::RateLimited { retry_after } => *retry_after,
+            Error::RateLimited { retry_after } | Error::Server { retry_after, .. } => *retry_after,
             _ => None,
         }
     }
@@ -181,11 +190,12 @@ impl Dialect {
         messages: &[Message],
         tools: &[serde_json::Value],
         cache_key: &str,
+        room: u32,
     ) -> serde_json::Value {
         match self {
             Dialect::Chat => chat::build_body(cfg, messages, tools, cache_key),
             Dialect::Responses => responses::build_body(cfg, messages, tools, cache_key),
-            Dialect::Messages => anthropic::build_body(cfg, messages, tools),
+            Dialect::Messages => anthropic::build_body(cfg, messages, tools, room),
         }
     }
 
@@ -206,14 +216,16 @@ pub enum Provider {
 }
 
 impl Provider {
+    /// `room` is the estimated tokens left in the window, for a dialect that must cap the output.
     pub async fn stream(
         &self,
         cfg: &Config,
         messages: &[Message],
         tools: &[serde_json::Value],
+        room: u32,
     ) -> Result<EventStream, Error> {
         match self {
-            Provider::Http(p) => p.stream(cfg, messages, tools).await,
+            Provider::Http(p) => p.stream(cfg, messages, tools, room).await,
             Provider::Mock(p) => p.stream().await,
         }
     }

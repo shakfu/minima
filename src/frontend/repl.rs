@@ -14,8 +14,8 @@ use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifier
 
 use super::history::History;
 use super::screen::{Screen, Tone};
-use super::{Frontend, describe, one_line, printable};
-use crate::agent::Agent;
+use super::{Frontend, compacted, count, describe, one_line, printable};
+use crate::agent::{Agent, Compaction};
 use crate::cancel::Cancel;
 use crate::provider::Usage;
 use crate::theme::Style;
@@ -28,6 +28,7 @@ const WIDTH: usize = 80;
 const CALL_WIDTH: usize = 56;
 
 pub const EXIT: [&str; 2] = ["/quit", "/exit"];
+const COMPACT: &str = "/compact";
 
 /// Token and cost counters, apart from the terminal so they can be tested without one.
 #[derive(Default)]
@@ -158,6 +159,13 @@ impl Frontend for Repl {
         self.meter.add(usage);
     }
 
+    fn compacted(&mut self, before: u32, after: u32) {
+        self.meter.used = after;
+        let mut screen = self.screen();
+        let _ = screen.line(Tone::Role(Style::Muted), &compacted(before, after));
+        let _ = screen.draw();
+    }
+
     fn cancelled(&mut self) {
         let mut screen = self.screen();
         screen.set_activity(None);
@@ -168,6 +176,7 @@ impl Frontend for Repl {
 
 enum Request {
     Prompt(String),
+    Compact,
     Exit,
 }
 
@@ -211,8 +220,20 @@ pub fn run(runtime: &tokio::runtime::Runtime, agent: &mut Agent) -> Result<()> {
         move || keys.run()
     });
 
-    while let Ok(Request::Prompt(prompt)) = rx.recv() {
-        let result = runtime.block_on(agent.run(&prompt, &mut frontend, &cancel));
+    loop {
+        let result = match rx.recv() {
+            Ok(Request::Prompt(prompt)) => {
+                runtime.block_on(agent.run(&prompt, &mut frontend, &cancel))
+            }
+            Ok(Request::Compact) => match runtime.block_on(agent.compact(&mut frontend, &cancel)) {
+                Ok(Compaction::Nothing) => Err(anyhow::anyhow!(
+                    "nothing to compact: the conversation is no longer than the part kept \
+                         verbatim, or the summary request would not fit the window"
+                )),
+                other => other.map(|_| ()),
+            },
+            Ok(Request::Exit) | Err(_) => break,
+        };
         frontend.after_tool = false;
         let usage = frontend.meter.finish();
         let status = frontend.meter.status(agent.model());
@@ -408,7 +429,12 @@ impl Keyboard {
                 let _ = screen.line(Tone::Prompt, &format!("> {trimmed}"));
                 screen.busy_since = Some(Instant::now());
                 self.busy.store(true, Ordering::SeqCst);
-                let _ = self.tx.send(Request::Prompt(trimmed.to_string()));
+                let request = if trimmed == COMPACT {
+                    Request::Compact
+                } else {
+                    Request::Prompt(trimmed.to_string())
+                };
+                let _ = self.tx.send(request);
             }
             _ if older && screen.input.cursor().0 == 0 => {
                 if let Some(entry) = self.history.prev(&screen.input_text()) {
@@ -480,17 +506,6 @@ fn result(body: &str) -> String {
         1 => body.trim().to_string(),
         n => format!("{n} lines"),
     }
-}
-
-fn count(n: u64) -> String {
-    let (value, unit, places) = match n {
-        0..1_000 => return n.to_string(),
-        1_000..1_000_000 => (n as f64 / 1e3, "k", 1),
-        _ => (n as f64 / 1e6, "M", 2),
-    };
-    let text = format!("{value:.places$}");
-    let text = text.trim_end_matches('0').trim_end_matches('.');
-    format!("{text}{unit}")
 }
 
 /// An estimate is marked `~`.

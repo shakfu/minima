@@ -1,7 +1,7 @@
 //! No path jail. The sandbox bounds writes, not reads, and `bash` reads the whole filesystem,
 //! so a jail here would only push the model through `cat`.
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Result, anyhow, bail};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, BufReader};
@@ -28,19 +28,7 @@ pub struct Args {
 /// Streams the file, and keeps at most the cap on a tool result, so memory follows neither the
 /// size of the file nor the length of a line in it.
 pub async fn call(args: Args) -> Result<String> {
-    let file = tokio::fs::File::open(&args.path)
-        .await
-        .with_context(|| format!("reading {}", args.path))?;
-    // A character device has no end, so the scan below would not finish. Directories reach here
-    // too, and `EISDIR` from the first read says less than this does.
-    let meta = file
-        .metadata()
-        .await
-        .with_context(|| format!("reading {}", args.path))?;
-    if !meta.is_file() {
-        bail!("{} is not a regular file", args.path);
-    }
-
+    let file = super::open_regular(&args.path).await?;
     let start = args.offset.unwrap_or(1).max(1);
     let limit = args.limit.unwrap_or(MAX_LINES).min(MAX_LINES);
     let end = start.saturating_add(limit);
@@ -179,7 +167,6 @@ mod tests {
     }
 
     /// `/dev/zero` never reaches a newline or an end.
-    #[cfg(unix)]
     #[tokio::test]
     async fn a_file_that_is_not_a_file_is_refused() {
         let err = read("/dev/zero", None, None).await.unwrap_err();

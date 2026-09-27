@@ -10,11 +10,13 @@ use serde_json::{Value, json};
 use super::{Error, Event, Message, Role, Usage};
 use crate::config::Config;
 
-/// Required by the wire, with no Chat equivalent. Generous: the cap that matters is the context
-/// check in `agent.rs`.
-const MAX_TOKENS: u32 = 8192;
+/// Required by the wire, with no Chat equivalent. Used when the model list gives no ceiling; every
+/// current Claude model accepts it, and a `write` of a whole file needs the room.
+const DEFAULT_MAX_TOKENS: u32 = 32_000;
 
-pub fn build_body(cfg: &Config, messages: &[Message], tools: &[Value]) -> Value {
+/// `room` is what the window has left. The API rejects a request whose input plus `max_tokens`
+/// exceeds the window, so the ceiling shrinks as the conversation grows.
+pub fn build_body(cfg: &Config, messages: &[Message], tools: &[Value], room: u32) -> Value {
     let mut system = String::new();
     let mut wire: Vec<Value> = Vec::new();
 
@@ -69,11 +71,15 @@ pub fn build_body(cfg: &Config, messages: &[Message], tools: &[Value]) -> Value 
         }
     }
 
+    mark_previous_request(&mut wire);
     let mut body = json!({
         "model": cfg.model,
-        "max_tokens": MAX_TOKENS,
+        "max_tokens": cfg.max_output.unwrap_or(DEFAULT_MAX_TOKENS).min(room).max(1),
         "stream": true,
         "messages": wire,
+        // Anthropic caches only up to a marked block. The top-level marker is automatic caching:
+        // the API marks the last block, so each request reads the prefix the previous one wrote.
+        "cache_control": { "type": "ephemeral" },
     });
     if !system.is_empty() {
         body["system"] = json!([{ "type": "text", "text": system }]);
@@ -82,6 +88,25 @@ pub fn build_body(cfg: &Config, messages: &[Message], tools: &[Value]) -> Value 
         body["tools"] = json!(tools);
     }
     body
+}
+
+/// Marks the end of what the previous request sent: the message before the last assistant turn.
+/// A read looks back at most 20 blocks from a marker, so a turn of ten parallel tool calls would
+/// otherwise put the previous request's cache entry out of reach of the automatic marker.
+fn mark_previous_request(wire: &mut [Value]) {
+    let Some(last_turn) = wire.iter().rposition(|m| m["role"] == "assistant") else {
+        return;
+    };
+    let Some(previous) = last_turn.checked_sub(1) else {
+        return;
+    };
+    let block = wire[previous]["content"]
+        .as_array_mut()
+        .and_then(|blocks| blocks.last_mut());
+    // An empty text block cannot carry a marker, and the API rejects it.
+    if let Some(block) = block.filter(|b| b["text"] != "") {
+        block["cache_control"] = json!({ "type": "ephemeral" });
+    }
 }
 
 /// Flat, and the schema key is `input_schema`, not `parameters`.
@@ -193,10 +218,75 @@ mod tests {
             &cfg,
             &[Message::system("be terse"), Message::user("hi")],
             &[],
+            u32::MAX,
         );
         assert_eq!(body["system"][0]["text"], "be terse");
         assert_eq!(body["messages"].as_array().unwrap().len(), 1);
-        assert_eq!(body["max_tokens"], MAX_TOKENS);
+        assert_eq!(body["max_tokens"], DEFAULT_MAX_TOKENS);
+    }
+
+    /// The model's own ceiling wins over the default, and the window's remainder over both.
+    #[test]
+    fn max_tokens_is_the_models_ceiling_bounded_by_the_room_left() {
+        let mut cfg = Config::for_test("m");
+        cfg.max_output = Some(64_000);
+        let ask = |room| build_body(&cfg, &[Message::user("hi")], &[], room)["max_tokens"].clone();
+        assert_eq!(ask(u32::MAX), 64_000);
+        assert_eq!(ask(10_000), 10_000);
+    }
+
+    /// The top-level marker caches the whole request; the explicit one keeps the previous
+    /// request's entry within the 20-block lookback when a turn adds many blocks.
+    #[test]
+    fn the_cache_is_marked_at_the_end_and_where_the_previous_request_ended() {
+        let cfg = Config::for_test("m");
+        let call = |id: &str| ToolCall {
+            id: id.into(),
+            name: "read".into(),
+            arguments: "{}".into(),
+        };
+        let body = build_body(
+            &cfg,
+            &[
+                Message::system("be terse"),
+                Message::user("hi"),
+                Message::assistant(None, vec![call("a"), call("b")]),
+                Message::tool_result("a", "one"),
+                Message::tool_result("b", "two"),
+            ],
+            &[],
+            u32::MAX,
+        );
+        assert_eq!(body["cache_control"], json!({ "type": "ephemeral" }));
+        let marked: Vec<_> = body["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|m| m["content"].as_array().unwrap())
+            .filter(|b| b.get("cache_control").is_some())
+            .collect();
+        assert_eq!(marked.len(), 1, "{marked:?}");
+        assert_eq!(marked[0]["text"], "hi");
+    }
+
+    /// The API rejects a marker on an empty text block.
+    #[test]
+    fn an_empty_prompt_is_not_marked() {
+        let cfg = Config::for_test("m");
+        let body = build_body(
+            &cfg,
+            &[
+                Message::user(""),
+                Message::assistant(Some("x".into()), vec![]),
+            ],
+            &[],
+            u32::MAX,
+        );
+        assert!(
+            body["messages"][0]["content"][0]
+                .get("cache_control")
+                .is_none()
+        );
     }
 
     #[test]
@@ -207,7 +297,7 @@ mod tests {
             name: "read".into(),
             arguments: r#"{"path":"x"}"#.into(),
         };
-        let body = build_body(&cfg, &[Message::assistant(None, vec![call])], &[]);
+        let body = build_body(&cfg, &[Message::assistant(None, vec![call])], &[], u32::MAX);
         let block = &body["messages"][0]["content"][0];
         assert_eq!(block["type"], "tool_use");
         assert_eq!(block["input"]["path"], "x");
@@ -224,6 +314,7 @@ mod tests {
                 Message::tool_result("b", "two"),
             ],
             &[],
+            u32::MAX,
         );
         let messages = body["messages"].as_array().unwrap();
         assert_eq!(messages.len(), 1);
@@ -238,7 +329,7 @@ mod tests {
             name: "read".into(),
             arguments: "{not json".into(),
         };
-        let body = build_body(&cfg, &[Message::assistant(None, vec![call])], &[]);
+        let body = build_body(&cfg, &[Message::assistant(None, vec![call])], &[], u32::MAX);
         assert_eq!(body["messages"][0]["content"][0]["input"], json!({}));
     }
 

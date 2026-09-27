@@ -58,6 +58,11 @@ pub fn build_body(cfg: &Config, messages: &[Message], tools: &[Value], cache_key
     if !tools.is_empty() {
         body["tools"] = json!(tools);
     }
+    // OpenAI and Gemini models cache on their own, and Claude only up to a marked block. This is
+    // OpenRouter's automatic caching, which marks the last block; other routes are not sent it.
+    if cfg.provider == "openrouter" && cfg.model.starts_with("anthropic/") {
+        body["cache_control"] = json!({ "type": "ephemeral" });
+    }
     body
 }
 
@@ -265,6 +270,28 @@ mod tests {
         let cfg = Config::for_test("m");
         let body = build_body(&cfg, &[Message::assistant(None, vec![])], &[], "k");
         assert_eq!(body["messages"][0]["content"], "");
+    }
+
+    #[test]
+    fn only_claude_on_openrouter_asks_for_cache_markers() {
+        let body = |provider: &str, model: &str| {
+            let cfg = Config {
+                provider: provider.into(),
+                ..Config::for_test(model)
+            };
+            build_body(&cfg, &[Message::user("hi")], &[], "k")
+        };
+        let marker = json!({ "type": "ephemeral" });
+        assert_eq!(
+            body("openrouter", "anthropic/claude-opus-5.5")["cache_control"],
+            marker
+        );
+        assert!(
+            body("openrouter", "openai/gpt-5.6")
+                .get("cache_control")
+                .is_none()
+        );
+        assert!(body("ollama", "anthropic/x").get("cache_control").is_none());
     }
 
     #[test]

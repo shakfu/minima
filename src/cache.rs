@@ -12,10 +12,13 @@ use crate::provider::Dialect;
 use crate::provider::http::{authorize, client};
 
 const TTL_SECS: u64 = 24 * 60 * 60;
+/// How long a failed fetch holds off the next. A host that drops packets costs the connect
+/// timeout on each attempt, and every start would pay it.
+const RETRY_SECS: u64 = 60 * 60;
 /// Bounds the cursor walk, so a gateway that always answers `has_more` cannot loop it forever.
 const MAX_PAGES: usize = 20;
-/// 2 added `pricing`; a version-1 file would hide it for a day.
-const SCHEMA: u32 = 2;
+/// 2 added `pricing`, 3 `max_output`; an older file would hide the field for a day.
+const SCHEMA: u32 = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Entry {
@@ -26,15 +29,43 @@ pub struct Entry {
     /// Anthropic's name for the context window. Folded into `context_length` on fetch.
     #[serde(default, skip_serializing)]
     max_input_tokens: Option<u32>,
+    /// The model's output ceiling. Anthropic reports it as `max_tokens`, OpenRouter under
+    /// `top_provider`; both are folded in on fetch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_output: Option<u32>,
+    #[serde(default, skip_serializing)]
+    max_tokens: Option<u32>,
+    #[serde(default, skip_serializing)]
+    top_provider: Option<TopProvider>,
     /// OpenRouter's per-token prices, kept as served and parsed by `price` on use.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pricing: Option<serde_json::Value>,
+}
+
+impl Entry {
+    /// Each endpoint's spelling of a limit, moved to the one field minima reads.
+    fn normalise(&mut self) {
+        self.context_length = self.context_length.or(self.max_input_tokens.take());
+        let listed = self
+            .top_provider
+            .take()
+            .and_then(|t| t.max_completion_tokens);
+        self.max_output = self.max_output.or(self.max_tokens.take()).or(listed);
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct TopProvider {
+    max_completion_tokens: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Models {
     schema: u32,
     fetched_at: u64,
+    /// The last failed fetch, or 0. Keeps the entries of the last good one.
+    #[serde(default)]
+    failed_at: u64,
     endpoint: String,
     entries: Vec<Entry>,
 }
@@ -44,6 +75,7 @@ impl Models {
         let empty = Self {
             schema: SCHEMA,
             fetched_at: 0,
+            failed_at: 0,
             endpoint: base_url.to_string(),
             entries: Vec::new(),
         };
@@ -61,6 +93,17 @@ impl Models {
 
     pub fn is_stale(&self) -> bool {
         self.entries.is_empty() || now().saturating_sub(self.fetched_at) > TTL_SECS
+    }
+
+    /// False within `RETRY_SECS` of a failed fetch.
+    pub fn retry_due(&self) -> bool {
+        now().saturating_sub(self.failed_at) > RETRY_SECS
+    }
+
+    /// Records a failed fetch, so the next start does not wait on the same host again.
+    pub fn record_failure(&mut self) {
+        self.failed_at = now();
+        self.store();
     }
 
     pub fn count(&self) -> usize {
@@ -123,11 +166,10 @@ impl Models {
             }
         }
 
-        for entry in &mut entries {
-            entry.context_length = entry.context_length.or(entry.max_input_tokens.take());
-        }
+        entries.iter_mut().for_each(Entry::normalise);
         self.entries = entries;
         self.fetched_at = now();
+        self.failed_at = 0;
         self.endpoint = base_url.to_string();
         self.store();
         Ok(())
@@ -170,4 +212,59 @@ fn now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(json: &str) -> Entry {
+        let mut entry: Entry = serde_json::from_str(json).unwrap();
+        entry.normalise();
+        entry
+    }
+
+    #[test]
+    fn each_endpoints_limits_land_in_one_field() {
+        let anthropic = entry(r#"{"id": "c", "max_input_tokens": 200000, "max_tokens": 64000}"#);
+        assert_eq!(
+            (anthropic.context_length, anthropic.max_output),
+            (Some(200_000), Some(64_000))
+        );
+
+        let openrouter = entry(
+            r#"{"id": "o", "context_length": 400000,
+                "top_provider": {"max_completion_tokens": 128000}}"#,
+        );
+        assert_eq!(
+            (openrouter.context_length, openrouter.max_output),
+            (Some(400_000), Some(128_000))
+        );
+
+        let openai = entry(r#"{"id": "g"}"#);
+        assert_eq!((openai.context_length, openai.max_output), (None, None));
+    }
+
+    /// The cache file keeps only the folded fields, so a reload does not depend on the fold.
+    #[test]
+    fn a_stored_entry_round_trips_with_its_limits() {
+        let stored = serde_json::to_string(&entry(r#"{"id": "c", "max_tokens": 64000}"#)).unwrap();
+        assert_eq!(entry(&stored).max_output, Some(64_000));
+    }
+
+    #[test]
+    fn a_failed_fetch_holds_off_the_next_one() {
+        let mut list = Models {
+            schema: SCHEMA,
+            fetched_at: 0,
+            failed_at: 0,
+            endpoint: "http://x".into(),
+            entries: Vec::new(),
+        };
+        assert!(list.is_stale() && list.retry_due());
+        list.failed_at = now();
+        assert!(list.is_stale() && !list.retry_due());
+        list.failed_at = now() - RETRY_SECS - 1;
+        assert!(list.retry_due());
+    }
 }

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Added
+
+- Compaction. Once a request would carry 80% of the context window, the model summarises the older messages and the summary replaces them; `/compact` does it on demand in the REPL. Before this, a full window ended the session. The most recent turns stay verbatim, up to 20% of the window and at most half the conversation, because the model is usually working from the last tool output. Turns are cut only before a prompt or an assistant message, so a call and its result stay together. A turn whose calls fill the window is compacted before they run rather than having them refused. `--json` emits a `compact` record.
+
+- Anthropic prompt caching. Claude caches only up to a block marked `cache_control`, and minima marked none, so every turn billed the whole transcript at the full input rate. Requests now use automatic caching, which marks the last block, plus one marker where the previous request ended, because a cache read looks back at most 20 blocks and a turn of ten parallel tool calls adds more. Cached input is billed at a tenth of the input rate or less, and a cache write at 1.25 times. On `openrouter` only `anthropic/` models get the marker; OpenRouter's other models cache without one.
+
 ### Fixed
 
 - The context check counted only the token total the previous response reported. Tool results and a new prompt added since were not counted, so one turn of large outputs could send a request past the window. They are now estimated at 4 bytes a token until the next response reports a total. The estimate errs low, because refusing a request that would have fit costs more than sending one the provider rejects.
@@ -10,11 +16,33 @@
 
 - With `--json`, the `result` record's `text` held the last turn's text even when the run failed or was cancelled after a turn that called tools. That text was the model's plan, not an answer. `text` is now empty unless `outcome` is `complete`. The `turn` records still carry it.
 
+- `read` and `edit` hung on a FIFO with no writer: `open(2)` blocked before the type check ran. They now open non-blocking and refuse anything but a regular file. Esc, Ctrl-C and a `-p` Ctrl-C now cancel a running `read`, `write` or `edit`; only `bash` sampled the cancel before. A second Ctrl-C ends a `-p` run at once.
+
+- `write` and `edit` created the temp file at the default mode and copied the target's mode only after writing and syncing, so a 0600 file's new contents were readable by other local users until the rename. The temp file is now created at the target's mode or narrower.
+
+- `write` and `edit` split a hard-linked file from its other links, and gave a file owned by another user minima's owner. Both cases now write in place, as vim's `backupcopy=auto` does, without atomicity. A dangling symlink is refused rather than replaced by a regular file: following it would pass `--sandbox`'s path check, which sees only the link. See `docs/dev/atomic-writes.md`.
+
+- Anthropic responses were capped at 8,192 output tokens, so a `write` of a larger file was cut off and never ran. `max_tokens` is now the model's limit from its model list, or 32,000, reduced to what the context window has left, because the API rejects input plus `max_tokens` past the window.
+
+- A request that failed before any response arrived, such as a reset or a connect timeout, ended the run, though the README promised retries. It is now retried like a 429 or 5xx. `Retry-After` is also read in its HTTP-date form and on 5xx responses.
+
+- Malformed tool arguments in a complete response were resent verbatim on every later request, which a gateway translating Chat to another dialect may reject. The transcript now keeps `{}`, as it already did for a truncated call. The error no longer repeats the arguments, and error results are capped like any other result.
+
+- Before the first response the context check ignored the system prompt and tool schemas, so a large `AGENTS.md` sent a request the provider refused. Both are now estimated, and a system prompt too large for the window is named as the cause.
+
+- A failed fetch of OpenRouter's price list was retried on every start. Behind a firewall that drops packets, each start waited out the 10 s connect timeout. The next attempt now waits an hour.
+
 ### Changed
 
 - The `--sandbox` kernel policy and the `write`/`edit` path check moved to the [`sanduk-sandbox`](https://github.com/shakfu/sanduk-rs) crate, so sanduk and pma share one implementation. Behaviour is unchanged, except that a protected-path refusal now reads `.git is not writable` without naming the tools. The policy tests moved with the code; the tests of minima's own notes stay here.
 
 - Tool call lines read `[tool] <name> <detail>`, as in myra: `[tool] read src/lib.rs:1-400`, `[tool] bash cargo test`. The prefix marks them apart from the answer text; bash lost its `$ ` form so every tool follows one pattern.
+
+- `sanduk-sandbox` is pinned to `=0.1.0`. `cargo install` ignores `Cargo.lock`, so a 0.1.x release would otherwise change what `--sandbox` enforces in new installs without a minima release.
+
+- minima no longer builds for non-Unix targets. That build compiled but killed no process groups, did not restrict the config directory to its owner, and ignored SIGHUP and SIGTERM.
+
+- CI pins third-party actions by commit, and `.github/workflows/audit.yml` runs `cargo audit` on dependency changes and weekly. `upload-artifact` moves to v7, the major `download-artifact` already used.
 
 ## 0.5.0
 

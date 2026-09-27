@@ -4,7 +4,7 @@ How `write` and `edit` could be enforced by the kernel under `--sandbox`, instea
 
 ## The problem
 
-Under `--sandbox`, `write` and `edit` are bounded by `confine_path` (`src/tools/mod.rs:138`). It resolves the path, checks it, and returns it. `atomic::replace` then opens the path again by name: `create_dir_all`, the temp-file create, and `rename` (`src/tools/atomic.rs:11-49`). All of this runs in minima's unconfined process.
+Under `--sandbox`, `write` and `edit` are bounded by `confine_path` (`sanduk-sandbox`, `src/path.rs`). It resolves the path, checks it, and returns it. `atomic::replace` then opens the path again by name: `create_dir_all`, the temp-file create or the in-place open, and `rename` (`src/tools/atomic.rs`). All of this runs in minima's unconfined process.
 
 Between the check and the open, a background job started through `bash` can replace a directory on the path with a symlink to one outside the root. The write follows it. `root-sandbox.md` already records this window (line 65) and accepts it (line 126).
 
@@ -20,7 +20,7 @@ Run the write in a child process under the same kernel policy as `bash`. Keep th
 
 With `--sandbox` off, nothing changes.
 
-`sandbox_command` (`src/tools/bash.rs:413,481`) currently hard-codes `bash -c <command>`. It needs to take a program and its arguments. Both platforms already allow this: Landlock is applied in `pre_exec` and holds for any program, and Seatbelt uses the `sandbox-exec -p <profile>` prefix.
+`sandbox_command` (`src/tools/bash.rs:186`) passes `bash -c <command>` to `sanduk_sandbox::Policy::command`, which already takes any program. It needs to take the program and its arguments as parameters.
 
 Result:
 
@@ -47,3 +47,14 @@ The subcommand exists to give the sandboxed child a program to run. minima's own
 ## The binary itself
 
 The child runs `current_exe()`. When minima runs as `./minima` from inside the root, sandboxed `bash` can replace that file. The child is sandboxed, so a replaced binary can do no more than `bash` can. The next unsandboxed launch is a separate exposure, and this proposal does not change it. On Linux, exec `/proc/self/exe` instead: it names the running inode even after the path is replaced.
+
+## What a replacement keeps
+
+`atomic::replace` renames a temp file over the destination. The temp file is created with the destination's mode or narrower, then given its owner and exact mode, before any content is written.
+
+It writes in place instead, without atomicity, in two cases:
+
+- The destination has other hard links. A rename would split it from them.
+- Its owner or group differs from minima's, and `fchown` fails, as it does for a non-root user.
+
+Neither ACLs nor extended attributes are copied, so a rename drops them. A symlink is followed to its target. One that does not resolve is refused, because `confine_path` checked only the link. The parent directory is synced after the rename; a filesystem that refuses is ignored.

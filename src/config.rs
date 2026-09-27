@@ -161,6 +161,8 @@ pub struct Config {
     pub context: u32,
     /// True when no flag or model list gave the window, so `context` is the 128k fallback.
     pub context_guessed: bool,
+    /// The model's output ceiling, where a model list reports it.
+    pub max_output: Option<u32>,
     pub max_turns: u32,
     /// Set only when the provider reports no cost; see `price::lookup`.
     pub pricing: Option<crate::price::Pricing>,
@@ -177,6 +179,7 @@ impl Config {
             dialect: Dialect::Chat,
             context: 128_000,
             context_guessed: false,
+            max_output: None,
             max_turns: 8,
             pricing: None,
         }
@@ -195,6 +198,7 @@ impl Cli {
                 dialect: Dialect::Chat,
                 context: self.context.unwrap_or(128_000),
                 context_guessed: false,
+                max_output: None,
                 max_turns: self.max_turns,
                 pricing: None,
             });
@@ -282,6 +286,7 @@ impl Cli {
         Ok(Config {
             context: context.unwrap_or(128_000),
             context_guessed: context.is_none(),
+            max_output: cache.find(&model).and_then(|e| e.max_output),
             provider: entry.id.to_string(),
             base_url,
             api_key,
@@ -305,18 +310,12 @@ pub fn history_path() -> Option<PathBuf> {
 
 /// Tighten a path minima created to owner-only: 0700 for a directory, 0600 for a file. History and
 /// the model cache both sit under the config directory, and session resume will land there too.
-#[cfg(unix)]
 pub fn restrict_to_owner(path: &std::path::Path) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
 
     let metadata = std::fs::metadata(path)?;
     let mode = if metadata.is_dir() { 0o700 } else { 0o600 };
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
-}
-
-#[cfg(not(unix))]
-pub fn restrict_to_owner(_path: &std::path::Path) -> std::io::Result<()> {
-    Ok(())
 }
 
 /// `$XDG_CONFIG_HOME/minima`, else `$HOME/.config/minima`. No `dirs` crate for two lines of logic.
@@ -417,7 +416,6 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[test]
     fn restrict_to_owner_strips_group_and_other() {
         use std::os::unix::fs::PermissionsExt;

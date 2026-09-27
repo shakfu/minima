@@ -12,7 +12,7 @@ use crate::cancel::Cancel;
 use crate::config::{Bounds, CONTEXT_MARGIN, Config};
 use crate::frontend::Frontend;
 use crate::prompt::system_prompt;
-use crate::provider::{Error, Message, Provider};
+use crate::provider::{Error, Message, Provider, Role};
 use crate::tools::{self, Tool};
 use crate::turn::{Assembler, Turn};
 
@@ -24,6 +24,22 @@ const MAX_BACKOFF: Duration = Duration::from_secs(60);
 /// For text no provider has counted yet. Code tokenizes denser than this, so the estimate runs low:
 /// undercounting sends a request the provider refuses, overcounting refuses one that would fit.
 const BYTES_PER_TOKEN: usize = 4;
+
+/// Compaction starts once a request would carry this share of the window. The rest is room for
+/// the summary request's output, and for the turns that follow it.
+const COMPACT_AT_PERCENT: u64 = 80;
+/// The most of the window kept verbatim through a compaction, and never more than half of the
+/// conversation, so `/compact` early still frees something.
+const KEEP_PERCENT: u64 = 20;
+/// Output the summary request must have room for, or compaction is not attempted.
+const SUMMARY_ROOM: u32 = 4096;
+const SUMMARISE: &str = "Summarise the conversation so far for yourself: it will replace the \
+earlier messages, and you will continue the task from the summary and the messages after it. \
+Include the user's requests and constraints; decisions made and why; files read, created or \
+changed, with the facts from them you still need; commands run and their results; errors not yet \
+resolved; and the next steps. Be specific: paths, names, numbers. Reply with text only; do not \
+call tools.";
+const SUMMARY_HEAD: &str = "The earlier part of this conversation was compacted into this summary:";
 
 const CONTEXT_FULL: &str = "not run: the context window is full";
 const TRUNCATED: &str = "not run: the response hit the output token limit before the call was \
@@ -37,23 +53,41 @@ pub struct Agent {
     tools: Vec<serde_json::Value>,
     /// Total tokens the last turn reported. Checked before each send once it nears the window.
     used: u32,
-    /// Estimated tokens of the prompt and tool results appended since `used` was reported.
+    /// Estimated tokens appended since `used` was reported. Starts at `overhead`.
     pending: u32,
+    /// Estimated tokens of the system prompt and tool schemas, which every request carries.
+    overhead: u32,
     on_first_turn: Option<FirstTurn>,
 }
 
 type FirstTurn = Box<dyn FnOnce(&Config)>;
 
+/// What a compaction did. Token counts are estimates of what the next request carries.
+pub enum Compaction {
+    Done {
+        before: u32,
+        after: u32,
+    },
+    /// Nothing old enough to summarise, or the summary request itself would not fit.
+    Nothing,
+    Cancelled,
+}
+
 impl Agent {
     pub fn with_bounds(provider: Provider, config: Config, bounds: Bounds) -> Self {
+        let system = system_prompt();
+        let tools = tools::specs(config.dialect);
+        let schemas = serde_json::to_string(&tools).unwrap_or_default();
+        let overhead = estimate(&system).saturating_add(estimate(&schemas));
         Self {
             provider,
-            tools: tools::specs(config.dialect),
+            tools,
             config,
             bounds,
-            messages: vec![Message::system(system_prompt())],
+            messages: vec![Message::system(system)],
             used: 0,
-            pending: 0,
+            pending: overhead,
+            overhead,
             on_first_turn: None,
         }
     }
@@ -85,20 +119,43 @@ impl Agent {
         cancel: &Cancel,
     ) -> Result<()> {
         cancel.reset();
+        // Named apart from the general check: "start a new session" cannot fix an AGENTS.md.
+        if self.overhead.saturating_add(CONTEXT_MARGIN) >= self.config.context {
+            bail!(
+                "the system prompt and tool schemas take about {} tokens of {}'s {}; shorten \
+                 AGENTS.md or the skills list, or raise --context",
+                self.overhead,
+                self.config.model,
+                self.config.context
+            );
+        }
         // Refused before sending: a request past the window would be paid for and then fail.
         let prompt_tokens = estimate(prompt);
+        if !self
+            .compact_if_full(prompt_tokens, frontend, cancel)
+            .await?
+        {
+            return Ok(());
+        }
         self.check_context(prompt_tokens)?;
         self.pending += prompt_tokens;
         self.messages.push(Message::user(prompt));
 
         for _ in 0..self.config.max_turns {
-            let Some(mut turn) = self.one_turn(frontend, cancel).await? else {
+            // Tool results can fill the window as surely as a prompt can.
+            if !self.compact_if_full(0, frontend, cancel).await? {
+                return Ok(());
+            }
+            self.check_context(0)?;
+            let room = self.room();
+            let Some(mut turn) = self
+                .one_turn(&self.messages, room, frontend, cancel)
+                .await?
+            else {
                 frontend.cancelled();
                 return Ok(());
             };
-            if let (None, Some(pricing)) = (turn.usage.cost, &self.config.pricing) {
-                turn.usage.cost = Some(pricing.cost(&turn.usage));
-            }
+            self.price(&mut turn);
 
             frontend.turn_end(turn.usage);
             if turn.usage.total_tokens > 0 {
@@ -111,30 +168,46 @@ impl Agent {
 
             let Turn {
                 text,
-                mut calls,
+                calls,
                 truncated,
                 ..
             } = turn;
-            // Chat and Responses resend arguments verbatim, and a fragment is not valid JSON.
-            if truncated {
-                for call in &mut calls {
+            // Chat and Responses resend arguments verbatim, and a gateway that translates them to
+            // another dialect must parse them. A fragment or malformed object would fail every
+            // later request, so the transcript keeps `{}`; the call still runs on what the model
+            // sent, so its result names what was wrong.
+            let recorded = calls
+                .iter()
+                .cloned()
+                .map(|mut call| {
                     if serde_json::from_str::<serde_json::Map<_, _>>(&call.arguments).is_err() {
                         call.arguments = "{}".into();
                     }
-                }
-            }
+                    call
+                })
+                .collect();
             self.messages.push(Message::assistant(
                 (!text.is_empty()).then_some(text),
-                calls.clone(),
+                recorded,
             ));
-            let full = self.check_context(0);
-
+            // A full window after an answer is left to the next prompt, which compacts first.
             if calls.is_empty() {
-                full?;
                 if truncated {
                     bail!("the response hit the output token limit and is incomplete");
                 }
                 return Ok(());
+            }
+
+            // Compacted before the calls run rather than refusing them, which would only make the
+            // model ask again.
+            let mut full = self.check_context(0);
+            if full.is_err()
+                && !truncated
+                && !cancel.is_cancelled()
+                && let Compaction::Done { before, after } = self.summarise(frontend, cancel).await?
+            {
+                frontend.compacted(before, after);
+                full = self.check_context(0);
             }
 
             // Every call gets a result, even one that is not run: each dialect rejects a
@@ -167,7 +240,7 @@ impl Agent {
                     // that the outer context repeats.
                     Err(e) => (
                         false,
-                        format!("error: {e:#}"),
+                        tools::cap(format!("error: {e:#}")),
                         Some(e.root_cause().to_string()),
                     ),
                 };
@@ -175,8 +248,6 @@ impl Agent {
                 frontend.tool_end(&body, note.as_deref(), ok);
                 self.answer(&call.id, body);
             }
-            // Again, with the results counted: one turn of calls can add several capped outputs.
-            self.check_context(0)?;
             // Before the next turn, so a cancelled tool does not cost another request.
             if cancel.is_cancelled() {
                 frontend.cancelled();
@@ -190,9 +261,136 @@ impl Agent {
         )
     }
 
+    /// `/compact`: summarises all but the recent turns, whatever the window holds.
+    pub async fn compact(
+        &mut self,
+        frontend: &mut dyn Frontend,
+        cancel: &Cancel,
+    ) -> Result<Compaction> {
+        cancel.reset();
+        let outcome = self.summarise(frontend, cancel).await?;
+        match outcome {
+            Compaction::Done { before, after } => frontend.compacted(before, after),
+            Compaction::Cancelled => frontend.cancelled(),
+            Compaction::Nothing => {}
+        }
+        Ok(outcome)
+    }
+
+    /// Compacts when the next request, `extra` tokens larger, would pass the threshold. False
+    /// when the user cancelled it. A compaction that cannot help leaves the refusal to
+    /// `check_context`.
+    async fn compact_if_full(
+        &mut self,
+        extra: u32,
+        frontend: &mut dyn Frontend,
+        cancel: &Cancel,
+    ) -> Result<bool> {
+        let next = u64::from(self.used.saturating_add(self.pending).saturating_add(extra));
+        if next * 100 < u64::from(self.config.context) * COMPACT_AT_PERCENT {
+            return Ok(true);
+        }
+        match self.summarise(frontend, cancel).await? {
+            Compaction::Done { before, after } => frontend.compacted(before, after),
+            Compaction::Cancelled => {
+                frontend.cancelled();
+                return Ok(false);
+            }
+            Compaction::Nothing => {}
+        }
+        Ok(true)
+    }
+
+    /// Replaces the messages before the verbatim tail with the model's summary of them.
+    async fn summarise(
+        &mut self,
+        frontend: &mut dyn Frontend,
+        cancel: &Cancel,
+    ) -> Result<Compaction> {
+        let mut cut = self.tail_start();
+        // Calls not yet answered stay in the tail: a summary request ending in them is invalid.
+        if self
+            .messages
+            .last()
+            .is_some_and(|m| !m.tool_calls.is_empty())
+        {
+            cut = cut.min(self.messages.len() - 1);
+        }
+        if cut <= 1 {
+            return Ok(Compaction::Nothing);
+        }
+        let mut request = self.messages[..cut].to_vec();
+        request.push(Message::user(SUMMARISE));
+        let size = self.overhead.saturating_add(sum(&request[1..]));
+        if size.saturating_add(SUMMARY_ROOM + CONTEXT_MARGIN) >= self.config.context {
+            return Ok(Compaction::Nothing);
+        }
+
+        let room = self.config.context - size;
+        let mut quiet = Summarising(frontend);
+        let Some(mut turn) = self.one_turn(&request, room, &mut quiet, cancel).await? else {
+            return Ok(Compaction::Cancelled);
+        };
+        self.price(&mut turn);
+        quiet.0.turn_end(turn.usage);
+        let summary = turn.text.trim();
+        if summary.is_empty() {
+            bail!("compaction failed: the model returned no summary");
+        }
+
+        let before = self.used.saturating_add(self.pending);
+        let tail = self.messages.split_off(cut);
+        self.messages.truncate(1);
+        self.messages
+            .push(Message::user(format!("{SUMMARY_HEAD}\n\n{summary}")));
+        self.messages.extend(tail);
+        self.used = 0;
+        self.pending = self.overhead.saturating_add(sum(&self.messages[1..]));
+        Ok(Compaction::Done {
+            before,
+            after: self.pending,
+        })
+    }
+
+    /// Where the verbatim tail starts: the earliest turn boundary whose suffix fits the budget.
+    /// A boundary is a prompt or an assistant message, never a tool result, so a call is never
+    /// kept without its answer or summarised apart from it. The length when nothing fits.
+    fn tail_start(&self) -> usize {
+        let conversation = sum(&self.messages[1..]);
+        let budget = u64::from(self.config.context) * KEEP_PERCENT / 100;
+        let budget = u32::try_from(budget)
+            .unwrap_or(u32::MAX)
+            .min(conversation / 2);
+        let (mut start, mut kept) = (self.messages.len(), 0u32);
+        // From 2: the first message after the system prompt is always summarised.
+        for i in (2..self.messages.len()).rev() {
+            kept = kept.saturating_add(size(&self.messages[i]));
+            if kept > budget {
+                break;
+            }
+            if self.messages[i].role != Role::Tool {
+                start = i;
+            }
+        }
+        start
+    }
+
+    /// Fills in the cost from the price list when the provider reported none.
+    fn price(&self, turn: &mut Turn) {
+        if let (None, Some(pricing)) = (turn.usage.cost, &self.config.pricing) {
+            turn.usage.cost = Some(pricing.cost(&turn.usage));
+        }
+    }
+
     /// `Ok(None)` means the user cancelled.
-    async fn one_turn(&self, frontend: &mut dyn Frontend, cancel: &Cancel) -> Result<Option<Turn>> {
-        let Some(mut stream) = self.connect(frontend, cancel).await? else {
+    async fn one_turn(
+        &self,
+        messages: &[Message],
+        room: u32,
+        frontend: &mut dyn Frontend,
+        cancel: &Cancel,
+    ) -> Result<Option<Turn>> {
+        let Some(mut stream) = self.connect(messages, room, frontend, cancel).await? else {
             return Ok(None);
         };
         let mut assembler = Assembler::new();
@@ -236,6 +434,8 @@ impl Agent {
     /// partial assistant text has already been shown. `Ok(None)` means the user cancelled.
     async fn connect(
         &self,
+        messages: &[Message],
+        room: u32,
         frontend: &mut dyn Frontend,
         cancel: &Cancel,
     ) -> Result<Option<crate::provider::EventStream>> {
@@ -245,13 +445,13 @@ impl Agent {
             let result = tokio::select! {
                 biased;
                 () = cancel.cancelled() => return Ok(None),
-                result = self.provider.stream(&self.config, &self.messages, &self.tools) => result,
+                result = self.provider.stream(&self.config, messages, &self.tools, room) => result,
             };
             match result {
                 Ok(stream) => return Ok(Some(stream)),
                 Err(Error::ContextExceeded) => bail!(
-                    "the conversation no longer fits in {}'s context window; minima does not \
-                     compact, so start a new session",
+                    "the conversation no longer fits in {}'s context window, though the \
+                     estimate said it would; run /compact, or start a new session",
                     self.config.model
                 ),
                 Err(e) if e.is_retryable() && attempt < MAX_RETRIES => {
@@ -273,13 +473,18 @@ impl Agent {
         }
     }
 
+    /// Estimated tokens the window has left for the response.
+    fn room(&self) -> u32 {
+        let used = self.used.saturating_add(self.pending);
+        self.config.context.saturating_sub(used)
+    }
+
     fn answer(&mut self, call_id: &str, body: String) {
         self.pending = self.pending.saturating_add(estimate(&body));
         self.messages.push(Message::tool_result(call_id, body));
     }
 
-    /// minima reports and refuses. Compaction is not implemented. `extra` is text about to be
-    /// appended.
+    /// The hard limit, after compaction has had its chance. `extra` is text about to be appended.
     fn check_context(&self, extra: u32) -> Result<()> {
         let unreported = self.pending.saturating_add(extra);
         let used = self.used.saturating_add(unreported);
@@ -297,6 +502,35 @@ impl Agent {
 
 fn estimate(text: &str) -> u32 {
     u32::try_from(text.len() / BYTES_PER_TOKEN).unwrap_or(u32::MAX)
+}
+
+/// Estimated tokens of one message as sent: its text and its calls.
+fn size(m: &Message) -> u32 {
+    let calls = m
+        .tool_calls
+        .iter()
+        .map(|c| estimate(&c.name).saturating_add(estimate(&c.arguments)))
+        .fold(0u32, u32::saturating_add);
+    estimate(m.content.as_deref().unwrap_or_default()).saturating_add(calls)
+}
+
+fn sum(messages: &[Message]) -> u32 {
+    messages.iter().map(size).fold(0, u32::saturating_add)
+}
+
+/// The summary request's frontend: its text is not an answer and is not shown. Retries are.
+struct Summarising<'a>(&'a mut dyn Frontend);
+
+impl Frontend for Summarising<'_> {
+    fn text(&mut self, _: &str) {}
+    fn tool_start(&mut self, _: &str, _: &str) {}
+    fn tool_end(&mut self, _: &str, _: Option<&str>, _: bool) {}
+    fn retry(&mut self, attempt: u32, delay: Duration) {
+        self.0.retry(attempt, delay);
+    }
+    fn turn_end(&mut self, _: crate::provider::Usage) {}
+    fn compacted(&mut self, _: u32, _: u32) {}
+    fn cancelled(&mut self) {}
 }
 
 #[cfg(test)]
@@ -328,6 +562,7 @@ mod tests {
         fn tool_end(&mut self, _: &str, _: Option<&str>, _: bool) {}
         fn retry(&mut self, _: u32, _: Duration) {}
         fn turn_end(&mut self, _: Usage) {}
+        fn compacted(&mut self, _: u32, _: u32) {}
         fn cancelled(&mut self) {}
     }
 
@@ -476,14 +711,16 @@ mod tests {
         assert!(err.to_string().contains("stopped after 1 turns"), "{err}");
     }
 
-    /// The turn that fills the window is kept, its calls are answered but not run, and the next
-    /// prompt is refused without a request.
+    /// The turn that fills the window is kept, the messages before it are summarised, and only
+    /// then do its calls run: refusing them would only make the model ask again.
     #[tokio::test]
-    async fn a_full_context_is_refused_before_the_next_send() {
+    async fn a_call_that_fills_the_window_runs_after_compaction() {
         let dir = Scratch::new("agent-context");
         let path = dir.file("never.txt");
         let mut agent = agent_with(&format!(
-            r#"[[{}, {{"usage": {{"total_tokens": 127000}}}}]]"#,
+            r#"[[{}, {{"usage": {{"total_tokens": 127000}}}}],
+                [{{"text": "SUMMARY"}}],
+                [{{"text": "done"}}]]"#,
             call(
                 "c1",
                 "write",
@@ -491,13 +728,58 @@ mod tests {
             )
         ));
 
-        let first = run(&mut agent).await.expect_err("full").to_string();
-        assert!(first.contains("start a new session"), "{first}");
-        assert_eq!(results(&agent)[0].1, CONTEXT_FULL);
-        assert!(!std::path::Path::new(&path).exists());
+        run(&mut agent).await.expect("compacted, then answered");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "x");
+        assert_eq!(
+            agent.messages[2].tool_calls[0].id, "c1",
+            "the call is kept verbatim"
+        );
+        let summary = agent.messages[1].content.as_deref().unwrap();
+        assert!(
+            summary.starts_with(SUMMARY_HEAD) && summary.ends_with("SUMMARY"),
+            "{summary}"
+        );
+        assert_eq!(
+            agent.messages.last().unwrap().content.as_deref(),
+            Some("done")
+        );
+    }
 
-        let second = run(&mut agent).await.expect_err("still full").to_string();
-        assert!(second.contains("start a new session"), "{second}");
+    /// The kept tail starts at a turn boundary, so the last call keeps its result and the large
+    /// early result is what gets summarised.
+    #[test]
+    fn the_verbatim_tail_starts_at_a_turn_boundary() {
+        let mut agent = agent_with("[]");
+        let read = |id: &str| crate::provider::ToolCall {
+            id: id.into(),
+            name: "read".into(),
+            arguments: r#"{"path": "f"}"#.into(),
+        };
+        agent.messages.extend([
+            Message::user("first"),
+            Message::assistant(None, vec![read("c1")]),
+            Message::tool_result("c1", "x".repeat(40_000)),
+            Message::assistant(Some("answer".into()), vec![]),
+            Message::user("second"),
+            Message::assistant(None, vec![read("c2")]),
+            Message::tool_result("c2", "short"),
+        ]);
+        assert_eq!(
+            agent.tail_start(),
+            4,
+            "from the answer after the large result"
+        );
+    }
+
+    #[tokio::test]
+    async fn compact_with_no_history_does_nothing_and_sends_nothing() {
+        let mut agent = agent_with("[]");
+        let outcome = agent
+            .compact(&mut Quiet::default(), &Cancel::new())
+            .await
+            .unwrap();
+        assert!(matches!(outcome, Compaction::Nothing));
+        assert_eq!(agent.messages.len(), 1);
     }
 
     /// A file of `bytes` under a scratch directory, in lines, so `read` returns all of it.
@@ -592,6 +874,43 @@ mod tests {
             .map(|c| c.arguments.as_str())
             .collect();
         assert_eq!(sent, [complete.as_str(), "{}"]);
+    }
+
+    /// A complete turn can carry malformed arguments too. The call runs and reports the error,
+    /// and the transcript keeps `{}`, which every dialect and gateway accepts.
+    #[tokio::test]
+    async fn malformed_arguments_are_answered_and_not_resent() {
+        let raw = r#"{"path": "x", "content": "unterminated"#;
+        let mut agent = agent_with(&format!(
+            r#"[[{}], [{{"text": "retried"}}]]"#,
+            serde_json::json!({"tool_call": {
+                "index": 0, "id": "c1", "name": "write", "arguments": raw,
+            }})
+        ));
+
+        run(&mut agent).await.expect("the model gets another turn");
+        let results = results(&agent);
+        assert!(
+            results[0]
+                .1
+                .starts_with("error: tool arguments were not valid"),
+            "{results:?}"
+        );
+        assert!(!results[0].1.contains("unterminated"), "{results:?}");
+        assert_eq!(agent.messages[2].tool_calls[0].arguments, "{}");
+    }
+
+    /// Before the first response nothing is reported, so the fixed part of every request must
+    /// be estimated, or a large AGENTS.md sends a request the provider refuses.
+    #[tokio::test]
+    async fn the_system_prompt_and_schemas_count_before_the_first_response() {
+        let mut agent = agent_with("[]");
+        assert!(agent.overhead > 0);
+        agent.config.context = agent.overhead + CONTEXT_MARGIN;
+
+        let err = run(&mut agent).await.expect_err("full").to_string();
+        assert!(err.contains("system prompt and tool schemas"), "{err}");
+        assert_eq!(agent.messages.len(), 1, "only the system message");
     }
 
     #[tokio::test]

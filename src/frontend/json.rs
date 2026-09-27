@@ -118,6 +118,10 @@ impl<W: Write> Frontend for Json<W> {
         self.emit(record);
     }
 
+    fn compacted(&mut self, before: u32, after: u32) {
+        self.emit(json!({"type": "compact", "before_tokens": before, "after_tokens": after}));
+    }
+
     fn cancelled(&mut self) {
         // A cancelled round-trip never reaches `turn_end`; its partial text is not an answer.
         self.text.clear();

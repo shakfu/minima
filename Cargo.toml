@@ -57,12 +57,13 @@ thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
-# The kernel policy under `--sandbox`, and the path check on `write` and `edit`.
-sanduk-sandbox = "0.1.0"
+# The kernel policy under `--sandbox`, and the path check on `write` and `edit`. Pinned exactly:
+# `cargo install` ignores Cargo.lock, and a 0.1.x release would otherwise change what `--sandbox`
+# enforces in new installs without a minima release or CI run.
+sanduk-sandbox = "=0.1.0"
 
-# `killpg` for the bash tool's process group, which std does not expose. Already in the tree
-# through tokio.
-[target.'cfg(unix)'.dependencies]
+# `killpg` for the bash tool's process group, and the `O_NONBLOCK` flag the file tools open with.
+# Neither is in std. Already in the tree through tokio. minima is Unix-only; see `main.rs`.
 libc = "0.2"
 
 

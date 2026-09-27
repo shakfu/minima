@@ -84,15 +84,18 @@ fn rates(v: &Value, fallback: Option<Rates>) -> Option<Rates> {
 pub struct Listing {
     pub pricing: Option<Pricing>,
     pub context: Option<u32>,
+    pub max_output: Option<u32>,
 }
 
 impl Listing {
-    /// The window only replaces the 128k fallback. A flag or the provider's own list outranks it.
+    /// The window only replaces the 128k fallback, and the output ceiling only fills a gap. A flag
+    /// or the provider's own list outranks both.
     pub fn apply(self, config: &mut Config) {
         config.pricing = self.pricing;
         if let (true, Some(window)) = (config.context_guessed, self.context) {
             config.context = window;
         }
+        config.max_output = config.max_output.or(self.max_output);
     }
 }
 
@@ -110,15 +113,17 @@ pub async fn lookup(config: &Config, refresh: bool) -> Option<Listing> {
     }
     let base = registry::find("openrouter")?.base_url;
     let mut list = Models::load(base);
-    if (refresh || list.is_stale())
+    if (refresh || (list.is_stale() && list.retry_due()))
         && let Err(e) = list.refresh(base, "", Dialect::Chat).await
     {
         tracing::warn!("price list unavailable: {e:#}");
+        list.record_failure();
     }
     let entry = ids.iter().find_map(|id| list.find(id))?;
     Some(Listing {
         pricing: entry.pricing.as_ref().and_then(Pricing::from_openrouter),
         context: entry.context_length,
+        max_output: entry.max_output,
     })
 }
 
@@ -244,6 +249,7 @@ mod tests {
         let listing = || Listing {
             pricing: Some(luna()),
             context: Some(1_050_000),
+            max_output: None,
         };
         let mut guessed = Config {
             context_guessed: true,

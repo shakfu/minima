@@ -51,20 +51,15 @@ pub fn kill_background() {
     }
 }
 
-#[cfg(unix)]
 const SIGKILL: i32 = libc::SIGKILL;
-#[cfg(not(unix))]
-const SIGKILL: i32 = 9;
 
 /// True when the group still had a member to receive the signal.
 fn signal_group(id: u32, signal: i32) -> bool {
-    #[cfg(unix)]
-    if let Ok(pgid) = libc::pid_t::try_from(id) {
-        // SAFETY: killpg takes no pointers. A group that is already gone returns ESRCH.
-        return unsafe { libc::killpg(pgid, signal) } == 0;
-    }
-    let _ = (id, signal);
-    false
+    let Ok(pgid) = libc::pid_t::try_from(id) else {
+        return false;
+    };
+    // SAFETY: killpg takes no pointers. A group that is already gone returns ESRCH.
+    unsafe { libc::killpg(pgid, signal) == 0 }
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -95,9 +90,8 @@ pub async fn call(args: Args, cancel: &Cancel, bounds: &Bounds) -> Result<Outcom
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .kill_on_drop(true);
-    #[cfg(unix)]
-    command.process_group(0);
+        .kill_on_drop(true)
+        .process_group(0);
     let mut child = command
         .spawn()
         .with_context(|| format!("spawning: {}", args.command))?;
@@ -399,14 +393,12 @@ mod tests {
             .expect("bash tool")
     }
 
-    #[cfg(unix)]
     fn alive(pid: i32) -> bool {
         // SAFETY: signal 0 only checks that the process exists.
         unsafe { libc::kill(pid, 0) == 0 }
     }
 
     /// Orphans are reaped by init, not instantly, so poll briefly before declaring a leak.
-    #[cfg(unix)]
     async fn gone(pid: i32) -> bool {
         for _ in 0..50 {
             if !alive(pid) {
@@ -417,12 +409,10 @@ mod tests {
         false
     }
 
-    #[cfg(unix)]
     fn pid_file(name: &str) -> std::path::PathBuf {
         std::env::temp_dir().join(format!("minima-bash-{name}-{}", std::process::id()))
     }
 
-    #[cfg(unix)]
     fn read_pid(path: &std::path::Path) -> i32 {
         let pid = std::fs::read_to_string(path).expect("pid file");
         let _ = std::fs::remove_file(path);
@@ -526,7 +516,6 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn a_timeout_kills_what_bash_started_and_keeps_the_output() {
         let pids = pid_file("timeout");
@@ -544,7 +533,6 @@ mod tests {
         assert!(gone(read_pid(&pids)).await, "the background sleep survived");
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn a_cancel_kills_what_bash_started() {
         let pids = pid_file("cancel");
@@ -570,7 +558,6 @@ mod tests {
     /// A background job keeps the pipe open after bash exits. That must not hold the call until
     /// the timeout. The kill at exit is tested in `tests/headless.rs`: calling it here would kill
     /// the groups of tests running in parallel.
-    #[cfg(unix)]
     #[tokio::test]
     async fn a_background_job_is_left_running_reported_and_kept_for_exit() {
         let started = std::time::Instant::now();

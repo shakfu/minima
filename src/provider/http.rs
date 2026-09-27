@@ -2,7 +2,7 @@
 //! Classifies failures but does not retry -- that policy lives in `agent.rs`, which knows whether
 //! anyone is watching.
 
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::anyhow;
 use eventsource_stream::Eventsource;
@@ -64,19 +64,26 @@ impl Http {
         cfg: &Config,
         messages: &[Message],
         tools: &[serde_json::Value],
+        room: u32,
     ) -> Result<EventStream, Error> {
         let dialect = cfg.dialect;
         let url = format!("{}/{}", cfg.base_url, dialect.path());
-        let body = dialect.build_body(cfg, messages, tools, &self.cache_key);
+        let body = dialect.build_body(cfg, messages, tools, &self.cache_key, room);
 
         tracing::debug!(%url, model = %cfg.model, messages = messages.len(), ?dialect, "request");
 
         let request = authorize(self.client.post(&url).json(&body), dialect, &cfg.api_key);
 
-        let response = request
-            .send()
-            .await
-            .map_err(|e| Error::Other(anyhow!(e).context(format!("POST {url}"))))?;
+        let response = request.send().await.map_err(|e| {
+            // A builder error is minima's own; anything later may not recur on a second attempt.
+            let retry = !e.is_builder();
+            let e = anyhow!(e).context(format!("POST {url}"));
+            if retry {
+                Error::Transport(e)
+            } else {
+                Error::Other(e)
+            }
+        })?;
 
         let status = response.status();
         if !status.is_success() {
@@ -105,8 +112,7 @@ async fn classify(status: reqwest::StatusCode, response: reqwest::Response) -> E
         .headers()
         .get(RETRY_AFTER)
         .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.parse::<u64>().ok())
-        .map(Duration::from_secs);
+        .and_then(parse_retry_after);
 
     let code = status.as_u16();
     let body = response.text().await.unwrap_or_default();
@@ -115,12 +121,58 @@ async fn classify(status: reqwest::StatusCode, response: reqwest::Response) -> E
         return Error::RateLimited { retry_after };
     }
     if status.is_server_error() {
-        return Error::Server { status: code };
+        return Error::Server {
+            status: code,
+            retry_after,
+        };
     }
     if is_context_error(&body) {
         return Error::ContextExceeded;
     }
     Error::Other(anyhow!("{}", body.trim()).context(format!("HTTP {code}")))
+}
+
+/// Seconds, or an HTTP date (RFC 9110 section 10.2.3). A date already past means now.
+fn parse_retry_after(value: &str) -> Option<Duration> {
+    let value = value.trim();
+    if let Ok(secs) = value.parse::<u64>() {
+        return Some(Duration::from_secs(secs));
+    }
+    let at = http_date(value)?;
+    Some(
+        at.duration_since(SystemTime::now())
+            .unwrap_or(Duration::ZERO),
+    )
+}
+
+/// The IMF-fixdate form, `Sun, 06 Nov 1994 08:49:37 GMT`, which RFC 9110 requires of senders. The
+/// two obsolete forms are not parsed; a server that sends one gets exponential backoff.
+fn http_date(value: &str) -> Option<SystemTime> {
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let [_, day, month, year, time, "GMT"] = value.split_whitespace().collect::<Vec<_>>()[..]
+    else {
+        return None;
+    };
+    let month = MONTHS.iter().position(|m| *m == month)? as i64 + 1;
+    let (day, year): (i64, i64) = (day.parse().ok()?, year.parse().ok()?);
+    let hms: Vec<u64> = time
+        .split(':')
+        .map(str::parse)
+        .collect::<Result<_, _>>()
+        .ok()?;
+    let [h, m, s] = hms[..] else { return None };
+
+    // Days since 1970-01-01 in the proleptic Gregorian calendar (Hinnant's `days_from_civil`).
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * ((month + 9) % 12) + 2) / 5 + day - 1;
+    let days = era * 146_097 + yoe * 365 + yoe / 4 - yoe / 100 + doy - 719_468;
+
+    let secs = u64::try_from(days).ok()? * 86_400 + h * 3600 + m * 60 + s;
+    Some(UNIX_EPOCH + Duration::from_secs(secs))
 }
 
 /// Each dialect words it differently, and none of them uses a distinct status code.
@@ -156,6 +208,41 @@ mod tests {
             r#"{"message":"prompt is too long: 300000 tokens"}"#
         ));
         assert!(!is_context_error(r#"{"code":"invalid_api_key"}"#));
+    }
+
+    #[test]
+    fn retry_after_takes_seconds_or_a_date() {
+        assert_eq!(parse_retry_after("7"), Some(Duration::from_secs(7)));
+        assert_eq!(
+            http_date("Sun, 06 Nov 1994 08:49:37 GMT"),
+            Some(UNIX_EPOCH + Duration::from_secs(784_111_777))
+        );
+        assert_eq!(
+            http_date("Tue, 29 Feb 2028 00:00:00 GMT"),
+            Some(UNIX_EPOCH + Duration::from_secs(1_835_395_200))
+        );
+        assert_eq!(
+            parse_retry_after("Sun, 06 Nov 1994 08:49:37 GMT"),
+            Some(Duration::ZERO)
+        );
+        assert_eq!(parse_retry_after("Sunday, 06-Nov-94 08:49:37 GMT"), None);
+        assert_eq!(parse_retry_after("soon"), None);
+    }
+
+    /// Nothing listens on the port, so the connect fails before any response.
+    #[tokio::test]
+    async fn a_refused_connection_is_retryable() {
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let mut cfg = Config::for_test("m");
+        cfg.base_url = format!("http://127.0.0.1:{port}/v1");
+        let Err(err) = Http::new().unwrap().stream(&cfg, &[], &[], u32::MAX).await else {
+            panic!("connected to a closed port");
+        };
+        assert!(err.is_retryable(), "{err}");
     }
 
     #[test]

@@ -3,7 +3,7 @@
 use std::io::Write;
 use std::time::Duration;
 
-use super::{Frontend, describe, one_line, printable};
+use super::{Frontend, compacted, describe, one_line, printable};
 use crate::provider::Usage;
 use crate::theme::{self, Style};
 
@@ -52,6 +52,10 @@ impl Frontend for Headless {
     }
 
     fn turn_end(&mut self, _usage: Usage) {}
+
+    fn compacted(&mut self, before: u32, after: u32) {
+        self.note(Style::Muted, &compacted(before, after));
+    }
 
     fn cancelled(&mut self) {
         self.note(Style::Warn, "cancelled");

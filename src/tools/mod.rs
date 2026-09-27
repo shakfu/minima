@@ -11,7 +11,7 @@ mod write;
 
 pub use bash::{kill_background, preflight};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
 use sanduk_sandbox::confine_path;
@@ -107,20 +107,20 @@ impl Tool {
             // `read` is never bounded: `bash` reads the whole filesystem in every mode, so a jail
             // here would only push the model through `cat`. `write` and `edit` are, because they
             // are otherwise the way around the sandbox's write policy.
-            Tool::Read => read::call(parse(raw)?).await?.into(),
+            Tool::Read => or_cancelled(cancel, read::call(parse(raw)?)).await?,
             Tool::Write => {
                 let mut args: write::Args = parse(raw)?;
                 if let Some(root) = bound {
                     args.path = confine_path(root, &args.path)?.display().to_string();
                 }
-                write::call(args).await?.into()
+                or_cancelled(cancel, write::call(args)).await?
             }
             Tool::Edit => {
                 let mut args: edit::Args = parse(raw)?;
                 if let Some(root) = bound {
                     args.path = confine_path(root, &args.path)?.display().to_string();
                 }
-                edit::call(args).await?.into()
+                or_cancelled(cancel, edit::call(args)).await?
             }
             Tool::Bash => bash::call(parse(raw)?, cancel, bounds).await?,
         };
@@ -135,13 +135,47 @@ pub fn specs(dialect: Dialect) -> Vec<serde_json::Value> {
     Tool::ALL.into_iter().map(|t| t.spec(dialect)).collect()
 }
 
+/// Drops `work` on a cancel, so each file tool must be safe to drop at any await: `atomic` renames
+/// with no await between its last check and the rename. `bash` owns its cancel, to kill its group.
+async fn or_cancelled(
+    cancel: &Cancel,
+    work: impl Future<Output = Result<String>>,
+) -> Result<Outcome> {
+    tokio::select! {
+        biased;
+        () = cancel.cancelled() => Ok(CANCELLED.to_string().into()),
+        body = work => Ok(body?.into()),
+    }
+}
+
+/// The arguments are already in the transcript, so the error names only what is wrong with them.
 fn parse<T: for<'de> Deserialize<'de>>(raw: &str) -> Result<T> {
-    serde_json::from_str(raw).with_context(|| format!("tool arguments were not valid: {raw}"))
+    serde_json::from_str(raw).context("tool arguments were not valid")
+}
+
+/// Opens a regular file for reading. `O_NONBLOCK` lets the open of a FIFO return without a writer,
+/// so the type check runs instead of the call hanging; regular files ignore the flag.
+async fn open_regular(path: &str) -> Result<tokio::fs::File> {
+    let file = tokio::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(path)
+        .await
+        .with_context(|| format!("reading {path}"))?;
+    // A device has no end, and a directory's `EISDIR` from the first read says less than this.
+    let meta = file
+        .metadata()
+        .await
+        .with_context(|| format!("reading {path}"))?;
+    if !meta.is_file() {
+        bail!("{path} is not a regular file");
+    }
+    Ok(file)
 }
 
 /// Truncate from the middle: the head says what ran, the tail says how it ended. One `cat` of a
 /// build log must not consume the context window.
-fn cap(text: String) -> String {
+pub fn cap(text: String) -> String {
     if text.len() <= TOOL_OUTPUT_CAP {
         return text;
     }
@@ -377,6 +411,62 @@ mod tests {
             .await
             .unwrap();
         assert!(out.body.contains("visible"), "{out:?}");
+    }
+
+    fn fifo(dir: &Scratch) -> String {
+        let path = dir.file("pipe");
+        let c = std::ffi::CString::new(path.clone()).unwrap();
+        // SAFETY: `c` is a valid NUL-terminated path for the duration of the call.
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        path
+    }
+
+    /// A FIFO with no writer blocks `open(2)`, so the type check must not wait for the open.
+    #[tokio::test]
+    async fn read_and_edit_refuse_a_fifo_without_blocking() {
+        let dir = Scratch::new("fifo");
+        let path = fifo(&dir);
+        let bounds = Bounds::new(false, std::env::temp_dir());
+        for (tool, args) in [
+            (Tool::Read, serde_json::json!({ "path": path })),
+            (
+                Tool::Edit,
+                serde_json::json!({ "path": path, "old": "a", "new": "b" }),
+            ),
+        ] {
+            let (args, cancel) = (args.to_string(), Cancel::new());
+            let call = tool.call(&args, &cancel, &bounds);
+            let err = tokio::time::timeout(std::time::Duration::from_secs(5), call)
+                .await
+                .expect("the call returned")
+                .unwrap_err();
+            assert!(err.to_string().contains("not a regular file"), "{err}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_cancel_ends_a_file_tool_that_is_still_working() {
+        let cancel = Cancel::new();
+        cancel.cancel();
+        let out = or_cancelled(&cancel, std::future::pending()).await.unwrap();
+        assert_eq!(out.body, CANCELLED);
+    }
+
+    /// The transcript already holds the arguments; a failed 30 KiB `write` must not repeat them.
+    #[tokio::test]
+    async fn invalid_arguments_are_not_echoed_back() {
+        let raw = format!("{{\"path\": \"x\", \"content\": \"{}", "y".repeat(1000));
+        let err = Tool::Write
+            .call(
+                &raw,
+                &Cancel::new(),
+                &Bounds::new(false, std::env::temp_dir()),
+            )
+            .await
+            .unwrap_err();
+        let text = format!("{err:#}");
+        assert!(text.starts_with("tool arguments were not valid"), "{text}");
+        assert!(!text.contains("yyyy"), "{text}");
     }
 
     #[test]

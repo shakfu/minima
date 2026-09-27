@@ -27,7 +27,31 @@ pub trait Frontend {
 
     fn turn_end(&mut self, usage: Usage);
 
+    /// Older messages were replaced by a summary. Both counts are estimated tokens.
+    fn compacted(&mut self, before: u32, after: u32);
+
     fn cancelled(&mut self);
+}
+
+/// `1.2k`, `3.45M`: short enough for the status bar.
+pub fn count(n: u64) -> String {
+    let (value, unit, places) = match n {
+        0..1_000 => return n.to_string(),
+        1_000..1_000_000 => (n as f64 / 1e3, "k", 1),
+        _ => (n as f64 / 1e6, "M", 2),
+    };
+    let text = format!("{value:.places$}");
+    let text = text.trim_end_matches('0').trim_end_matches('.');
+    format!("{text}{unit}")
+}
+
+/// The line both text frontends print after a compaction.
+pub fn compacted(before: u32, after: u32) -> String {
+    format!(
+        "compacted: ~{} -> ~{} tokens",
+        count(before.into()),
+        count(after.into())
+    )
 }
 
 /// Drops control characters except newline and tab. Text a model echoes from a file it read can

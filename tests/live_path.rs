@@ -319,7 +319,13 @@ fn every_dialect_sends_its_own_shape_and_reassembles_fragments() {
             dialect: "chat",
             provider: "openrouter",
             present: &["messages", "tools"],
-            absent: &["input", "instructions", "system", "max_tokens"],
+            absent: &[
+                "input",
+                "instructions",
+                "system",
+                "max_tokens",
+                "cache_control",
+            ],
             tool_schema_key: "/function/parameters",
         },
         Case {
@@ -332,7 +338,7 @@ fn every_dialect_sends_its_own_shape_and_reassembles_fragments() {
         Case {
             dialect: "messages",
             provider: "anthropic",
-            present: &["messages", "system", "max_tokens"],
+            present: &["messages", "system", "max_tokens", "cache_control"],
             absent: &["input", "instructions", "store"],
             tool_schema_key: "/input_schema",
         },

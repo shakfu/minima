@@ -12,7 +12,7 @@ A minimal coding agent harness with a tiny feature set.
 cargo install minima
 ```
 
-Requires Rust 1.88 or newer. To build from a checkout, see [Build](#build).
+Runs on Linux and macOS; other platforms do not build. Requires Rust 1.88 or newer. To build from a checkout, see [Build](#build).
 
 `--sandbox` needs Linux 6.2 or newer, or macOS. Below that floor it refuses to start. See [Features](#features) for what it bounds.
 
@@ -53,11 +53,20 @@ Options:
 
 - **Providers:** 5 in a fixed registry, over 3 wire formats: openai-chat, openai-responses and anthropic-messages. See [Providers](#providers).
 
-- **Tools:** 4. `read` returns numbered lines, 2000 by default. `write` creates or replaces a file. `edit` replaces one exact string. `bash` runs a command under `bash -c`.
+- **Tools:** 4. `read` returns numbered lines, 2000 by default. `write` creates or replaces a file. `edit` replaces one exact string. Both replace a file by rename, so a crash leaves either the old or the new contents; `docs/dev/atomic-writes.md` lists the exceptions. `bash` runs a command under `bash -c`.
 
 - **Shell commands:** each call runs in its own process group. A timeout (120 s default, 600 s cap) or a cancel kills the group. Background jobs outlive the call and die with minima. A login-shell wrapper such as `bash -lc` is refused, because a login profile can reorder `PATH`.
 
-- **Sandbox:** off by default, when nothing is bounded. `--sandbox` puts `bash` and its descendants under the platform's filesystem sandbox, where they may write only under the root, `$TMPDIR`, `/dev/null` and the ecosystem caches (`registry/`, `git/` and the lock files under `$CARGO_HOME`, `$XDG_CACHE_HOME`, `pkg/mod` and `pkg/sumdb` under `$GOPATH` or `$GOMODCACHE`, `~/.npm`, and on macOS the per-user cache directory and the `go-build`, `pip`, `com.apple.python`, `org.swift.swiftpm`, `ccache` and `deno` entries of `~/Library/Caches`, not the directory, which every app shares). On macOS it also denies preference writes, signals to processes outside the command's sandbox, and `open`, which would start an app outside it; so `open page.html` and `open https://...` fail too. At startup minima creates those cache directories and cargo's lock files, under a `$CARGO_HOME` or `$GOPATH` that exists, and `$XDG_CACHE_HOME`, since a confined command cannot. `RUSTC_WRAPPER` and `RUSTC_WORKSPACE_WRAPPER` are set empty, because a wrapper such as sccache runs the compile in a server outside the command's bounds. `write` and `edit` run in minima's own process, which the kernel policy does not reach, so under `--sandbox` they are held to the root by a path check instead: a narrower set than `bash` gets, since the file tools need none of the caches. Reads are never restricted. Under `--sandbox` one confined command runs at startup, so a platform that cannot install the sandbox fails there rather than mid-turn, and a command whose output looks like a denied write gets a note naming the policy and `--writable`, shown to both the model and the user, since `Operation not permitted` on its own tells neither of them anything.
+- **Sandbox:** off by default, when nothing is bounded. `--sandbox` bounds writes:
+
+  - `bash` and its descendants run under the platform's filesystem sandbox. They may write only under the root, `$TMPDIR`, `/dev/null` and the ecosystem caches: `registry/`, `git/` and the lock files under `$CARGO_HOME`; `$XDG_CACHE_HOME`; `pkg/mod` and `pkg/sumdb` under `$GOPATH` or `$GOMODCACHE`; `~/.npm`; and on macOS the per-user cache directory and the `go-build`, `pip`, `com.apple.python`, `org.swift.swiftpm`, `ccache` and `deno` entries of `~/Library/Caches`, not the directory, which every app shares.
+  - On macOS it also denies preference writes, signals to processes outside the command's sandbox, and `open`, which would start an app outside it. So `open page.html` and `open https://...` fail too.
+  - At startup minima creates those cache directories and cargo's lock files, under a `$CARGO_HOME` or `$GOPATH` that exists, and `$XDG_CACHE_HOME`, since a confined command cannot.
+  - `RUSTC_WRAPPER` and `RUSTC_WORKSPACE_WRAPPER` are set empty, because a wrapper such as sccache runs the compile in a server outside the command's bounds.
+  - `write` and `edit` run in minima's own process, which the kernel policy does not reach. A path check holds them to the root instead: a narrower set than `bash` gets, since the file tools need none of the caches.
+  - Reads are never restricted.
+  - One confined command runs at startup, so a platform that cannot install the sandbox fails there rather than mid-turn.
+  - A command whose output looks like a denied write gets a note naming the policy and `--writable`, shown to both the model and the user. `Operation not permitted` alone tells neither of them anything.
 
   | Platform | Mechanism | Requires |
   |-|-|-|
@@ -71,23 +80,29 @@ Options:
 
 - **Writable paths:** `--writable DIR`, repeatable, adds a directory to what `bash` may write under `--sandbox`. For a toolchain whose store sits outside the project: `~/.opam`, `~/.stack`, an R library. It never widens `write` or `edit`, which stay inside the root, and it is refused without `--sandbox`, where nothing is bounded for it to widen. Paths are resolved at startup, and one that does not exist is an error rather than a silent skip.
 
-- **Modes:** an interactive REPL, and headless `-p`, printing text or JSON lines with `--json`. `/exit`, `/quit` or Ctrl-D on an empty input leaves the REPL.
+- **Modes:** an interactive REPL, and headless `-p`, printing text or JSON lines with `--json`. `/exit`, `/quit` or Ctrl-D on an empty input leaves the REPL. `/compact` compacts the conversation now.
 
 - **REPL:** an input box with a status bar below it, pinned to the bottom of the terminal; output scrolls above it into the terminal's scrollback. Enter submits, Alt-Enter or Ctrl-J adds a newline, Up and Down or Ctrl-P and Ctrl-N browse history, Ctrl-R searches it, and Ctrl-C clears the input. Typing continues during a turn.
 
-- **JSON output:** one record per line: `turn`, `tool_call`, `tool_result`, `retry`, then a final `result`. `turn` and `result` carry token counts, `cost` in USD or null, and `cost_estimated`; `result` also names the bounds the run used, as `sandbox` and `writable`.
+- **JSON output:** one record per line: `turn`, `tool_call`, `tool_result`, `retry`, `compact`, then a final `result`. `compact` carries estimated `before_tokens` and `after_tokens`. `turn` and `result` carry token counts, `cost` in USD or null, and `cost_estimated`; `result` also names the bounds the run used, as `sandbox` and `writable`.
 
 - **Display:** one line per tool call, such as `[tool] read src/lib.rs:1-400 -> 400 lines` or `[tool] bash cargo test -> exit 101: ...`. A routine result is cut to fit; a note or an error wraps onto further rows, so a hint at its end is never lost. After each prompt, one line gives context used, tokens in and out, and the cost. OpenRouter reports the cost; for OpenAI and Anthropic it is estimated from OpenRouter's public price list and marked `~`. The status bar shows the working directory, or a spinner and elapsed time during a turn, then the model, context used and the session's cost.
 
-- **Cancellation:** Esc or Ctrl-C cancels a REPL turn, including a pending request or a retry wait. A cancelled `-p` run exits 130.
+- **Cancellation:** Esc or Ctrl-C cancels a REPL turn, including a pending request, a retry wait or a running tool. A cancelled `-p` run exits 130; a second Ctrl-C exits at once.
 
 - **Instructions:** `AGENTS.md` in the config directory, then `AGENTS.md` in the working directory, are appended to the system prompt.
 
 - **Skills:** `skills/<name>/SKILL.md` in the config directory. The system prompt lists each skill's path and frontmatter; the model reads the file when a task matches.
 
-- **Context:** the window comes from `--context`, the provider's model list, or OpenRouter's list for an OpenAI model, whose own list gives none. Once the last reported token count, plus an estimate of the prompt and tool output added since, nears the window, the next request is refused before sending. There is no compaction.
+- **Context:** the window comes from `--context`, the provider's model list, or OpenRouter's list for an OpenAI model, whose own list gives none. Context used is the last reported token count, plus an estimate of the prompt and tool output added since; before the first response, the system prompt and tool schemas are estimated too.
 
-- **Network:** up to 4 connection retries with backoff. Requests time out after 10 s to connect or 300 s without data. With `openai` or `anthropic`, minima also fetches OpenRouter's public model list, without a key and at most once a day, for prices and missing context windows. `--base-url` turns this off.
+  - **Compaction:** before a request that would carry 80% of the window, the model summarises the older messages, and the summary replaces them. The most recent turns stay verbatim, up to 20% of the window and at most half the conversation, and a tool call is never kept apart from its result. The summary request is not shown, but its cost is counted.
+  - **Refusal:** a request that still does not fit is refused before sending, as is one that compaction cannot shrink.
+  - **Output:** with `anthropic`, a response may use the model's output limit from its model list, or 32,000 tokens, reduced to what the window has left.
+
+- **Prompt caching:** Anthropic caches only marked content, so minima marks each request with `anthropic`, and with `openrouter` for `anthropic/` models. OpenAI caches unmarked; minima sends a per-session `prompt_cache_key` on both OpenAI dialects.
+
+- **Network:** up to 4 retries with backoff after a rate limit, a 5xx response, or a request that fails before any response arrives. A `Retry-After` up to 60 s is honoured; a longer one is reported. A response that fails mid-stream is not retried. Requests time out after 10 s to connect or 300 s without data. With `openai` or `anthropic`, minima also fetches OpenRouter's public model list, without a key and at most once a day, for prices, missing context windows and output limits. After a failed fetch it waits an hour before trying again. `--base-url` turns this off.
 
 - **Persistence:** a model list cache, prompt history, the last provider, and the last model per provider. See [Build](#build) for where they live.
 
@@ -145,7 +160,7 @@ minima --mock mock/read-then-answer.json -p "what is this package?"
 minima --mock mock/say-hi.json            # interactive
 ```
 
-A mock script is a JSON array of turns, each an array of steps: `{"text": ...}`, `{"tool_call": {...}}`, `{"usage": {...}}` with token counts and an optional `cost`, and `"truncated"` for a response cut off at the output token limit. One turn is consumed per provider round-trip.
+A mock script is a JSON array of turns, each an array of steps: `{"text": ...}`, `{"tool_call": {...}}`, `{"usage": {...}}` with token counts and an optional `cost`, `"truncated"` for a response cut off at the output token limit, and `"cut"` for a stream that closes without a terminal event. One turn is consumed per provider round-trip.
 
 Configuration, in precedence order: flags, then environment, then `$XDG_CONFIG_HOME/minima/`, which also holds the model cache, `history.txt`, `state.json`, and optionally `AGENTS.md` and `skills/`. minima creates the directory 0700 and the files it owns 0600, because prompts are written verbatim.
 

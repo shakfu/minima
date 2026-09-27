@@ -4,6 +4,7 @@
 use anyhow::{Context, Result, bail};
 use schemars::JsonSchema;
 use serde::Deserialize;
+use tokio::io::AsyncReadExt;
 
 use super::atomic;
 
@@ -28,7 +29,10 @@ pub async fn call(args: Args) -> Result<String> {
     if args.old == args.new {
         bail!("old and new are identical; nothing to do");
     }
-    let text = tokio::fs::read_to_string(&args.path)
+    let mut text = String::new();
+    super::open_regular(&args.path)
+        .await?
+        .read_to_string(&mut text)
         .await
         .with_context(|| format!("reading {}", args.path))?;
 
