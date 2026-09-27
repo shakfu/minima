@@ -154,6 +154,11 @@ pub async fn call(args: Args, cancel: &Cancel, bounds: &Bounds) -> Result<Outcom
             told = add(told, text);
             note = add(note, text);
         }
+        // Not a denial `sanduk_sandbox` reads: snap-confine exits before the program starts.
+        if stderr.contains(SNAP_CONFINE) {
+            told = add(told, SNAP_DENIED);
+            note = add(note, SNAP_DENIED);
+        }
     }
     if left_running {
         told = add(told, LEFT_RUNNING);
@@ -180,6 +185,10 @@ const NESTED_DENIED: &str =
     "--sandbox refuses a nested sandbox-exec; for `swift build`, pass --disable-sandbox";
 const OPEN_DENIED: &str =
     "--sandbox does not let a command open apps, documents or URLs; ask the user to open it";
+/// Landlock needs `no_new_privs`, under which exec grants no file capabilities, and snap-confine
+/// needs `cap_dac_override`. So every snap-packaged program fails under the sandbox.
+const SNAP_CONFINE: &str = "snap-confine is packaged without necessary permissions";
+const SNAP_DENIED: &str = "--sandbox cannot run snap-packaged programs; use a build of the program that is not a snap, or run without --sandbox";
 
 /// `bash -c command` under the kernel policy: writes only under the root, the paths
 /// `sanduk_sandbox::caches` names, and `--writable`. Reads and the network stay open.
@@ -616,6 +625,25 @@ mod tests {
             .await
             .expect("bash tool");
         assert!(!out.body.contains("--writable"), "{:?}", out.body);
+    }
+
+    /// The program never starts, so the note is the only explanation either reader gets.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_snap_refused_under_the_sandbox_gets_a_note() {
+        let args = Args {
+            command: format!("echo '{SNAP_CONFINE}' >&2; exit 1"),
+            timeout_ms: Some(10_000),
+        };
+        let out = call(args, &Cancel::new(), &sandboxed())
+            .await
+            .expect("bash tool");
+        assert!(
+            out.note.unwrap_or_default().contains("snap"),
+            "{:?}",
+            out.body
+        );
+        assert!(out.body.contains(SNAP_DENIED), "{:?}", out.body);
     }
 
     /// `--writable` widens the kernel policy and nothing else: the named directory takes a

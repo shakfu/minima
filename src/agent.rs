@@ -170,6 +170,7 @@ impl Agent {
                 text,
                 calls,
                 truncated,
+                replay,
                 ..
             } = turn;
             // Chat and Responses resend arguments verbatim, and a gateway that translates them to
@@ -186,10 +187,9 @@ impl Agent {
                     call
                 })
                 .collect();
-            self.messages.push(Message::assistant(
-                (!text.is_empty()).then_some(text),
-                recorded,
-            ));
+            let mut message = Message::assistant((!text.is_empty()).then_some(text), recorded);
+            message.replay = replay;
+            self.messages.push(message);
             // A full window after an answer is left to the next prompt, which compacts first.
             if calls.is_empty() {
                 if truncated {
@@ -321,12 +321,12 @@ impl Agent {
         }
         let mut request = self.messages[..cut].to_vec();
         request.push(Message::user(SUMMARISE));
-        let size = self.overhead.saturating_add(sum(&request[1..]));
-        if size.saturating_add(SUMMARY_ROOM + CONTEXT_MARGIN) >= self.config.context {
+        let request_size = self.overhead.saturating_add(sum(&request[1..]));
+        if request_size.saturating_add(SUMMARY_ROOM + CONTEXT_MARGIN) >= self.config.context {
             return Ok(Compaction::Nothing);
         }
 
-        let room = self.config.context - size;
+        let room = self.config.context - request_size;
         let mut quiet = Summarising(frontend);
         let Some(mut turn) = self.one_turn(&request, room, &mut quiet, cancel).await? else {
             return Ok(Compaction::Cancelled);
@@ -338,18 +338,24 @@ impl Agent {
             bail!("compaction failed: the model returned no summary");
         }
 
+        let summary = Message::user(format!("{SUMMARY_HEAD}\n\n{summary}"));
         let before = self.used.saturating_add(self.pending);
+        let after = self
+            .overhead
+            .saturating_add(size(&summary))
+            .saturating_add(sum(&self.messages[cut..]));
+        // A short conversation can summarise longer than it is. The history is kept then; the
+        // summary request was already paid for, but a larger context would cost more every turn.
+        if after >= before {
+            return Ok(Compaction::Nothing);
+        }
         let tail = self.messages.split_off(cut);
         self.messages.truncate(1);
-        self.messages
-            .push(Message::user(format!("{SUMMARY_HEAD}\n\n{summary}")));
+        self.messages.push(summary);
         self.messages.extend(tail);
         self.used = 0;
-        self.pending = self.overhead.saturating_add(sum(&self.messages[1..]));
-        Ok(Compaction::Done {
-            before,
-            after: self.pending,
-        })
+        self.pending = after;
+        Ok(Compaction::Done { before, after })
     }
 
     /// Where the verbatim tail starts: the earliest turn boundary whose suffix fits the budget.
@@ -408,6 +414,12 @@ impl Agent {
                 crate::provider::Event::Text(text) => {
                     frontend.text(&text);
                     assembler.push(crate::provider::Event::Text(text));
+                }
+                crate::provider::Event::Break => {
+                    if assembler.has_text() {
+                        frontend.text(crate::turn::PARAGRAPH);
+                    }
+                    assembler.push(crate::provider::Event::Break);
                 }
                 event => {
                     // Only the stream's own terminator ends the read. A stop reason does not:
@@ -771,6 +783,23 @@ mod tests {
         );
     }
 
+    /// Summarising three short messages yields more text than they hold.
+    #[tokio::test]
+    async fn a_summary_no_smaller_than_the_history_is_discarded() {
+        let long = "a summary longer than the conversation it replaces ".repeat(20);
+        let mut agent = agent_with(&format!(r#"[[{{"text": "hi"}}], [{{"text": "{long}"}}]]"#));
+        run(&mut agent).await.unwrap();
+        let kept = agent.messages.len();
+
+        let outcome = agent
+            .compact(&mut Quiet::default(), &Cancel::new())
+            .await
+            .unwrap();
+        assert!(matches!(outcome, Compaction::Nothing));
+        assert_eq!(agent.messages.len(), kept);
+        assert_eq!(agent.messages[1].content.as_deref(), Some("go"));
+    }
+
     #[tokio::test]
     async fn compact_with_no_history_does_nothing_and_sends_nothing() {
         let mut agent = agent_with("[]");
@@ -911,6 +940,18 @@ mod tests {
         let err = run(&mut agent).await.expect_err("full").to_string();
         assert!(err.contains("system prompt and tool schemas"), "{err}");
         assert_eq!(agent.messages.len(), 1, "only the system message");
+    }
+
+    /// The next request of the turn must carry the reasoning, or the provider drops it.
+    #[tokio::test]
+    async fn reasoning_is_kept_on_the_assistant_message() {
+        let block = serde_json::json!({"type": "thinking", "thinking": "", "signature": "S"});
+        let mut agent = agent_with(&format!(
+            r#"[[{{"reasoning": {block}}}, {}], [{{"text": "done"}}]]"#,
+            call("c1", "read", serde_json::json!({"path": "/nonexistent"}))
+        ));
+        run(&mut agent).await.unwrap();
+        assert_eq!(agent.messages[2].replay, [block]);
     }
 
     #[tokio::test]

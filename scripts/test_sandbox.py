@@ -104,7 +104,9 @@ fresh = tempfile.mkdtemp(prefix="minima-sbx-fresh-", dir=home)
 fresh_root = os.path.join(fresh, "root")
 for name in ("root", "cargo", "gopath"):
     os.makedirs(os.path.join(fresh, name))
-has_go = shutil.which("go") is not None
+# A snap-packaged go cannot run under --sandbox at all (see README), so it counts as missing.
+go = shutil.which("go")
+has_go = go is not None and os.path.basename(os.path.realpath(go)) != "snap"
 has_uv = shutil.which("uv") is not None
 fresh_cases = [
     ("fresh CARGO_HOME: cargo add + build, locked", "bash",
@@ -183,7 +185,7 @@ try:
         env.pop("GOMODCACHE", None)
         results, _, _ = session(fresh_cases, fresh_root, ["--sandbox"], env)
         skipped = [tool for tool, has in (("go", has_go), ("uv", has_uv)) if not has]
-        print("fresh stores:" + (f" (not installed, skipped: {', '.join(skipped)})" if skipped else ""))
+        print("fresh stores:" + (f" (skipped, not installed or a snap: {', '.join(skipped)})" if skipped else ""))
         failed += judge(fresh_cases, results)
         total += len(fresh_cases)
         if results:

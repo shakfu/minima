@@ -44,6 +44,9 @@ pub fn build_body(cfg: &Config, messages: &[Message], tools: &[Value], cache_key
             if let Some(id) = &m.tool_call_id {
                 out["tool_call_id"] = json!(id);
             }
+            if !m.replay.is_empty() {
+                out["reasoning_details"] = json!(m.replay);
+            }
             out
         })
         .collect();
@@ -111,6 +114,9 @@ struct Delta {
     content: Option<String>,
     #[serde(default)]
     tool_calls: Vec<CallDelta>,
+    /// OpenRouter's reasoning blocks, streamed in pieces keyed by `index`.
+    #[serde(default)]
+    reasoning_details: Vec<Value>,
 }
 
 #[derive(Deserialize)]
@@ -155,6 +161,16 @@ impl Chunk {
         for choice in self.choices {
             if let Some(text) = choice.delta.content.filter(|t| !t.is_empty()) {
                 out.push(Ok(Event::Text(text)));
+            }
+            for detail in choice.delta.reasoning_details {
+                let key = detail["index"]
+                    .as_u64()
+                    .map(|i| i.to_string())
+                    .or_else(|| detail["id"].as_str().map(str::to_string));
+                out.push(Ok(Event::Replay {
+                    key: key.unwrap_or_default(),
+                    part: detail,
+                }));
             }
             for call in choice.delta.tool_calls {
                 let (name, arguments) = match call.function {
@@ -292,6 +308,29 @@ mod tests {
                 .is_none()
         );
         assert!(body("ollama", "anthropic/x").get("cache_control").is_none());
+    }
+
+    /// OpenRouter streams reasoning in pieces keyed by `index`, and needs the whole array back.
+    #[test]
+    fn reasoning_details_are_joined_by_index_and_sent_back() {
+        let mut assembler = crate::turn::Assembler::new();
+        for frame in [
+            r#"{"choices":[{"delta":{"reasoning_details":[{"type":"reasoning.text","text":"a","index":0}]}}]}"#,
+            r#"{"choices":[{"delta":{"reasoning_details":[{"type":"reasoning.text","text":"b","signature":"S","index":0}]}}]}"#,
+            r#"{"choices":[{"delta":{},"finish_reason":"stop"}]}"#,
+        ] {
+            for e in parse_frame(frame) {
+                assembler.push(e.unwrap());
+            }
+        }
+        let turn = assembler.finish().unwrap();
+        let block = json!({"type": "reasoning.text", "text": "ab", "signature": "S", "index": 0});
+        assert_eq!(turn.replay, std::slice::from_ref(&block));
+
+        let mut message = Message::assistant(Some("x".into()), vec![]);
+        message.replay = turn.replay;
+        let body = build_body(&Config::for_test("m"), &[message], &[], "k");
+        assert_eq!(body["messages"][0]["reasoning_details"], json!([block]));
     }
 
     #[test]

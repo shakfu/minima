@@ -14,17 +14,17 @@
 
 - [x] **Retry transport errors, or correct the README.** `Error::is_retryable` matches `RateLimited` and `Server` only (`src/provider/mod.rs:148`); a failed `send()` maps to `Error::Other` (`src/provider/http.rs:79`). A TCP reset or connect timeout ends a `-p` run on the first attempt, yet `README.md:90` claims "up to 4 connection retries". Classify `reqwest::Error::is_connect()` and `is_timeout()` before the body starts as retryable. (REVIEW.md #4, traced.)
 
-- [ ] **Kernel-enforced `write` and `edit` under `--sandbox`.** `confine_path` checks a path that `atomic::replace` reopens by name in minima's unconfined process, so a symlink swapped in by a background `bash` job moves the write outside the root. Run the replacement in a sandboxed child via a hidden `__replace` subcommand. See `docs/dev/atomic-writes.md`.
+- [ ] **Kernel-enforced `write` and `edit` under `--sandbox`.** `confine_path` checks a path that `atomic::replace` reopens by name in minima's unconfined process, so a symlink swapped in by a background `bash` job moves the write outside the root. Run the replacement in a sandboxed child via a hidden `__replace` subcommand. See `docs/dev/atomic-writes.md`. Deferred 2026-09-27: first decide whether `--sandbox` covers a hostile model or only mistakes; if only mistakes, drop threat model 2 from `root-sandbox.md` instead.
 
 - [ ] **`message_delta` usage is a correction, not a total.** Handled in `turn.rs::merge_usage`, but the rule is a convention rather than something the wire states. A provider reporting only a total and no halves falls back to the reported figure.
 
 - [ ] **Session resume**. Note `src/cache.rs` has an XDG path, a schema version, an endpoint-keyed filename and a tmp-plus-rename atomic write, and `config::restrict_to_owner` already sets 0700/0600 for the history file. Persistence is open; this widens what is stored, not whether anything is. (Estimated 120-180 lines.)
 
-- [ ] **Extended thinking**. `provider/anthropic.rs` parses `thinking_delta` and `signature_delta` and drops both, and minima never sends a `thinking` block to ask for them. Responses has the parallel feature: hax requests `reasoning.encrypted_content` and replays it, because with `store:false` that is the only way a chain of thought survives the tool calls of one turn (`responses_body.c:118-140`).
+- [x] **Extended thinking**. `provider/anthropic.rs` parses `thinking_delta` and `signature_delta` and drops both, and minima never sends a `thinking` block to ask for them. Responses has the parallel feature: hax requests `reasoning.encrypted_content` and replays it, because with `store:false` that is the only way a chain of thought survives the tool calls of one turn (`responses_body.c:118-140`).
 
 - [x] **Prompt cache markers**. `prompt_cache_key` is sent on both OpenAI dialects and confirmed accepted. Anthropic is different: caching is explicit `cache_control` markers on the last system block, the last tool and the last message, not a heuristic (`anthropic_body.c:193-225`). minima sends none, so every Anthropic turn reprocesses the whole transcript.
 
-- [ ] **Streaming markdown**. Every live run shows it: models emit `**3 .txt files**` and minima prints the asterisks. hax spends 1,764 lines on `render/markdown.c` and `markdown_table.c`. No crate does incremental streaming render -- `termimad` renders finished documents.
+- [x] **Streaming markdown**. Every live run shows it: models emit `**3 .txt files**` and minima prints the asterisks. hax spends 1,764 lines on `render/markdown.c` and `markdown_table.c`. Streaming crates do exist (`mdstream`, `streamdown-parser`, `mdriver`), but none fit: the REPL already commits finished lines, so `pulldown-cmark` renders each one. Tables are not aligned.
 
 - [ ] **The Linux half of the writable-set audit.** `docs/dev/root-sandbox.md` records that on macOS no cache entry is needed for a build to succeed, only for a fetch. The original claim that a denied `$CARGO_HOME` breaks the build was measured on Linux under Landlock and is untested against that question; CI runs `ubuntu-24.04`, so it can settle it.
 

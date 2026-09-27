@@ -44,6 +44,11 @@ pub struct Message {
     pub content: Option<String>,
     pub tool_calls: Vec<ToolCall>,
     pub tool_call_id: Option<String>,
+    /// Parts of an assistant message the provider needs back exactly as it sent them, in the
+    /// dialect's own shape: reasoning blocks, which Claude, OpenAI and OpenRouter drop for the rest
+    /// of a tool-use turn when missing or altered, and Responses message items, whose `phase`
+    /// tells a preamble from an answer. Opaque to everything but the dialect.
+    pub replay: Vec<serde_json::Value>,
 }
 
 impl Message {
@@ -61,6 +66,7 @@ impl Message {
             content,
             tool_calls,
             tool_call_id: None,
+            replay: Vec::new(),
         }
     }
 
@@ -70,6 +76,7 @@ impl Message {
             content: Some(body.into()),
             tool_calls: Vec::new(),
             tool_call_id: Some(call_id.into()),
+            replay: Vec::new(),
         }
     }
 
@@ -79,6 +86,7 @@ impl Message {
             content: Some(text.into()),
             tool_calls: Vec::new(),
             tool_call_id: None,
+            replay: Vec::new(),
         }
     }
 }
@@ -121,6 +129,14 @@ pub enum Event {
         arguments: Option<String>,
     },
     Usage(Usage),
+    /// A fragment of an item for `Message::replay`. `key` groups fragments as `ToolCallDelta`'s
+    /// does, and `part`'s fields are merged into the item; see `turn::merge`.
+    Replay {
+        key: String,
+        part: serde_json::Value,
+    },
+    /// Another message begins within the same response. Its text is set apart from the last's.
+    Break,
     /// The response stopped at the output token limit, so the text or the last call is cut off.
     Truncated,
     /// A stop reason arrived: the model finished the turn. Only Chat reports this apart from the

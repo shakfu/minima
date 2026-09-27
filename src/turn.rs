@@ -1,8 +1,12 @@
 //! Borrowed stream events in, one owned assistant message out. No I/O, no presentation.
 
 use anyhow::{Result, bail};
+use serde_json::Value;
 
 use crate::provider::{Event, ToolCall, Usage};
+
+/// What sets one message's text apart from the next when a response holds several.
+pub const PARAGRAPH: &str = "\n\n";
 
 #[derive(Debug, Default, Clone)]
 pub struct Turn {
@@ -10,6 +14,8 @@ pub struct Turn {
     pub calls: Vec<ToolCall>,
     pub usage: Usage,
     pub truncated: bool,
+    /// Items to send back as received, in the order the model opened them; see `Message::replay`.
+    pub replay: Vec<Value>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -27,6 +33,7 @@ pub struct Assembler {
     /// map because the keys are dialect-specific strings with no meaningful ordering of their
     /// own, and a turn has a handful of calls at most.
     calls: Vec<Partial>,
+    replay: Vec<(String, Value)>,
     usage: Usage,
     truncated: bool,
     done: bool,
@@ -43,12 +50,26 @@ impl Assembler {
         self.done
     }
 
+    /// Text is already shown, so a `Break` must also reach the frontend.
+    pub fn has_text(&self) -> bool {
+        !self.text.is_empty()
+    }
+
     pub fn push(&mut self, event: Event) {
         match event {
             Event::Text(t) => self.text.push_str(&t),
             Event::Usage(u) => self.usage = merge_usage(self.usage, u),
             Event::Truncated => self.truncated = true,
             Event::Stop | Event::Done => self.done = true,
+            Event::Break => {
+                if !self.text.is_empty() && !self.text.ends_with("\n\n") {
+                    self.text.push_str(PARAGRAPH);
+                }
+            }
+            Event::Replay { key, part } => match self.replay.iter_mut().find(|(k, _)| *k == key) {
+                Some((_, block)) => merge(block, part),
+                None => self.replay.push((key, part)),
+            },
             Event::ToolCallDelta {
                 key,
                 id,
@@ -107,7 +128,29 @@ impl Assembler {
             calls,
             usage: self.usage,
             truncated: self.truncated,
+            replay: self.replay.into_iter().map(|(_, b)| b).collect(),
         })
+    }
+}
+
+/// Streamed text fields grow by appending, whatever the dialect calls them: Anthropic's
+/// `thinking` and `signature`, OpenRouter's `text`, `summary` and `data`. Every other field keeps
+/// its first value, so a repeated `type` or `index` is not doubled.
+fn merge(block: &mut Value, part: Value) {
+    const GROWING: [&str; 5] = ["thinking", "signature", "text", "summary", "data"];
+    let (Value::Object(block), Value::Object(part)) = (block, part) else {
+        return;
+    };
+    for (key, value) in part {
+        match (block.get_mut(&key), value) {
+            (Some(Value::String(old)), Value::String(new)) if GROWING.contains(&key.as_str()) => {
+                old.push_str(&new);
+            }
+            (None, value) => {
+                block.insert(key, value);
+            }
+            _ => {}
+        }
     }
 }
 

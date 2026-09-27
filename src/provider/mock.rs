@@ -46,6 +46,8 @@ enum Step {
         arguments: String,
     },
     Usage(ScriptUsage),
+    /// One whole reasoning block, as a dialect would assemble it.
+    Reasoning(serde_json::Value),
     Truncated,
     /// Replays a dropped connection: the turn ends here with no terminal event.
     Cut,
@@ -89,6 +91,10 @@ impl Mock {
                 }
                 Step::Text(t) => Event::Text(t),
                 Step::Truncated => Event::Truncated,
+                Step::Reasoning(block) => Event::Replay {
+                    key: format!("r{}", events.len()),
+                    part: block,
+                },
                 Step::Usage(u) => Event::Usage(Usage {
                     prompt_tokens: u.prompt_tokens,
                     completion_tokens: u.completion_tokens,

@@ -6,6 +6,7 @@
 pub mod headless;
 mod history;
 pub mod json;
+mod markdown;
 pub mod repl;
 mod screen;
 

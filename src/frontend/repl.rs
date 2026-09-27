@@ -227,8 +227,8 @@ pub fn run(runtime: &tokio::runtime::Runtime, agent: &mut Agent) -> Result<()> {
             }
             Ok(Request::Compact) => match runtime.block_on(agent.compact(&mut frontend, &cancel)) {
                 Ok(Compaction::Nothing) => Err(anyhow::anyhow!(
-                    "nothing to compact: the conversation is no longer than the part kept \
-                         verbatim, or the summary request would not fit the window"
+                    "nothing compacted: the conversation is no longer than the part kept \
+                     verbatim or than its summary, or the summary request would not fit"
                 )),
                 other => other.map(|_| ()),
             },

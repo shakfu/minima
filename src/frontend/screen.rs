@@ -5,7 +5,9 @@
 //! copy and outlive minima like any other output.
 //!
 //! Streaming text is word-wrapped and every complete row is committed at once. Greedy wrapping
-//! never moves an earlier row once a later one exists, so only the last row waits.
+//! never moves an earlier row once a later one exists, so only the last row waits. With colour on,
+//! a line whose Markdown would render differently from its text waits whole, for its newline; see
+//! `markdown.rs`.
 
 use std::io::Stdout;
 use std::ops::Range;
@@ -22,6 +24,7 @@ use ratatui::{Terminal, TerminalOptions, Viewport};
 use ratatui_textarea::{CursorMove, TextArea};
 use unicode_width::UnicodeWidthChar;
 
+use super::markdown::{Markdown, Parts};
 use crate::theme;
 
 /// The input box grows with its text up to this many rows, then scrolls.
@@ -42,7 +45,7 @@ pub struct Screen {
     height: u16,
     pub input: TextArea<'static>,
     /// Assistant text past the last committed row.
-    pending: String,
+    stream: Stream,
     /// Shown in the top row in place of `pending` while a tool runs.
     activity: Option<String>,
     /// Right side of the status bar.
@@ -64,7 +67,7 @@ impl Screen {
             terminal: inline(height)?,
             height,
             input,
-            pending: String::new(),
+            stream: Stream::new(theme::enabled()),
             activity: None,
             status: String::new(),
             busy_since: None,
@@ -88,22 +91,8 @@ impl Screen {
 
     /// Assistant text as it streams.
     pub fn text(&mut self, delta: &str) -> Result<()> {
-        self.pending.push_str(&delta.replace('\t', "    "));
-        let width = self.width();
-        let mut rows = Vec::new();
-        while let Some(end) = self.pending.find('\n') {
-            let line: String = self.pending.drain(..=end).collect();
-            let line = &line[..end];
-            rows.extend(wrap(line, width).into_iter().map(|r| line[r].to_string()));
-        }
-        // Every row of the unfinished line but the last is final.
-        let wrapped = wrap(&self.pending, width);
-        if let [done @ .., last] = wrapped.as_slice() {
-            rows.extend(done.iter().map(|r| self.pending[r.clone()].to_string()));
-            let rest = self.pending[last.start..].to_string();
-            self.pending = rest;
-        }
-        self.commit(rows.into_iter().map(Line::from).collect())
+        let rows = self.stream.push(delta, self.width());
+        self.commit(rows)
     }
 
     /// A whole line in `tone`, after any unfinished assistant text.
@@ -114,9 +103,9 @@ impl Screen {
     /// One logical line built from differently styled parts. Wrapped as a whole.
     pub fn spans(&mut self, parts: Vec<(Tone, String)>) -> Result<()> {
         self.flush()?;
-        let parts: Vec<_> = parts
+        let parts: Parts = parts
             .into_iter()
-            .map(|(t, text)| (t, text.replace('\t', "    ")))
+            .map(|(t, text)| (tone(t), text.replace('\t', "    ")))
             .collect();
         let whole: String = parts.iter().map(|(_, t)| t.as_str()).collect();
         let mut rows = Vec::new();
@@ -132,18 +121,15 @@ impl Screen {
 
     /// Ends the unfinished assistant line, if any.
     pub fn flush(&mut self) -> Result<()> {
-        if self.pending.is_empty() {
-            return Ok(());
-        }
-        let row = std::mem::take(&mut self.pending);
-        self.commit(vec![Line::from(row)])
+        let rows = self.stream.finish(self.width());
+        self.commit(rows)
     }
 
     pub fn draw(&mut self) -> Result<()> {
         self.fit()?;
         let top = match &self.activity {
             Some(activity) => Line::styled(activity.clone(), tone(Tone::Role(theme::Style::Muted))),
-            None => Line::from(self.pending.clone()),
+            None => Line::from(self.stream.tail(self.width())),
         };
         let left = match (&self.search, self.busy_since) {
             (Some(search), _) => search.clone(),
@@ -273,22 +259,98 @@ fn tone(tone: Tone) -> Style {
     }
 }
 
-/// The bytes `start..end` of `whole`, the concatenated parts, keeping each part's tone.
+/// The bytes `start..end` of `whole`, the concatenated parts, keeping each part's style.
 fn styled(
-    parts: &[(Tone, String)],
+    parts: &[(Style, String)],
     Range { start, end }: Range<usize>,
     whole: &str,
 ) -> Line<'static> {
     let mut spans = Vec::new();
     let mut at = 0;
-    for (t, text) in parts {
+    for (style, text) in parts {
         let (from, to) = (at.max(start), (at + text.len()).min(end));
         if from < to {
-            spans.push(Span::styled(whole[from..to].to_string(), tone(*t)));
+            spans.push(Span::styled(whole[from..to].to_string(), *style));
         }
         at += text.len();
     }
     Line::from(spans)
+}
+
+/// Assistant text between deltas and rows. Apart from the terminal, so it can be tested.
+struct Stream {
+    /// The unfinished line, past any rows already committed from it.
+    pending: String,
+    /// None with colour off: Markdown would lose its markers and gain nothing to show for them.
+    markdown: Option<Markdown>,
+}
+
+impl Stream {
+    fn new(render: bool) -> Self {
+        Self {
+            pending: String::new(),
+            markdown: render.then(Markdown::default),
+        }
+    }
+
+    /// Rows final after `delta`: every finished line, and the settled rows of the unfinished one.
+    fn push(&mut self, delta: &str, width: usize) -> Vec<Line<'static>> {
+        self.pending.push_str(&delta.replace('\t', "    "));
+        let mut rows = Vec::new();
+        while let Some(end) = self.pending.find('\n') {
+            let line: String = self.pending.drain(..=end).collect();
+            rows.extend(self.render(&line[..end], width));
+        }
+        let settled = match &self.markdown {
+            None => Some(Style::default()),
+            Some(md) => md.settled(&self.pending),
+        };
+        let wrapped = wrap(&self.pending, width);
+        if let (Some(style), [done @ .., last]) = (settled, wrapped.as_slice())
+            && !done.is_empty()
+        {
+            rows.extend(
+                done.iter()
+                    .map(|r| Line::styled(self.pending[r.clone()].to_string(), style)),
+            );
+            self.pending.drain(..last.start);
+            if let Some(md) = &mut self.markdown {
+                md.continued = true;
+            }
+        }
+        rows
+    }
+
+    /// Ends the unfinished line, if any.
+    fn finish(&mut self, width: usize) -> Vec<Line<'static>> {
+        if self.pending.is_empty() {
+            if let Some(md) = &mut self.markdown {
+                md.continued = false;
+            }
+            return Vec::new();
+        }
+        let line = std::mem::take(&mut self.pending);
+        self.render(&line, width)
+    }
+
+    /// The last row of the unfinished line, for the viewport.
+    fn tail(&self, width: usize) -> String {
+        let rows = wrap(&self.pending, width);
+        rows.last()
+            .map_or_else(String::new, |r| self.pending[r.clone()].to_string())
+    }
+
+    fn render(&mut self, line: &str, width: usize) -> Vec<Line<'static>> {
+        let parts = match &mut self.markdown {
+            Some(md) => md.line(line),
+            None => vec![(Style::default(), line.to_string())],
+        };
+        let whole: String = parts.iter().map(|(_, t)| t.as_str()).collect();
+        wrap(&whole, width)
+            .into_iter()
+            .map(|r| styled(&parts, r, &whole))
+            .collect()
+    }
 }
 
 /// `~/projects/x` rather than `/home/me/projects/x`.
@@ -387,12 +449,72 @@ mod tests {
     #[test]
     fn styled_rows_keep_each_part_its_tone() {
         let parts = vec![
-            (Tone::Plain, "read a.rs".to_string()),
-            (Tone::Role(theme::Style::Error), " -> gone".to_string()),
+            (Style::default(), "read a.rs".to_string()),
+            (Style::default().fg(Color::Red), " -> gone".to_string()),
         ];
         let whole: String = parts.iter().map(|(_, t)| t.as_str()).collect();
         let line = styled(&parts, 5..whole.len(), &whole);
         let texts: Vec<_> = line.spans.iter().map(|s| s.content.to_string()).collect();
         assert_eq!(texts, ["a.rs", " -> gone"]);
+    }
+
+    fn texts(rows: &[Line]) -> Vec<String> {
+        rows.iter().map(|l| l.to_string()).collect()
+    }
+
+    /// Plain prose commits its settled rows as it streams, as it did before Markdown.
+    #[test]
+    fn plain_prose_commits_rows_before_its_newline() {
+        let mut stream = Stream::new(true);
+        let rows = stream.push("the quick brown fox jumps", 10);
+        assert_eq!(texts(&rows), ["the quick", "brown fox"]);
+        assert_eq!(stream.tail(10), "jumps");
+        assert_eq!(texts(&stream.push(" over\n", 10)), ["jumps over"]);
+    }
+
+    /// Markup would change the row widths, so the whole line waits and is wrapped as rendered.
+    #[test]
+    fn a_line_with_markup_waits_and_wraps_as_rendered() {
+        let mut stream = Stream::new(true);
+        assert!(stream.push("a **bold** move and more", 10).is_empty());
+        assert_eq!(stream.tail(10), "more");
+        let rows = stream.push("\n", 10);
+        assert_eq!(texts(&rows), ["a bold", "move and", "more"]);
+        assert!(
+            rows[0]
+                .spans
+                .iter()
+                .any(|s| s.content == "bold" && s.style.add_modifier.contains(Modifier::BOLD))
+        );
+    }
+
+    /// Rows committed early were plain, so markup after them is rendered on its own.
+    #[test]
+    fn markup_after_committed_rows_is_rendered_in_the_rest() {
+        let mut stream = Stream::new(true);
+        assert_eq!(texts(&stream.push("plain words ", 10)), ["plain"]);
+        let rows = stream.push("`code` end\n", 10);
+        assert_eq!(texts(&rows), ["words code", "end"]);
+        assert!(
+            rows[0]
+                .spans
+                .iter()
+                .any(|s| s.content == "code" && s.style.fg.is_some())
+        );
+    }
+
+    #[test]
+    fn an_unfinished_answer_is_rendered_when_flushed() {
+        let mut stream = Stream::new(true);
+        stream.push("**done**", 80);
+        assert_eq!(texts(&stream.finish(80)), ["done"]);
+        assert!(stream.finish(80).is_empty());
+    }
+
+    /// With colour off the text is shown as typed: dropping `**` with no bold to show would lose it.
+    #[test]
+    fn without_colour_markup_is_left_as_typed() {
+        let mut stream = Stream::new(false);
+        assert_eq!(texts(&stream.push("a **b**\n", 80)), ["a **b**"]);
     }
 }

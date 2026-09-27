@@ -23,7 +23,11 @@ pub fn build_body(cfg: &Config, messages: &[Message], tools: &[Value], cache_key
             }
             Role::User => input.push(content_item("user", "input_text", m.content.as_deref())),
             Role::Assistant => {
-                if let Some(text) = m.content.as_deref().filter(|t| !t.is_empty()) {
+                // As in the output: reasoning and messages, then the calls they led to. The
+                // original message items keep their `phase`; text is rebuilt only without them.
+                input.extend(m.replay.iter().cloned());
+                let kept = m.replay.iter().any(|item| item["type"] == "message");
+                if let Some(text) = m.content.as_deref().filter(|t| !t.is_empty() && !kept) {
                     input.push(content_item("assistant", "output_text", Some(text)));
                 }
                 for call in &m.tool_calls {
@@ -96,6 +100,8 @@ pub fn parse_frame(data: &str) -> Vec<Result<Event, Error>> {
             .map(|t| vec![Ok(Event::Text(t.to_string()))])
             .unwrap_or_default(),
 
+        "response.output_item.added" if root["item"]["type"] == "message" => vec![Ok(Event::Break)],
+
         "response.output_item.added" => {
             let item = &root["item"];
             if item["type"].as_str() != Some("function_call") {
@@ -106,6 +112,18 @@ pub fn parse_frame(data: &str) -> Vec<Result<Event, Error>> {
                 id: item["call_id"].as_str().map(str::to_string),
                 name: item["name"].as_str().map(str::to_string),
                 arguments: None,
+            })]
+        }
+
+        // With `store: false` a reasoning item carries `encrypted_content`, the only way its
+        // reasoning survives to the next request of a tool-use turn. A message item carries
+        // `phase`, which OpenAI asks to be replayed so a preamble is not read as an answer.
+        "response.output_item.done"
+            if matches!(root["item"]["type"].as_str(), Some("reasoning" | "message")) =>
+        {
+            vec![Ok(Event::Replay {
+                key: root["item"]["id"].as_str().unwrap_or_default().to_string(),
+                part: root["item"].clone(),
             })]
         }
 
@@ -156,6 +174,63 @@ pub fn parse_frame(data: &str) -> Vec<Result<Event, Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Two messages in one response are two paragraphs, not one run-on line, and each goes back
+    /// as sent, `phase` included, in place of text rebuilt without it.
+    #[test]
+    fn message_items_are_separated_and_replayed_with_their_phase() {
+        let mut assembler = crate::turn::Assembler::new();
+        let commentary = json!({"type": "message", "id": "m1", "role": "assistant",
+            "phase": "commentary", "content": [{"type": "output_text", "text": "Checking."}]});
+        let answer = json!({"type": "message", "id": "m2", "role": "assistant",
+            "phase": "final_answer", "content": [{"type": "output_text", "text": "Done."}]});
+        for (item, text) in [(&commentary, "Checking."), (&answer, "Done.")] {
+            for frame in [
+                json!({"type": "response.output_item.added",
+                    "item": {"type": "message", "id": item["id"]}}),
+                json!({"type": "response.output_text.delta", "delta": text}),
+                json!({"type": "response.output_item.done", "item": item}),
+            ] {
+                for e in parse_frame(&frame.to_string()) {
+                    assembler.push(e.unwrap());
+                }
+            }
+        }
+        assembler.push(Event::Done);
+        let turn = assembler.finish().unwrap();
+        assert_eq!(turn.text, "Checking.\n\nDone.");
+
+        let mut message = Message::assistant(Some(turn.text), vec![]);
+        message.replay = turn.replay;
+        let body = build_body(&Config::for_test("m"), &[message], &[], "k");
+        assert_eq!(body["input"], json!([commentary, answer]));
+    }
+
+    /// With `store: false` the encrypted item is the reasoning; it goes back before the call.
+    #[test]
+    fn a_reasoning_item_is_parsed_whole_and_replayed_before_its_call() {
+        let item =
+            json!({"type": "reasoning", "id": "rs_1", "summary": [], "encrypted_content": "ENC"});
+        let events =
+            parse_frame(&json!({"type": "response.output_item.done", "item": item}).to_string());
+        let Ok(Event::Replay { key, part }) = &events[0] else {
+            panic!("{events:?}")
+        };
+        assert_eq!((key.as_str(), part), ("rs_1", &item));
+
+        let mut message = Message::assistant(
+            None,
+            vec![super::super::ToolCall {
+                id: "call_1".into(),
+                name: "read".into(),
+                arguments: "{}".into(),
+            }],
+        );
+        message.replay = vec![item.clone()];
+        let body = build_body(&Config::for_test("m"), &[message], &[], "k");
+        assert_eq!(body["input"][0], item);
+        assert_eq!(body["input"][1]["type"], "function_call");
+    }
 
     #[test]
     fn the_system_prompt_becomes_instructions_not_a_message() {

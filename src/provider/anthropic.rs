@@ -14,8 +14,8 @@ use crate::config::Config;
 /// current Claude model accepts it, and a `write` of a whole file needs the room.
 const DEFAULT_MAX_TOKENS: u32 = 32_000;
 
-/// `room` is what the window has left. The API rejects a request whose input plus `max_tokens`
-/// exceeds the window, so the ceiling shrinks as the conversation grows.
+/// `room` is what the window has left, and no response can be longer. Claude models before 4.5
+/// reject a request whose input plus `max_tokens` exceeds the window; later ones stop at it.
 pub fn build_body(cfg: &Config, messages: &[Message], tools: &[Value], room: u32) -> Value {
     let mut system = String::new();
     let mut wire: Vec<Value> = Vec::new();
@@ -32,7 +32,8 @@ pub fn build_body(cfg: &Config, messages: &[Message], tools: &[Value], room: u32
                 "content": [{ "type": "text", "text": m.content.clone().unwrap_or_default() }],
             })),
             Role::Assistant => {
-                let mut blocks = Vec::new();
+                // Thinking blocks open a response, before its text and calls.
+                let mut blocks = m.replay.clone();
                 if let Some(text) = m.content.as_deref().filter(|t| !t.is_empty()) {
                     blocks.push(json!({ "type": "text", "text": text }));
                 }
@@ -86,6 +87,12 @@ pub fn build_body(cfg: &Config, messages: &[Message], tools: &[Value], room: u32
     }
     if !tools.is_empty() {
         body["tools"] = json!(tools);
+    }
+    // Thinking is on by default on Claude 5 models and off on 4.6 to 4.8 until asked for. Adaptive
+    // lets the model skip it on easy turns. minima does not show it, and omitting the text lets
+    // the answer start streaming sooner; the blocks still carry what must be replayed.
+    if cfg.adaptive_thinking {
+        body["thinking"] = json!({ "type": "adaptive", "display": "omitted" });
     }
     body
 }
@@ -147,15 +154,21 @@ pub fn parse_frame(event: &str, data: &str) -> Vec<Result<Event, Error>> {
 
         "content_block_start" => {
             let block = &root["content_block"];
-            if block["type"].as_str() != Some("tool_use") {
-                return Vec::new();
+            let key = root["index"].as_u64().unwrap_or(0).to_string();
+            match block["type"].as_str() {
+                Some("tool_use") => vec![Ok(Event::ToolCallDelta {
+                    key,
+                    id: block["id"].as_str().map(str::to_string),
+                    name: block["name"].as_str().map(str::to_string),
+                    arguments: None,
+                })],
+                // A redacted block arrives whole; a thinking block fills in from its deltas.
+                Some("thinking" | "redacted_thinking") => vec![Ok(Event::Replay {
+                    key,
+                    part: block.clone(),
+                })],
+                _ => Vec::new(),
             }
-            vec![Ok(Event::ToolCallDelta {
-                key: root["index"].as_u64().unwrap_or(0).to_string(),
-                id: block["id"].as_str().map(str::to_string),
-                name: block["name"].as_str().map(str::to_string),
-                arguments: None,
-            })]
         }
 
         "content_block_delta" => {
@@ -173,8 +186,14 @@ pub fn parse_frame(event: &str, data: &str) -> Vec<Result<Event, Error>> {
                     name: None,
                     arguments: delta["partial_json"].as_str().map(str::to_string),
                 })],
-                // thinking_delta and signature_delta belong to extended thinking, which minima does
-                // not request; see TODO.md.
+                Some("thinking_delta") => vec![Ok(Event::Replay {
+                    key,
+                    part: json!({ "thinking": delta["thinking"] }),
+                })],
+                Some("signature_delta") => vec![Ok(Event::Replay {
+                    key,
+                    part: json!({ "signature": delta["signature"] }),
+                })],
                 _ => Vec::new(),
             }
         }
@@ -286,6 +305,75 @@ mod tests {
             body["messages"][0]["content"][0]
                 .get("cache_control")
                 .is_none()
+        );
+    }
+
+    /// Replayed first and unchanged: the API drops thinking for the rest of a tool-use turn when
+    /// the blocks are missing, and rejects them altered.
+    #[test]
+    fn thinking_blocks_are_parsed_and_replayed_ahead_of_the_call() {
+        let mut assembler = crate::turn::Assembler::new();
+        for (event, data) in [
+            (
+                "content_block_start",
+                r#"{"index":0,"content_block":{"type":"thinking","thinking":"","signature":""}}"#,
+            ),
+            (
+                "content_block_delta",
+                r#"{"index":0,"delta":{"type":"thinking_delta","thinking":"let me "}}"#,
+            ),
+            (
+                "content_block_delta",
+                r#"{"index":0,"delta":{"type":"thinking_delta","thinking":"look"}}"#,
+            ),
+            (
+                "content_block_delta",
+                r#"{"index":0,"delta":{"type":"signature_delta","signature":"SIG"}}"#,
+            ),
+            (
+                "content_block_start",
+                r#"{"index":1,"content_block":{"type":"redacted_thinking","data":"XYZ"}}"#,
+            ),
+            (
+                "content_block_start",
+                r#"{"index":2,"content_block":{"type":"tool_use","id":"t1","name":"read"}}"#,
+            ),
+            ("message_stop", "{}"),
+        ] {
+            for e in parse_frame(event, data) {
+                assembler.push(e.unwrap());
+            }
+        }
+        let turn = assembler.finish().unwrap();
+        assert_eq!(
+            turn.replay,
+            [
+                json!({"type": "thinking", "thinking": "let me look", "signature": "SIG"}),
+                json!({"type": "redacted_thinking", "data": "XYZ"}),
+            ]
+        );
+
+        let mut message = Message::assistant(None, turn.calls);
+        message.replay = turn.replay;
+        let body = build_body(&Config::for_test("m"), &[message], &[], u32::MAX);
+        let kinds: Vec<_> = body["messages"][0]["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|b| b["type"].as_str().unwrap())
+            .collect();
+        assert_eq!(kinds, ["thinking", "redacted_thinking", "tool_use"]);
+    }
+
+    #[test]
+    fn adaptive_thinking_is_requested_only_where_the_model_list_offers_it() {
+        let mut cfg = Config::for_test("m");
+        let body = |cfg: &Config| build_body(cfg, &[Message::user("hi")], &[], u32::MAX);
+        assert!(body(&cfg).get("thinking").is_none());
+        cfg.adaptive_thinking = true;
+        assert_eq!(
+            body(&cfg)["thinking"],
+            json!({"type": "adaptive", "display": "omitted"})
         );
     }
 

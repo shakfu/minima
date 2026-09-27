@@ -163,6 +163,8 @@ pub struct Config {
     pub context_guessed: bool,
     /// The model's output ceiling, where a model list reports it.
     pub max_output: Option<u32>,
+    /// The model list says the model takes adaptive thinking; see `anthropic::build_body`.
+    pub adaptive_thinking: bool,
     pub max_turns: u32,
     /// Set only when the provider reports no cost; see `price::lookup`.
     pub pricing: Option<crate::price::Pricing>,
@@ -180,6 +182,7 @@ impl Config {
             context: 128_000,
             context_guessed: false,
             max_output: None,
+            adaptive_thinking: false,
             max_turns: 8,
             pricing: None,
         }
@@ -199,6 +202,7 @@ impl Cli {
                 context: self.context.unwrap_or(128_000),
                 context_guessed: false,
                 max_output: None,
+                adaptive_thinking: false,
                 max_turns: self.max_turns,
                 pricing: None,
             });
@@ -287,6 +291,7 @@ impl Cli {
             context: context.unwrap_or(128_000),
             context_guessed: context.is_none(),
             max_output: cache.find(&model).and_then(|e| e.max_output),
+            adaptive_thinking: cache.find(&model).is_some_and(|e| e.adaptive_thinking),
             provider: entry.id.to_string(),
             base_url,
             api_key,

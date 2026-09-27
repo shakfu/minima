@@ -1,6 +1,6 @@
 [package]
 name = "minima"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2024"
 rust-version = "1.88"
 license = "MIT"
@@ -50,6 +50,11 @@ crossterm = "0.29"
 ratatui = { version = "0.30", default-features = false, features = ["crossterm_0_29"] }
 ratatui-textarea = "0.9"
 unicode-width = "0.2"
+# Inline Markdown in REPL answers: emphasis, code spans, links. Parsing them to the CommonMark spec
+# by hand is where a renderer goes wrong (`snake_case`, `\*`, a `*` inside a code span). Lines and
+# fences stay minima's, because finished rows are already in the scrollback and cannot be redrawn.
+# Without default features: no HTML writer, no CLI.
+pulldown-cmark = { version = "0.13", default-features = false }
 
 # Diagnostics and errors.
 anyhow = "1"

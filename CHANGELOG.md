@@ -1,14 +1,22 @@
 # Changelog
 
-## Unreleased
+## 0.6.0
 
 ### Added
 
-- Compaction. Once a request would carry 80% of the context window, the model summarises the older messages and the summary replaces them; `/compact` does it on demand in the REPL. Before this, a full window ended the session. The most recent turns stay verbatim, up to 20% of the window and at most half the conversation, because the model is usually working from the last tool output. Turns are cut only before a prompt or an assistant message, so a call and its result stay together. A turn whose calls fill the window is compacted before they run rather than having them refused. `--json` emits a `compact` record.
+- The REPL renders Markdown in answers: bold, italic, strikethrough, code spans, links with their target, headings, rules, and fenced code blocks. List and quote markers stay as typed. Inline markup goes to `pulldown-cmark` (two new crates in the build), because the CommonMark rules for `snake_case`, escapes and code spans are where a hand parser fails. Lines and fences stay minima's: finished rows are in the terminal's scrollback and cannot be redrawn, so markup spanning lines is not styled, and a line with markup waits for its newline instead of streaming row by row. `-p` and colour-off output are unchanged.
+
+- Compaction. Once a request would carry 80% of the context window, the model summarises the older messages and the summary replaces them; `/compact` does it on demand in the REPL. Before this, a full window ended the session. The most recent turns stay verbatim, up to 20% of the window and at most half the conversation, because the model is usually working from the last tool output. Turns are cut only before a prompt or an assistant message, so a call and its result stay together. A turn whose calls fill the window is compacted before they run rather than having them refused. A summary that would not shrink the context is discarded. `--json` emits a `compact` record.
 
 - Anthropic prompt caching. Claude caches only up to a block marked `cache_control`, and minima marked none, so every turn billed the whole transcript at the full input rate. Requests now use automatic caching, which marks the last block, plus one marker where the previous request ended, because a cache read looks back at most 20 blocks and a turn of ten parallel tool calls adds more. Cached input is billed at a tenth of the input rate or less, and a cache write at 1.25 times. On `openrouter` only `anthropic/` models get the marker; OpenRouter's other models cache without one.
 
 ### Fixed
+
+- Under `--sandbox` on Linux, every snap-packaged program failed with a `snap-confine` permissions error that named neither the sandbox nor a fix. Landlock requires `no_new_privs`, under which `snap-confine` lacks the capability it needs, so no policy change can allow it. Such a failure now gets a note naming the cause, and the README states the limit.
+
+- On `openai`, a response with two messages, such as a preamble and an answer, printed them as one run-on line, and every assistant message was replayed as text without its `phase`. OpenAI asks for `phase` to be kept, so a preamble is not read as an answer later in a tool-use turn. The messages are now set apart by a blank line, and replayed as received.
+
+- Reasoning was dropped from every request that carried tool results. Claude 5 models think by default, and the Claude API, OpenAI's Responses API and OpenRouter each require the reasoning blocks of a tool-use turn to be sent back unchanged. Without them, Claude silently disables thinking for that request, and OpenAI's reasoning is lost with `store: false`, so the model worked through every tool result without its own earlier reasoning. The blocks are now kept on the assistant message and replayed in each dialect's own shape: Anthropic `thinking` and `redacted_thinking` blocks, Responses `reasoning` items, and OpenRouter `reasoning_details`. On Claude 4.6 to 4.8, where thinking is off until requested, minima now asks for adaptive thinking when the model list says the model supports it. Thinking text is not shown; `display: "omitted"` lets the answer stream sooner.
 
 - The context check counted only the token total the previous response reported. Tool results and a new prompt added since were not counted, so one turn of large outputs could send a request past the window. They are now estimated at 4 bytes a token until the next response reports a total. The estimate errs low, because refusing a request that would have fit costs more than sending one the provider rejects.
 
@@ -22,7 +30,7 @@
 
 - `write` and `edit` split a hard-linked file from its other links, and gave a file owned by another user minima's owner. Both cases now write in place, as vim's `backupcopy=auto` does, without atomicity. A dangling symlink is refused rather than replaced by a regular file: following it would pass `--sandbox`'s path check, which sees only the link. See `docs/dev/atomic-writes.md`.
 
-- Anthropic responses were capped at 8,192 output tokens, so a `write` of a larger file was cut off and never ran. `max_tokens` is now the model's limit from its model list, or 32,000, reduced to what the context window has left, because the API rejects input plus `max_tokens` past the window.
+- Anthropic responses were capped at 8,192 output tokens, so a `write` of a larger file was cut off and never ran. `max_tokens` is now the model's limit from its model list, or 32,000, reduced to what the context window has left, since no response can be longer and Claude models before 4.5 reject a request that asks for more.
 
 - A request that failed before any response arrived, such as a reset or a connect timeout, ended the run, though the README promised retries. It is now retried like a 429 or 5xx. `Retry-After` is also read in its HTTP-date form and on 5xx responses.
 

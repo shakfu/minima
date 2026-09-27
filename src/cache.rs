@@ -17,8 +17,9 @@ const TTL_SECS: u64 = 24 * 60 * 60;
 const RETRY_SECS: u64 = 60 * 60;
 /// Bounds the cursor walk, so a gateway that always answers `has_more` cannot loop it forever.
 const MAX_PAGES: usize = 20;
-/// 2 added `pricing`, 3 `max_output`; an older file would hide the field for a day.
-const SCHEMA: u32 = 3;
+/// 2 added `pricing`, 3 `max_output`, 4 `adaptive_thinking`; an older file would hide the field
+/// for a day.
+const SCHEMA: u32 = 4;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Entry {
@@ -37,6 +38,11 @@ pub struct Entry {
     max_tokens: Option<u32>,
     #[serde(default, skip_serializing)]
     top_provider: Option<TopProvider>,
+    /// Anthropic's model accepts `thinking: {type: "adaptive"}`. From `capabilities` on fetch.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub adaptive_thinking: bool,
+    #[serde(default, skip_serializing)]
+    capabilities: Option<serde_json::Value>,
     /// OpenRouter's per-token prices, kept as served and parsed by `price` on use.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pricing: Option<serde_json::Value>,
@@ -51,6 +57,9 @@ impl Entry {
             .take()
             .and_then(|t| t.max_completion_tokens);
         self.max_output = self.max_output.or(self.max_tokens.take()).or(listed);
+        if let Some(caps) = self.capabilities.take() {
+            self.adaptive_thinking |= caps["thinking"]["types"]["adaptive"]["supported"] == true;
+        }
     }
 }
 
@@ -240,6 +249,13 @@ mod tests {
             (openrouter.context_length, openrouter.max_output),
             (Some(400_000), Some(128_000))
         );
+
+        let thinking = entry(
+            r#"{"id": "c", "capabilities": {"thinking": {"types": {"adaptive": {"supported": true}}}}}"#,
+        );
+        assert!(thinking.adaptive_thinking);
+        let stored = serde_json::to_string(&thinking).unwrap();
+        assert!(entry(&stored).adaptive_thinking, "{stored}");
 
         let openai = entry(r#"{"id": "g"}"#);
         assert_eq!((openai.context_length, openai.max_output), (None, None));

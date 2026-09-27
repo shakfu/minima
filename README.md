@@ -76,13 +76,15 @@ Options:
 
   Debian 12, RHEL 9 and Ubuntu 22.04 on its 5.15 GA kernel sit below the Linux floor, so `--sandbox` refuses to start there. Ubuntu's `linux-generic-hwe-22.04` clears it.
 
+  On Linux, snap-packaged programs cannot run under `--sandbox`: Landlock requires `no_new_privs`, which denies `snap-confine` the capability it needs. Such a command fails with a note saying so. Install a build of the program that is not a snap, such as Go from go.dev rather than `snap install go`.
+
 - **Protected paths:** under `--sandbox`, `write` and `edit` refuse any path under the root with a `.git` component, or one beginning `.env`, matched on the resolved path. `.envrc` and the templates -- `.env.example`, `.env.sample`, `.env.template` -- are committed files and stay writable. `bash` is not bound by this and neither is `read`. It stops a misdirected `write`, not a command that means to remove the file.
 
 - **Writable paths:** `--writable DIR`, repeatable, adds a directory to what `bash` may write under `--sandbox`. For a toolchain whose store sits outside the project: `~/.opam`, `~/.stack`, an R library. It never widens `write` or `edit`, which stay inside the root, and it is refused without `--sandbox`, where nothing is bounded for it to widen. Paths are resolved at startup, and one that does not exist is an error rather than a silent skip.
 
 - **Modes:** an interactive REPL, and headless `-p`, printing text or JSON lines with `--json`. `/exit`, `/quit` or Ctrl-D on an empty input leaves the REPL. `/compact` compacts the conversation now.
 
-- **REPL:** an input box with a status bar below it, pinned to the bottom of the terminal; output scrolls above it into the terminal's scrollback. Enter submits, Alt-Enter or Ctrl-J adds a newline, Up and Down or Ctrl-P and Ctrl-N browse history, Ctrl-R searches it, and Ctrl-C clears the input. Typing continues during a turn.
+- **REPL:** an input box with a status bar below it, pinned to the bottom of the terminal; output scrolls above it into the terminal's scrollback. Enter submits, Alt-Enter or Ctrl-J adds a newline, Up and Down or Ctrl-P and Ctrl-N browse history, Ctrl-R searches it, and Ctrl-C clears the input. Typing continues during a turn. Answers render Markdown: emphasis, code spans, links with their target, headings, and fenced code blocks, which stay literal. A line with markup appears when it ends; plain text streams as it arrives. `-p` and colour-off output print the text as sent.
 
 - **JSON output:** one record per line: `turn`, `tool_call`, `tool_result`, `retry`, `compact`, then a final `result`. `compact` carries estimated `before_tokens` and `after_tokens`. `turn` and `result` carry token counts, `cost` in USD or null, and `cost_estimated`; `result` also names the bounds the run used, as `sandbox` and `writable`.
 
@@ -99,6 +101,8 @@ Options:
   - **Compaction:** before a request that would carry 80% of the window, the model summarises the older messages, and the summary replaces them. The most recent turns stay verbatim, up to 20% of the window and at most half the conversation, and a tool call is never kept apart from its result. The summary request is not shown, but its cost is counted.
   - **Refusal:** a request that still does not fit is refused before sending, as is one that compaction cannot shrink.
   - **Output:** with `anthropic`, a response may use the model's output limit from its model list, or 32,000 tokens, reduced to what the window has left.
+
+- **Reasoning:** a reasoning model's thinking blocks are kept and sent back with each tool result, as Claude, OpenAI and OpenRouter require for the model to keep its reasoning through a tool-use turn. On Claude models that support it, minima asks for adaptive thinking. Thinking text is not shown.
 
 - **Prompt caching:** Anthropic caches only marked content, so minima marks each request with `anthropic`, and with `openrouter` for `anthropic/` models. OpenAI caches unmarked; minima sends a per-session `prompt_cache_key` on both OpenAI dialects.
 
