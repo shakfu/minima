@@ -1,6 +1,6 @@
 # Confining write and edit
 
-How `write` and `edit` could be enforced by the kernel under `--sandbox`, instead of by a path check in minima's own process. Proposed 2026-09-23 against minima 0.5.0, after a self-review flagged the race. Not implemented.
+How `write` and `edit` could be enforced by the kernel under `--sandbox`, instead of by a path check in minima's own process. Proposed 2026-09-23 against minima 0.5.0, after a self-review flagged the race. Rejected 2026-10-04: `--sandbox` covers mistakes only (`root-sandbox.md`), and a model that errs does not produce the timing. The proposal is kept in case that scope changes.
 
 ## The problem
 
@@ -8,7 +8,7 @@ Under `--sandbox`, `write` and `edit` are bounded by `confine_path` (`sanduk-san
 
 Between the check and the open, a background job started through `bash` can replace a directory on the path with a symlink to one outside the root. The write follows it. `root-sandbox.md` already records this window (line 65) and accepts it (line 126).
 
-It matters for threat model 2 in `root-sandbox.md`, an adversarial model. Under `--sandbox` the kernel confines `bash`, so this race is that model's one remaining way to write outside the root. A model that only errs does not produce the timing.
+It matters only for an adversarial model, which `root-sandbox.md` puts out of scope. For that model, this race is the one remaining way to write outside the root under `--sandbox`. A model that only errs does not produce the timing.
 
 ## Proposal
 
@@ -33,7 +33,7 @@ The subcommand exists to give the sandboxed child a program to run. minima's own
 
 ## Alternatives
 
-- **Document only.** A README note on the window. This fits if `--sandbox` targets errors alone. Then `root-sandbox.md` should drop threat model 2 rather than leave it half closed.
+- **Document only.** Taken. `root-sandbox.md` dropped the adversarial threat model, and the README already says `--sandbox` does not contain an untrusted prompt.
 - **`openat2` with `RESOLVE_BENEATH`.** Linux only; macOS has no equivalent. Every step of `atomic::replace` would have to use directory handles: `mkdirat`, `openat`, `fchmod`, `renameat`. The two platforms would then give different guarantees.
 - **Landlock on a dedicated thread.** Landlock restricts the calling thread, so one OS thread could restrict itself, write, and exit, without a spawn. Seatbelt restricts the whole process, so macOS would still need the child. That means two mechanisms.
 - **Sandboxed shell.** Pipe the contents to `bash` under the existing policy and `mv` a temp file into place. This avoids the subcommand, but moves fsync, the mode copy and symlink-following from `atomic.rs` into shell. That is a second implementation, with quoting risk.

@@ -1,0 +1,27 @@
+# scripts/audit_writable.py on demand: the per-cache denial table of docs/dev/root-sandbox.md,
+# measured under Landlock. Not in ci.yml, because it reports rather than judges, and fetches.
+name: sandbox-linux
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - run: cat /sys/kernel/security/lsm
+      # The image has go and npm; uv and R are skipped if missing, so install them.
+      - run: pipx install uv && sudo apt-get install -y --no-install-recommends r-base-core
+      - run: cargo build && scripts/audit_writable.py
+      - run: SANDBOX=off scripts/audit_writable.py

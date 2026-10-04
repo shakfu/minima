@@ -2,9 +2,15 @@
 
 ## Unreleased
 
+### Added
+
+- `scripts/audit_writable.py` runs cargo, go, npm, uv and R builds under `--sandbox` with each one's cache outside the write set, and reports which still succeed. The `sandbox-linux` workflow, started by hand, runs it under Landlock. It relocates each cache instead of editing the profile, so the same script measures both platforms. On macOS it corrected one recorded result: with go 1.27.1, a build that compiles anything not already in a denied `GOCACHE` fails, rather than running uncached. The existing grants cover it.
+
 ### Changed
 
 - A GitHub release's notes are the tag's section of CHANGELOG.md, cut by `scripts/release_notes.py`, instead of "See CHANGELOG.md." A tag with no section gets GitHub's generated notes rather than a failed release. The script accepts both `## 0.6.0` and `## [0.6.0]` headings.
+
+- `--sandbox` is scoped to a model's mistakes, not a hostile model. `write` and `edit` check the path in minima's unconfined process, so a symlink swapped in by a background `bash` job between the check and the write still escapes the root. That race is accepted rather than closed with a sandboxed write process: reads and the network stay open, so containing a hostile model needs a container either way. See `docs/dev/root-sandbox.md`.
 
 ## 0.6.0
 

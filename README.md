@@ -153,6 +153,8 @@ Plain `cargo build`, `cargo test` and `cargo clippy --all-targets -- -D warnings
 
 `scripts/test_sandbox_macos.py` runs real toolchains under `--sandbox` on macOS -- dependency fetches through cargo, uv, pip, npm and go, and swift and clang module builds -- with writes a daemon makes for the command (`defaults`, `launchctl`, `security`) and `kill` aimed outside the root. It needs the network. minima's own `cargo test` cannot run under `--sandbox` on macOS, because Seatbelt refuses a nested `sandbox-exec`. For the same reason `swift build` needs `--disable-sandbox` there: SwiftPM compiles a changed `Package.swift` under its own `sandbox-exec`.
 
+`scripts/audit_writable.py` runs cargo, go, npm, uv and R builds under `--sandbox` with each one's cache outside the write set, and reports which still succeed. The `sandbox-linux` workflow runs it under Landlock.
+
 Rust 1.88 or newer, for let-chains under edition 2024. `cargo test` also needs `python3`.
 
 Unit tests live beside the module they exercise. `tests/live_path.rs` covers only what the in-process mock cannot reach -- the request body minima actually sends, and what it does against a gateway that serves no model list -- by driving the built binary against `tests/fixtures/fake_provider.py`. Behaviour that a unit test can already pin does not get a second assertion there. `tests/headless.rs` checks `-p` exit codes and that background jobs die with minima.

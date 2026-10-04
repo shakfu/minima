@@ -10,13 +10,9 @@ Since 2026-09-25 the policy and the path check live in `sanduk-sandbox` (`sanduk
 
 A path guard in minima's own process can refuse `write` and `edit` outside one directory. `bash` ignores it, because a shell can run any program on the machine.
 
-Two threat models:
+The threat model is a model that errs. It writes to the wrong path by mistake. A path guard refuses this for `write` and `edit`, but not for `bash`, which reaches the same paths by other programs.
 
-1. A model that errs. It writes to the wrong path by mistake. A path guard refuses this for `write` and `edit`.
-
-2. A model that is adversarial, or a prompt injection. It intends to leave the directory. A path guard refuses nothing, because `bash` is one call away.
-
-Only an operating system facility closes case 2 for `bash`.
+A model that is adversarial, or a prompt injection, is out of scope. Reads and the network stay open, so it can send whatever the user can read; a container covers it (README). Decided 2026-10-04. Earlier drafts listed it as a second threat model; the sections below that mention it describe why it stays out.
 
 ## Why a path guard on the other tools is not worth having alone
 
@@ -125,7 +121,7 @@ One spawn site, `src/tools/bash.rs:86-98`. `tokio::process::Command::as_std_mut`
 
 Nothing else changes. `process_group(0)` still makes `bash` a group leader, so the timeout and cancel paths still reach the whole group. The login-shell refusal is unaffected, because the command text does not change.
 
-The file tools keep their userspace check. minima's own process must stay unconfined; it reads the config directory, the model cache and the prompt history. One policy, two places it is enforced. `docs/dev/atomic-writes.md` proposes closing the check-to-use window this leaves.
+The file tools keep their userspace check. minima's own process must stay unconfined; it reads the config directory, the model cache and the prompt history. One policy, two places it is enforced. The check-to-use window this leaves is accepted; `docs/dev/atomic-writes.md` records the rejected fix.
 
 ## What it does not fix
 
@@ -215,6 +211,8 @@ So the entries earn their place for a different reason than the one recorded: th
 This also narrows what `~/Library/Caches` is for. Not `uv`, which prefers `~/.cache` when it exists, and not Homebrew, whose prefix is outside the root and stays denied either way. It is there because Go's build cache lives under it on macOS, and because `$XDG_CACHE_HOME` was the Linux half of a rule written on Linux.
 
 The doc's earlier claim -- that an offline `cargo build` opening `$CARGO_HOME/.package-cache` means a policy without the caches denies the build -- conflates the open happening with the build failing. The open may well happen; cargo tolerates its failure. That was measured on Linux under Landlock and is untested against this question there, so CI is what would settle whether Landlock behaves as Seatbelt does here.
+
+Remeasured 2026-10-04 on macOS with `scripts/audit_writable.py`, which the `sandbox-linux` workflow runs under Landlock. It denies a cache by relocating it outside the write set, not by editing the profile. Six rows reproduce. The forced-miss `go build` does not: with go 1.27.1 it fails on the first new cache entry (`open .../gocache/dd/...-d: operation not permitted`), and only a build whose every action hits succeeds. The same applies to the `go build` row of the 2026-09-22 table below. So go is a second exception to "does not break compilation"; the `go-build` and `$XDG_CACHE_HOME` grants cover it. How the original miss was forced is not recorded.
 
 That bar cannot cover every ecosystem, because the paths divide into two kinds and only the first belongs in a policy at all.
 
@@ -376,7 +374,7 @@ Assessed 2026-09-22 at `31d6ea4`, updated at `935b4f9` for the switch from `--co
 
 ### Against merging now
 
-- **Linux is less measured than macOS.** The writable-set tables in this document were measured on macOS. On Linux, CI now measures the fresh-store fetches and the last-use loss, below, but not the per-cache denial table. The `TODO.md` entry on the Linux audit is still open.
+- **Linux is less measured than macOS.** The writable-set tables in this document were measured on macOS. On Linux, CI now measures the fresh-store fetches and the last-use loss, below. The per-cache denial table is measured by the `sandbox-linux` workflow, run on demand; the `TODO.md` entry stays open until a run is recorded here.
 
 - **The macOS policy is no longer the intersection policy.** Preference writes, signals and `open` are denied on macOS only. The rule this document set was that a boundary holding on one platform would be trusted on the other. The departure is argued in "Writes the file rules do not see", but it is a departure.
 

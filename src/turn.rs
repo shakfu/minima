@@ -247,6 +247,18 @@ mod tests {
         assert_eq!(usage.total_tokens, 165);
     }
 
+    /// A provider that reports only a total, with neither half, keeps its own figure.
+    #[test]
+    fn a_total_without_halves_is_kept() {
+        let mut a = Assembler::new();
+        a.push(Event::Usage(Usage {
+            total_tokens: 90,
+            ..Usage::default()
+        }));
+        a.push(Event::Usage(Usage::default()));
+        assert_eq!(a.finish().unwrap().usage.total_tokens, 90);
+    }
+
     #[test]
     fn a_fragment_with_no_key_continues_the_last_call() {
         let mut a = Assembler::new();
