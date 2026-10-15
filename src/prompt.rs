@@ -4,6 +4,11 @@ use std::path::{Path, PathBuf};
 
 const SYSTEM: &str = "You are minima, a coding agent. Use the tools to inspect and change files. \
 Be terse. State what you did; do not narrate what you are about to do.";
+const AGGREGATE_BASH: &str = "When a task spans many files or large output, filter and aggregate \
+inside one bash command (pipelines, jq, awk) so only the result returns.";
+#[cfg(feature = "codemode")]
+const AGGREGATE_JS: &str = "When a task spans many files or large output, write one js script \
+that calls the tools and aggregates their results, so only the result returns.";
 /// Instructions for coding agents, by the cross-tool convention (https://agents.md).
 const AGENTS_MD: &str = "AGENTS.md";
 /// A skill's entry point, by the Agent Skills convention (https://agentskills.io/specification).
@@ -25,6 +30,10 @@ const MAX_FRONTMATTER: usize = 4096;
 /// Skills are listed by frontmatter only; the model reads a SKILL.md when a task needs it.
 pub fn system_prompt() -> String {
     let mut prompt = String::from(SYSTEM);
+    if let Some(line) = aggregate() {
+        prompt.push(' ');
+        prompt.push_str(line);
+    }
     prompt.push_str("\n\n# Environment\n\n");
 
     if let Ok(cwd) = std::env::current_dir() {
@@ -58,6 +67,21 @@ pub fn system_prompt() -> String {
         }
     }
     prompt
+}
+
+/// The aggregation line. Only the `codemode` experiment varies it; see `docs/dev/codemode.md`.
+fn aggregate() -> Option<&'static str> {
+    #[cfg(feature = "codemode")]
+    {
+        use crate::tools::js::{Variant, variant};
+        match variant() {
+            Variant::None => None,
+            Variant::Line => Some(AGGREGATE_BASH),
+            Variant::Js | Variant::JsOnly | Variant::JsBash => Some(AGGREGATE_JS),
+        }
+    }
+    #[cfg(not(feature = "codemode"))]
+    Some(AGGREGATE_BASH)
 }
 
 /// The file's trimmed text, or `None` if it is absent, blank or unreadable.

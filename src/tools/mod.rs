@@ -6,6 +6,8 @@
 mod atomic;
 mod bash;
 mod edit;
+#[cfg(feature = "codemode")]
+pub mod js;
 mod read;
 mod write;
 
@@ -44,6 +46,8 @@ pub enum Tool {
     Write,
     Edit,
     Bash,
+    #[cfg(feature = "codemode")]
+    Js,
 }
 
 impl Tool {
@@ -55,11 +59,14 @@ impl Tool {
             Tool::Write => "write",
             Tool::Edit => "edit",
             Tool::Bash => "bash",
+            #[cfg(feature = "codemode")]
+            Tool::Js => "js",
         }
     }
 
+    /// Only the tools this run advertises, so a call to any other is refused.
     pub fn from_name(name: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|t| t.name() == name)
+        active().into_iter().find(|t| t.name() == name)
     }
 
     fn description(self) -> &'static str {
@@ -71,6 +78,8 @@ impl Tool {
                 "Run a shell command and return its combined output. The command already runs \
                  under `bash -c`; do not wrap it in another shell."
             }
+            #[cfg(feature = "codemode")]
+            Tool::Js => js::description(),
         }
     }
 
@@ -80,6 +89,8 @@ impl Tool {
             Tool::Write => schema_of::<write::Args>(),
             Tool::Edit => schema_of::<edit::Args>(),
             Tool::Bash => schema_of::<bash::Args>(),
+            #[cfg(feature = "codemode")]
+            Tool::Js => schema_of::<js::Args>(),
         }
     }
 
@@ -123,6 +134,8 @@ impl Tool {
                 or_cancelled(cancel, edit::call(args)).await?
             }
             Tool::Bash => bash::call(parse(raw)?, cancel, bounds).await?,
+            #[cfg(feature = "codemode")]
+            Tool::Js => Box::pin(js::call(parse(raw)?, cancel, bounds)).await?,
         };
         Ok(Outcome {
             body: cap(out.body),
@@ -132,7 +145,15 @@ impl Tool {
 }
 
 pub fn specs(dialect: Dialect) -> Vec<serde_json::Value> {
-    Tool::ALL.into_iter().map(|t| t.spec(dialect)).collect()
+    active().into_iter().map(|t| t.spec(dialect)).collect()
+}
+
+/// The tools this run advertises. Only the `codemode` experiment varies the set.
+fn active() -> Vec<Tool> {
+    #[cfg(feature = "codemode")]
+    return js::active();
+    #[cfg(not(feature = "codemode"))]
+    Tool::ALL.to_vec()
 }
 
 /// Drops `work` on a cancel, so each file tool must be safe to drop at any await: `atomic` renames

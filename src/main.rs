@@ -53,6 +53,8 @@ fn main() -> ExitCode {
 
 fn start() -> Result<ExitCode> {
     let cli = Cli::parse();
+    #[cfg(feature = "codemode")]
+    tools::js::init_variant()?;
     let root = cli.resolve_root()?;
     std::env::set_current_dir(&root)
         .with_context(|| format!("changing to root {}", root.display()))?;

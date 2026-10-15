@@ -4,9 +4,13 @@
 
 ### Added
 
+- `--features codemode` (experimental, off by default) adds a `js` tool: QuickJS through rquickjs, with the other tools callable from scripts. `MINIMA_CODEMODE` picks the variant, and `scripts/codemode_bench.py` compares them. It is a build feature, so default builds gain no C dependency. See `docs/dev/codemode.md`.
+
 - `scripts/audit_writable.py` runs cargo, go, npm, uv and R builds under `--sandbox` with each one's cache outside the write set, and reports which still succeed. The `sandbox-linux` workflow, started by hand, runs it under Landlock. It relocates each cache instead of editing the profile, so the same script measures both platforms. On macOS it corrected one recorded result: with go 1.27.1, a build that compiles anything not already in a denied `GOCACHE` fails, rather than running uncached. The existing grants cover it.
 
 ### Changed
+
+- The system prompt tells the model to filter and aggregate inside one `bash` command when a task spans many files or large output. A trial, separate from the open question of codemode; see `docs/dev/codemode.md`.
 
 - A GitHub release's notes are the tag's section of CHANGELOG.md, cut by `scripts/release_notes.py`, instead of "See CHANGELOG.md." A tag with no section gets GitHub's generated notes rather than a failed release. The script accepts both `## 0.6.0` and `## [0.6.0]` headings.
 

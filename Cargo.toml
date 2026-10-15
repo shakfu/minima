@@ -71,6 +71,11 @@ sanduk-sandbox = "=0.1.0"
 # Neither is in std. Already in the tree through tokio. minima is Unix-only; see `main.rs`.
 libc = "0.2"
 
+# Experiment only, off by default: the `js` tool and `MINIMA_CODEMODE`. See docs/dev/codemode.md.
+rquickjs = { version = "=0.14.0", optional = true }
+
+[features]
+codemode = ["dep:rquickjs"]
 
 [dev-dependencies]
 # Paused time, so tests of retry backoff do not sleep for real.
