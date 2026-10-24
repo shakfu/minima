@@ -1,6 +1,6 @@
 # Codemode with rquickjs
 
-Whether minima should add codemode: a tool that runs model-written JavaScript in QuickJS through [rquickjs](https://crates.io/crates/rquickjs), with minima's tools callable from the script. Written 2026-10-15 against rquickjs 0.14.0 and minima 0.6.0. Status: open. A system-prompt line steering aggregation into `bash` is in as a separate trial; it does not settle codemode. The strongest case found is a run without `--sandbox`, below.
+Whether minima should add codemode: a tool that runs model-written JavaScript in QuickJS through [rquickjs](https://crates.io/crates/rquickjs), with minima's tools callable from the script. Written 2026-10-15 against rquickjs 0.14.0 and minima 0.6.0. Status: optional codemode rejected 2026-10-24, see "Conclusion"; `js-only` untested on fix tasks. A system-prompt line steering aggregation into `bash` is in as a separate trial; it does not settle codemode. The strongest case found is a run without `--sandbox`, below.
 
 ## What codemode is
 
@@ -138,6 +138,34 @@ Findings so far, from building it:
 - Every `count-tests` answer was wrong (the true total is 206; grep agrees with the checker).
 - So at 9B the variants do not differ in the way that matters, because codemode is never tried. Token differences across variants come from different `bash` strategies.
 
+### Results: Claude Haiku 5.5 and Sonnet 5.5
+
+2026-10-24, `anthropic` provider, no `--sandbox`, one rep per cell. Haiku: 26 runs; the pass was killed after 11 and resumed, so `doc-gaps`/`none` ran twice. Sonnet: 25 runs.
+
+| Variant | Haiku pass | Haiku `js` calls | Sonnet pass | Sonnet `js` calls |
+|-|-|-|-|-|
+| `none` | 6/6 | - | 5/5 | - |
+| `line` | 5/5 | - | 5/5 | - |
+| `js` | 5/5 | 0 of 8 | 5/5 | 1 of 6 |
+| `js-bash` | 5/5 | 0 of 8 | 5/5 | 2 of 6 |
+| `js-only` | 4/5 | 6 of 7 | 5/5 | 5 of 5 |
+
+- Neither model chose `js` for a task one `bash` call could do. Sonnet's 3 `js` calls were all on `doc-gaps`, where attributes between `///` and `pub fn` make a one-liner awkward.
+- On `doc-gaps`, Sonnet's optional `js` cost more than `line`: 6657 and 6170 input tokens against 5031, at 3 turns each. The model explored with `bash` first. `js-only` used 3327 tokens in 2 turns, the lowest of any variant.
+- On the other four tasks, `js-only` cost Sonnet 7-80% more than `none`. A script takes more output tokens than a pipeline.
+- Offering `js` adds 700-800 input tokens per request, from the schema and the aggregation line. On Sonnet that is 10-15% of a simple run's cost, paid whether or not `js` is called.
+- Haiku's one failure was in `js-only`: all three line counts one high (1207 for 1206), consistent with counting `split('\n')` elements.
+- Four of five tasks finish in one call and two turns under every `bash` variant. These tasks cannot show an efficiency gain over `bash`.
+- Reported cost: Sonnet $0.22. Haiku $0.0145, about 5x below what its token counts imply at list price; the price-list match for `claude-haiku-5-5` is unverified.
+
+### Conclusion
+
+Optional codemode (`js`, `js-bash`) is not added. Three models rarely or never chose `js` over `bash`, no run measured a gain from it, and every request pays for its schema. The case in "Without `--sandbox`" needs the model to route edits through `js`, and none did.
+
+`js-only` stays open as a separate product. It won the one structured task and lost the simple ones. Its main cost, no builds or tests, is unmeasured; `scripts/history_bench.py` under `MINIMA_CODEMODE=js-only` and `line` with a codemode build would measure it.
+
+The spike stays behind `--features codemode`. Default builds are unchanged.
+
 ### Resuming
 
 ```
@@ -151,8 +179,7 @@ scripts/codemode_bench.py --summarise codemode-bench.jsonl
 
 Open:
 
-- Separating the effect of the `js` aggregation line from the `js` tool needs `js` variants without the line. Add them only if a `js` variant shows a gain.
-- If a strong model also ignores `js` while `bash` is available, `js-only` is the only informative variant.
+- `js-only` on fix tasks, per "Conclusion". More reps or harder tasks matter only for `js-only`.
 
 ## Not verified
 

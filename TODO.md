@@ -10,9 +10,9 @@
 
 - [ ] **The Linux half of the writable-set audit.** `docs/dev/root-sandbox.md` records that on macOS no cache entry is needed for a build to succeed, only for a fetch; go is an exception, remeasured 2026-10-04. The original claim that a denied `$CARGO_HOME` breaks the build was measured on Linux under Landlock and is untested against that question; CI runs `ubuntu-24.04`, so it can settle it. Trigger the `sandbox-linux` workflow and record the result in `root-sandbox.md`.
 
-- [ ] **Codemode experiment: run the benchmark on a hosted model.** Spike behind `--features codemode`, variants via `MINIMA_CODEMODE`, harness `scripts/codemode_bench.py`. A local 9B run never called `js`; see `docs/dev/codemode.md` ("Resuming") for the command and partial results.
-
 ## Low
+
+- [ ] **Codemode: `js-only` on fix tasks.** Optional `js` was rejected 2026-10-24; see `docs/dev/codemode.md` ("Conclusion"). Only if `js-only` is worth pursuing as a product: compare it with `line` using `scripts/history_bench.py`.
 
 - [ ] **Create-without-delete for the writable set.** Landlock has separate `MakeReg`, `WriteFile`, `RemoveFile` and `Truncate` bits and the ruleset grants `AccessFs::from_all`; SBPL has `file-write-create` and `file-write-data` apart from `file-write-unlink`. A package store the agent can add to but not delete from would match the accident model exactly. Risk is a half-written package with no way to clean it up. See `docs/dev/root-sandbox.md`.
 
