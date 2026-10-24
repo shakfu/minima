@@ -16,3 +16,6 @@
 
 - [ ] **Create-without-delete for the writable set.** Landlock has separate `MakeReg`, `WriteFile`, `RemoveFile` and `Truncate` bits and the ruleset grants `AccessFs::from_all`; SBPL has `file-write-create` and `file-write-data` apart from `file-write-unlink`. A package store the agent can add to but not delete from would match the accident model exactly. Risk is a half-written package with no way to clean it up. See `docs/dev/root-sandbox.md`.
 
+- [ ] **Network denial on Linux.** Landlock ABI 4 (Linux 6.7) adds `AccessNet::BindTcp` and `ConnectTcp`. Denying both under `--sandbox` closes part of the exfiltration gap without bwrap. TCP only: UDP, and so DNS, stays open. Needs a floor above today's 6.2, or ABI detection that applies the rule where available. zerostack does this with a per-call network namespace (`sandbox-network = false`).
+
+- [ ] **Credential masking.** zerostack hides `~/.ssh`, `~/.aws`, `~/.gnupg` and similar from sandboxed commands. Seatbelt can deny reads directly with `(deny file-read* (subpath ...))`. Landlock rules only grant access, so hiding `~/.ssh` means granting read on everything else, and reads are unbounded today.
