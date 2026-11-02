@@ -4,6 +4,8 @@
 
 ### Added
 
+- `minima [OPTIONS] PROMPT...` starts the REPL with the words, joined by spaces, submitted as the first prompt, so a launcher can start an interactive session already working. It conflicts with `-p` and `--json`.
+
 - `--features codemode` (experimental, off by default) adds a `js` tool: QuickJS through rquickjs, with the other tools callable from scripts. `MINIMA_CODEMODE` picks the variant, and `scripts/codemode_bench.py` compares them. It is a build feature, so default builds gain no C dependency. See `docs/dev/codemode.md`.
 
 - `scripts/audit_writable.py` runs cargo, go, npm, uv and R builds under `--sandbox` with each one's cache outside the write set, and reports which still succeed. The `sandbox-linux` workflow, started by hand, runs it under Landlock. It relocates each cache instead of editing the profile, so the same script measures both platforms. On macOS it corrected one recorded result: with go 1.27.1, a build that compiles anything not already in a denied `GOCACHE` fails, rather than running uncached. The existing grants cover it.

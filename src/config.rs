@@ -63,8 +63,15 @@ pub struct Cli {
     #[arg(short = 'p', long, value_name = "TEXT")]
     pub prompt: Option<String>,
 
+    /// Start the REPL and submit this as the first prompt, as if typed. Words are
+    /// joined with spaces.
+    #[arg(value_name = "PROMPT", conflicts_with = "prompt")]
+    pub first: Vec<String>,
+
     /// With -p: print JSON lines, ending in a `result` record.
-    #[arg(long, requires = "prompt")]
+    // Conflicts with the positional prompt too: clap waives `requires` for an arg that conflicts
+    // with one given, so `--json words` would otherwise start the REPL and drop --json.
+    #[arg(long, requires = "prompt", conflicts_with = "first")]
     pub json: bool,
 
     /// Provider id. Default: the first one whose key is set.
@@ -110,6 +117,11 @@ pub struct Cli {
 }
 
 impl Cli {
+    /// The positional PROMPT, if any, for the REPL to submit first.
+    pub fn first_prompt(&self) -> Option<String> {
+        (!self.first.is_empty()).then(|| self.first.join(" "))
+    }
+
     /// Resolve the root before loading prompts or starting the agent.
     pub fn resolve_root(&self) -> Result<PathBuf> {
         let root = self
@@ -341,6 +353,7 @@ mod tests {
             sandbox: false,
             writable: Vec::new(),
             prompt: None,
+            first: Vec::new(),
             json: false,
             provider: Some("openrouter".into()),
             model: model.map(String::from),
@@ -363,6 +376,30 @@ mod tests {
                 .unwrap()
                 .sandbox
         );
+    }
+
+    /// Options parse before and after the words, which join with single spaces.
+    #[test]
+    fn positional_words_are_the_first_prompt() {
+        assert_eq!(
+            Cli::try_parse_from(["minima"]).unwrap().first_prompt(),
+            None
+        );
+        let cli =
+            Cli::try_parse_from(["minima", "--root", ".", "fix", "the  bug", "--sandbox"]).unwrap();
+        assert_eq!(cli.first_prompt().as_deref(), Some("fix the  bug"));
+        assert!(cli.sandbox);
+    }
+
+    #[test]
+    fn a_positional_prompt_conflicts_with_p() {
+        let err = Cli::try_parse_from(["minima", "-p", "one", "two"]).unwrap_err();
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+        // --json alone needs -p; with words it must not be dropped silently.
+        let err = Cli::try_parse_from(["minima", "--json"]).unwrap_err();
+        assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+        let err = Cli::try_parse_from(["minima", "--json", "two"]).unwrap_err();
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
     }
 
     #[test]

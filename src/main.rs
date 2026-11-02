@@ -94,7 +94,8 @@ fn start() -> Result<ExitCode> {
 
     match cli.prompt.as_deref() {
         Some(prompt) => runtime.block_on(headless(&mut agent, prompt, cli.json, &bounds)),
-        None => frontend::repl::run(&runtime, &mut agent).map(|()| ExitCode::SUCCESS),
+        None => frontend::repl::run(&runtime, &mut agent, cli.first_prompt())
+            .map(|()| ExitCode::SUCCESS),
     }
 }
 

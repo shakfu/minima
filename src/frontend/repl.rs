@@ -181,8 +181,12 @@ enum Request {
 }
 
 /// Runs on the main thread and drives the runtime with `block_on`; the keyboard thread hands
-/// over each submitted prompt.
-pub fn run(runtime: &tokio::runtime::Runtime, agent: &mut Agent) -> Result<()> {
+/// over each submitted prompt. `first` is submitted before any key is read, as if typed.
+pub fn run(
+    runtime: &tokio::runtime::Runtime,
+    agent: &mut Agent,
+    first: Option<String>,
+) -> Result<()> {
     let history = History::load(crate::config::history_path(), &EXIT);
     let screen = Arc::new(Mutex::new(Screen::new()?));
     let cancel = Cancel::new();
@@ -217,7 +221,7 @@ pub fn run(runtime: &tokio::runtime::Runtime, agent: &mut Agent) -> Result<()> {
             search: None,
             tx,
         };
-        move || keys.run()
+        move || keys.run(first)
     });
 
     loop {
@@ -336,7 +340,13 @@ impl Search {
 impl Keyboard {
     /// A thread, not a task: `crossterm::event::read` blocks, and crossterm's async event stream
     /// would be another feature to carry for one loop.
-    fn run(mut self) {
+    fn run(mut self, first: Option<String>) {
+        if let Some(prompt) = first
+            && !self.submit(&prompt)
+        {
+            let _ = self.tx.send(Request::Exit);
+            return;
+        }
         while !self.stop.load(Ordering::SeqCst) {
             let ready = match event::poll(POLL) {
                 Ok(ready) => ready,
@@ -416,25 +426,8 @@ impl Keyboard {
             KeyCode::Enter if busy => {}
             KeyCode::Enter => {
                 let prompt = screen.input_text();
-                let trimmed = prompt.trim();
-                if EXIT.contains(&trimmed) {
-                    return false;
-                }
-                if trimmed.is_empty() {
-                    return true;
-                }
-                self.history.push(trimmed);
-                screen.set_input("");
-                let _ = screen.line(Tone::Plain, "");
-                let _ = screen.line(Tone::Prompt, &format!("> {trimmed}"));
-                screen.busy_since = Some(Instant::now());
-                self.busy.store(true, Ordering::SeqCst);
-                let request = if trimmed == COMPACT {
-                    Request::Compact
-                } else {
-                    Request::Prompt(trimmed.to_string())
-                };
-                let _ = self.tx.send(request);
+                drop(screen);
+                return self.submit(&prompt);
             }
             _ if older && screen.input.cursor().0 == 0 => {
                 if let Some(entry) = self.history.prev(&screen.input_text()) {
@@ -450,6 +443,32 @@ impl Keyboard {
                 screen.input.input(key);
             }
         }
+        true
+    }
+
+    /// Echoes `prompt` and hands it to the main thread, as Enter does. False when it asks to
+    /// leave.
+    fn submit(&mut self, prompt: &str) -> bool {
+        let trimmed = prompt.trim();
+        if EXIT.contains(&trimmed) {
+            return false;
+        }
+        if trimmed.is_empty() {
+            return true;
+        }
+        self.history.push(trimmed);
+        let mut screen = lock(&self.screen);
+        screen.set_input("");
+        let _ = screen.line(Tone::Plain, "");
+        let _ = screen.line(Tone::Prompt, &format!("> {trimmed}"));
+        screen.busy_since = Some(Instant::now());
+        self.busy.store(true, Ordering::SeqCst);
+        let request = if trimmed == COMPACT {
+            Request::Compact
+        } else {
+            Request::Prompt(trimmed.to_string())
+        };
+        let _ = self.tx.send(request);
         true
     }
 }

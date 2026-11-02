@@ -20,7 +20,11 @@ Runs on Linux and macOS; other platforms do not build. Requires Rust 1.88 or new
 % minima -h
 A minimal coding agent for the terminal
 
-Usage: minima [OPTIONS]
+Usage: minima [OPTIONS] [PROMPT]...
+
+Arguments:
+  [PROMPT]...  Start the REPL and submit this as the first prompt, as if typed.
+               Words are joined with spaces
 
 Options:
       --root <DIR>      Directory the agent works in, and the bound --sandbox
@@ -45,7 +49,7 @@ Options:
       --mock <PATH>     Replay a scripted JSON stream instead of the network
       --max-turns <N>   Max provider round-trips per user turn [default: 100]
       --refresh-models  Re-fetch the model list, ignoring the cache
-  -h, --help            Print help (see more with '--help')
+  -h, --help            Print help
   -V, --version         Print version
 ```
 
@@ -82,7 +86,7 @@ Options:
 
 - **Writable paths:** `--writable DIR`, repeatable, adds a directory to what `bash` may write under `--sandbox`. For a toolchain whose store sits outside the project: `~/.opam`, `~/.stack`, an R library. It never widens `write` or `edit`, which stay inside the root, and it is refused without `--sandbox`, where nothing is bounded for it to widen. Paths are resolved at startup, and one that does not exist is an error rather than a silent skip.
 
-- **Modes:** an interactive REPL, and headless `-p`, printing text or JSON lines with `--json`. `/exit`, `/quit` or Ctrl-D on an empty input leaves the REPL. `/compact` compacts the conversation now.
+- **Modes:** an interactive REPL, and headless `-p`, printing text or JSON lines with `--json`. `minima fix the tests` starts the REPL with that prompt already submitted. `/exit`, `/quit` or Ctrl-D on an empty input leaves the REPL. `/compact` compacts the conversation now.
 
 - **REPL:** an input box with a status bar below it, pinned to the bottom of the terminal; output scrolls above it into the terminal's scrollback. Enter submits, Alt-Enter or Ctrl-J adds a newline, Up and Down or Ctrl-P and Ctrl-N browse history, Ctrl-R searches it, and Ctrl-C clears the input. Typing continues during a turn. Answers render Markdown: emphasis, code spans, links with their target, headings, and fenced code blocks, which stay literal. A line with markup appears when it ends; plain text streams as it arrives. `-p` and colour-off output print the text as sent.
 
@@ -157,7 +161,7 @@ Plain `cargo build`, `cargo test` and `cargo clippy --all-targets -- -D warnings
 
 Rust 1.88 or newer, for let-chains under edition 2024. `cargo test` also needs `python3`.
 
-Unit tests live beside the module they exercise. `tests/live_path.rs` covers only what the in-process mock cannot reach -- the request body minima actually sends, and what it does against a gateway that serves no model list -- by driving the built binary against `tests/fixtures/fake_provider.py`. Behaviour that a unit test can already pin does not get a second assertion there. `tests/headless.rs` checks `-p` exit codes and that background jobs die with minima.
+Unit tests live beside the module they exercise. `tests/live_path.rs` covers only what the in-process mock cannot reach -- the request body minima actually sends, and what it does against a gateway that serves no model list -- by driving the built binary against `tests/fixtures/fake_provider.py`. Behaviour that a unit test can already pin does not get a second assertion there. `tests/headless.rs` checks `-p` exit codes and that background jobs die with minima. `tests/repl.rs` starts the REPL on a pseudo-terminal through `tests/fixtures/pty_driver.py`.
 
 Run without a network or an API key by replaying a scripted stream:
 
