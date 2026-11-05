@@ -32,10 +32,10 @@ check: lint test
 
 # Offline smoke tests: no network, no API key.
 run: build
-	$(BIN) --mock mock/read-then-answer.json -p "what is this package?"
+	$(BIN) --no-session --mock mock/read-then-answer.json -p "what is this package?"
 
 repl: build
-	$(BIN) --mock mock/say-hi.json
+	$(BIN) --no-session --mock mock/say-hi.json
 
 # Live smoke test against a real endpoint. Needs a key; scripts/lib.sh says where it looks.
 # Runs from a throwaway sandbox, because the model chooses what bash runs.

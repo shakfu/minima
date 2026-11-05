@@ -107,6 +107,24 @@ impl Agent {
         &self.config.model
     }
 
+    pub fn provider(&self) -> &str {
+        &self.config.provider
+    }
+
+    /// The whole conversation, the system message first.
+    pub fn messages(&self) -> &[Message] {
+        &self.messages
+    }
+
+    /// Continues a saved conversation, which carries no system message. Nothing is reported yet,
+    /// so every message counts as an estimate until the first response.
+    pub fn resume(&mut self, messages: Vec<Message>) {
+        self.messages.truncate(1);
+        self.messages.extend(messages);
+        self.used = 0;
+        self.pending = self.overhead.saturating_add(sum(&self.messages[1..]));
+    }
+
     /// True when costs come from a price list rather than from the provider.
     pub fn cost_is_estimate(&self) -> bool {
         self.config.pricing.is_some()

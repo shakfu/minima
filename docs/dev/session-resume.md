@@ -1,6 +1,6 @@
 # Session resume
 
-How minima could save a conversation and continue it in a later run. Proposed 2026-10-04 against minima 0.6.0. Not implemented. Decisions marked **Open** need an answer before code.
+How minima saves a conversation and continues it in a later run. Proposed 2026-10-04 against minima 0.6.0; implemented 2026-11-05 in `src/session.rs`. The **Open** items below were settled as recorded in [Decisions](#decisions-2026-11-05).
 
 ## What a session is
 
@@ -81,3 +81,18 @@ Estimated, not measured: 150-200 lines in a new `src/session.rs`, the derives, t
 - Branching or forking a session.
 - Sharing a session across roots.
 - Saving `used` and cost totals. Token usage is reported again on the first resumed turn. Cost totals restart, as they do for each run today.
+
+## Decisions (2026-11-05)
+
+- Location: `config_dir()/sessions/<root hash>/`. The hash is FNV-1a 64; std's `DefaultHasher` may change between Rust releases.
+- Saving: on by default; `--no-session` and `MINIMA_NO_SESSION` turn it off.
+- Retention: the newest 10 per root, by modification time, pruned on write.
+- `replay`: cleared on any provider or model change. The cross-model question stays unmeasured.
+- `--resume ID` added beside `--continue`. Herdr's resume command needs a specific session; `--continue` would reopen one conversation in every pane sharing a root.
+
+Changed from the proposal:
+
+- No `dialect` or `updated_at` field. The provider fixes the dialect, and file mtime orders sessions.
+- The id is `<unix seconds>-<pid>`, not a formatted timestamp, which would need date code.
+- The frontends save, not `Agent::run`. A failed save is shown to the user rather than lost in a log.
+- A session's root must match the run's root, so a hash collision cannot load another project's session.

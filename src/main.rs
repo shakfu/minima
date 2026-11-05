@@ -10,9 +10,11 @@ mod cache;
 mod cancel;
 mod config;
 mod frontend;
+mod herdr;
 mod price;
 mod prompt;
 mod provider;
+mod session;
 mod state;
 mod term;
 mod theme;
@@ -32,6 +34,7 @@ use crate::frontend::Frontend;
 use crate::frontend::headless::Headless;
 use crate::frontend::json::Json;
 use crate::provider::{Provider, http::Http, mock::Mock};
+use crate::session::Session;
 
 fn main() -> ExitCode {
     tracing_subscriber::fmt()
@@ -52,7 +55,7 @@ fn main() -> ExitCode {
 }
 
 fn start() -> Result<ExitCode> {
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
     #[cfg(feature = "codemode")]
     tools::js::init_variant()?;
     let root = cli.resolve_root()?;
@@ -71,6 +74,24 @@ fn start() -> Result<ExitCode> {
     // model's first command.
     if bounds.sandbox {
         runtime.block_on(tools::preflight(&bounds))?;
+    }
+
+    // Loaded before config, which takes the session's provider and model where no flag names them.
+    let config_dir = config::config_dir();
+    let resumed = match (&cli.resume, cli.continue_last) {
+        (None, false) => None,
+        (id, _) => {
+            let dir = config_dir
+                .as_deref()
+                .context("no config directory to resume from: set $HOME or $XDG_CONFIG_HOME")?;
+            Some(match id {
+                Some(id) => Session::open(dir, &bounds.root, id)?,
+                None => Session::newest(dir, &bounds.root)?,
+            })
+        }
+    };
+    if let Some((_, saved)) = &resumed {
+        cli.adopt(&saved.provider, &saved.model);
     }
 
     let mut config = runtime.block_on(cli.resolve())?;
@@ -92,9 +113,19 @@ fn start() -> Result<ExitCode> {
             .on_first_turn(|config| state::State::load().remember(&config.provider, &config.model));
     }
 
+    let session = match resumed {
+        Some((session, saved)) => {
+            agent.resume(saved.restore(agent.provider(), agent.model()));
+            Some(session)
+        }
+        None => config_dir.map(|dir| Session::new(&dir, &bounds.root)),
+    };
+    // `--no-session` with `--continue` reads the session and writes nothing back.
+    let session = session.filter(|_| !cli.no_session);
+
     match cli.prompt.as_deref() {
-        Some(prompt) => runtime.block_on(headless(&mut agent, prompt, cli.json, &bounds)),
-        None => frontend::repl::run(&runtime, &mut agent, cli.first_prompt())
+        Some(prompt) => runtime.block_on(headless(&mut agent, session, prompt, cli.json, &bounds)),
+        None => frontend::repl::run(&runtime, &mut agent, session, &bounds, cli.first_prompt())
             .map(|()| ExitCode::SUCCESS),
     }
 }
@@ -135,6 +166,7 @@ fn exit_on_hangup_or_terminate(runtime: &tokio::runtime::Runtime) -> Result<()> 
 /// Ctrl-C latches the same flag Esc does in the REPL, so the loop samples one thing either way.
 async fn headless(
     agent: &mut Agent,
+    mut session: Option<Session>,
     prompt: &str,
     as_json: bool,
     bounds: &Bounds,
@@ -161,8 +193,21 @@ async fn headless(
     let frontend: &mut dyn Frontend = if as_json { &mut json } else { &mut plain };
     let result = agent.run(prompt, frontend, &cancel).await;
     watcher.abort();
+    // Reported, not fatal: the answer is already printed.
+    if let Some(s) = &mut session
+        && let Err(e) = s.save(agent.provider(), agent.model(), agent.messages())
+    {
+        eprintln!(
+            "minima: session not saved: {}",
+            frontend::printable(&format!("{e:#}"))
+        );
+    }
     if as_json {
-        json.result(&result, cancel.is_cancelled());
+        json.result(
+            &result,
+            cancel.is_cancelled(),
+            session.filter(|s| s.saved).map(|s| s.id),
+        );
     } else {
         println!();
     }

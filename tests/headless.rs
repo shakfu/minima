@@ -196,3 +196,62 @@ fn json_ends_in_a_result_matching_the_exit_code() {
         assert_eq!(last["outcome"], outcome, "{name}");
     }
 }
+
+/// One run's session is reopened by the next: `--continue` and `--resume ID` both extend the same
+/// file, and `--no-session` reads it without writing back.
+#[test]
+fn a_saved_session_is_continued_by_the_next_run() {
+    let dir = std::env::temp_dir().join(format!("minima-session-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("scratch directory");
+    let script = dir.join("script.json");
+    std::fs::write(&script, r#"[[{"text": "answer"}]]"#).expect("writing the mock script");
+    let run = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_minima"))
+            .env("XDG_CONFIG_HOME", &dir)
+            .env_remove("MINIMA_NO_SESSION")
+            .current_dir(&dir)
+            .arg("--mock")
+            .arg(&script)
+            .args(args)
+            .output()
+            .expect("running minima")
+    };
+    let session = |args: &[&str]| {
+        let out = run(args);
+        assert!(out.status.success(), "{args:?}: {out:?}");
+        let stdout = String::from_utf8(out.stdout).expect("utf-8");
+        let last: serde_json::Value =
+            serde_json::from_str(stdout.lines().last().expect("a line")).expect("JSON");
+        last["session"].as_str().expect("a session id").to_string()
+    };
+    let messages = |id: &str| {
+        let sessions = dir.join("minima/sessions");
+        let root = std::fs::read_dir(&sessions)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap();
+        let raw = std::fs::read_to_string(root.path().join(format!("{id}.json"))).unwrap();
+        let file: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        file["messages"].as_array().unwrap().len()
+    };
+
+    let id = session(&["--json", "-p", "one"]);
+    assert_eq!(messages(&id), 2);
+    assert_eq!(session(&["--continue", "--json", "-p", "two"]), id);
+    assert_eq!(session(&["--resume", &id, "--json", "-p", "three"]), id);
+    assert_eq!(messages(&id), 6);
+    assert!(
+        run(&["--continue", "--no-session", "-p", "four"])
+            .status
+            .success()
+    );
+    assert_eq!(messages(&id), 6, "--no-session wrote the session");
+
+    let missing = run(&["--resume", "1-1", "-p", "x"]);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(!missing.status.success());
+    let stderr = String::from_utf8_lossy(&missing.stderr);
+    assert!(stderr.contains("1-1.json"), "{stderr}");
+}

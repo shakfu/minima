@@ -453,7 +453,7 @@ fn no_key_anywhere_names_every_variable_it_looked_at() {
 }
 
 /// Everything under the config directory is owner-only. The model cache is public data, but it
-/// sits beside prompt history and, later, saved sessions; a directory with one lax file in it
+/// sits beside prompt history and saved sessions; a directory with one lax file in it
 /// invites the next one.
 #[cfg(unix)]
 #[test]
@@ -478,11 +478,20 @@ fn everything_written_to_the_config_directory_is_owner_only() {
     };
     assert_eq!(mode(&dir), 0o700, "config directory");
 
+    // Recursive: saved sessions sit two directories down.
     let mut checked = 0;
-    for entry in std::fs::read_dir(&dir).expect("reading the config directory") {
-        let path = entry.expect("a directory entry").path();
-        assert_eq!(mode(&path), 0o600, "{}", path.display());
-        checked += 1;
+    let mut dirs = vec![dir];
+    while let Some(dir) = dirs.pop() {
+        for entry in std::fs::read_dir(&dir).expect("reading the config directory") {
+            let path = entry.expect("a directory entry").path();
+            if path.is_dir() {
+                assert_eq!(mode(&path), 0o700, "{}", path.display());
+                dirs.push(path);
+            } else {
+                assert_eq!(mode(&path), 0o600, "{}", path.display());
+                checked += 1;
+            }
+        }
     }
     assert!(checked > 0, "the run wrote nothing to check");
 }

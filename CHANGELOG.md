@@ -10,6 +10,10 @@
 
 - `scripts/audit_writable.py` runs cargo, go, npm, uv and R builds under `--sandbox` with each one's cache outside the write set, and reports which still succeed. The `sandbox-linux` workflow, started by hand, runs it under Landlock. It relocates each cache instead of editing the profile, so the same script measures both platforms. On macOS it corrected one recorded result: with go 1.27.1, a build that compiles anything not already in a denied `GOCACHE` fails, rather than running uncached. The existing grants cover it.
 
+- Sessions. Each REPL prompt, `/compact` and `-p` run saves the conversation to `<config dir>/sessions/<root hash>/<id>.json`, owner-only, keeping the newest 10 per root. `--continue` (`-c`) resumes the newest for the root, `--resume ID` a given one; provider and model come from the session unless named. `--no-session` or `MINIMA_NO_SESSION` writes nothing. On by default rather than opt-in, because a resume that needs a flag set before the crash is rarely there when wanted. Reasoning blocks are dropped on any provider or model change, since another model may reject them. `--json`'s `result` gains `session`. Decisions: `docs/dev/session-resume.md`.
+
+- [Herdr](https://herdr.dev) support. In a Herdr pane, the REPL reports `working` during a turn, `idle` otherwise, and releases the pane on quit. Once the session is saved, each report carries `minima --root DIR --resume ID`, so a restored Herdr session reopens the conversation. `--resume ID` over `--continue`, which would reopen one conversation in every pane sharing a root. Reports run on a worker thread through `$HERDR_BIN_PATH` with a 2 s timeout. `-p` does not report. SIGTERM and SIGHUP do not release, since a release clears the resume command.
+
 ### Changed
 
 - The system prompt tells the model to filter and aggregate inside one `bash` command when a task spans many files or large output. A trial, separate from the open question of codemode; see `docs/dev/codemode.md`.

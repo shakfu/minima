@@ -52,8 +52,14 @@ impl<W: Write> Json<W> {
         let _ = self.out.flush();
     }
 
-    /// The final record. `outcome` is `complete`, `cancelled` or `error`.
-    pub fn result(&mut self, result: &anyhow::Result<()>, cancelled: bool) {
+    /// The final record. `outcome` is `complete`, `cancelled` or `error`. `session` is the id
+    /// `--resume` takes, once the session is saved.
+    pub fn result(
+        &mut self,
+        result: &anyhow::Result<()>,
+        cancelled: bool,
+        session: Option<String>,
+    ) {
         let complete = result.is_ok() && !cancelled;
         let (outcome, error) = match result {
             Err(e) => ("error", Some(format!("{e:#}"))),
@@ -63,6 +69,7 @@ impl<W: Write> Json<W> {
         let record = json!({
             "type": "result",
             "outcome": outcome,
+            "session": session,
             "sandbox": self.bounds.sandbox,
             "writable": self
                 .bounds
@@ -175,7 +182,7 @@ mod tests {
         json.text("the ");
         json.text("answer");
         json.turn_end(Usage::from_parts(30, 5));
-        json.result(&Ok(()), false);
+        json.result(&Ok(()), false, Some("s1".into()));
 
         let records = records(&json);
         let kinds: Vec<_> = records
@@ -190,8 +197,8 @@ mod tests {
         assert_eq!(
             records[4],
             json!({
-                "type": "result", "outcome": "complete", "sandbox": false, "writable": [],
-                "text": "the answer", "error": null,
+                "type": "result", "outcome": "complete", "session": "s1", "sandbox": false,
+                "writable": [], "text": "the answer", "error": null,
                 "turns": 2, "input_tokens": 40, "output_tokens": 7, "cost": null,
                 "cost_estimated": false,
             })
@@ -203,7 +210,7 @@ mod tests {
     #[test]
     fn the_result_reports_the_bounds_the_run_used() {
         let mut json = Json::new(Vec::new(), &fs_with_writable());
-        json.result(&Ok(()), false);
+        json.result(&Ok(()), false, None);
         let result = &records(&json)[0];
         assert_eq!(result["sandbox"], true);
         assert_eq!(result["writable"], json!(["/tmp/cache"]));
@@ -218,7 +225,7 @@ mod tests {
                 ..Usage::from_parts(1, 1)
             });
         }
-        json.result(&Ok(()), false);
+        json.result(&Ok(()), false, None);
         let records = records(&json);
         assert_eq!(records[0]["cost"], 0.25);
         assert_eq!(records[2]["cost"], 0.75);
@@ -233,7 +240,7 @@ mod tests {
             cost: Some(0.5),
             ..Usage::from_parts(1, 1)
         });
-        json.result(&Ok(()), false);
+        json.result(&Ok(()), false, None);
         let records = records(&json);
         assert_eq!(records[0]["cost_estimated"], true);
         assert_eq!(records[1]["cost_estimated"], true);
@@ -242,7 +249,7 @@ mod tests {
     #[test]
     fn an_error_is_reported_in_the_result() {
         let mut json = Json::new(Vec::new(), &off());
-        json.result(&Err(anyhow::anyhow!("stopped after 3 turns")), false);
+        json.result(&Err(anyhow::anyhow!("stopped after 3 turns")), false, None);
         let result = &records(&json)[0];
         assert_eq!(result["outcome"], "error");
         assert_eq!(result["error"], "stopped after 3 turns");
@@ -253,7 +260,7 @@ mod tests {
         let mut json = Json::new(Vec::new(), &off());
         json.text("half");
         json.cancelled();
-        json.result(&Ok(()), true);
+        json.result(&Ok(()), true, None);
         let result = &records(&json)[0];
         assert_eq!(result["outcome"], "cancelled");
         assert_eq!(result["text"], "");
@@ -268,7 +275,7 @@ mod tests {
             json.turn_end(Usage::default());
             json.tool_start("bash", "{}");
             json.tool_end("", None, true);
-            json.result(&result, cancelled);
+            json.result(&result, cancelled, None);
             let records = records(&json);
             assert_eq!(records[0]["text"], "let me look");
             assert_eq!(records[3]["text"], "", "{:?}", records[3]["outcome"]);

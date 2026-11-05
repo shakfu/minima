@@ -17,7 +17,10 @@ use super::screen::{Screen, Tone};
 use super::{Frontend, compacted, count, describe, one_line, printable};
 use crate::agent::{Agent, Compaction};
 use crate::cancel::Cancel;
+use crate::config::Bounds;
+use crate::herdr::{Herdr, Report, Resume};
 use crate::provider::Usage;
+use crate::session::Session;
 use crate::theme::Style;
 
 /// How often the keyboard thread wakes to check for a stop and to move the spinner.
@@ -185,6 +188,8 @@ enum Request {
 pub fn run(
     runtime: &tokio::runtime::Runtime,
     agent: &mut Agent,
+    mut session: Option<Session>,
+    bounds: &Bounds,
     first: Option<String>,
 ) -> Result<()> {
     let history = History::load(crate::config::history_path(), &EXIT);
@@ -206,9 +211,22 @@ pub fn run(
     {
         let mut screen = frontend.screen();
         screen.line(Tone::Title, concat!("minima ", env!("CARGO_PKG_VERSION")))?;
+        let resumed = agent.messages().len() - 1;
+        if let Some(s) = session.as_ref().filter(|_| resumed > 0) {
+            let text = format!("resumed session {}: {resumed} messages", s.id);
+            screen.line(Tone::Role(Style::Muted), &text)?;
+        }
         screen.status = frontend.meter.status(agent.model());
         screen.draw()?;
     }
+
+    let herdr = Herdr::from_env();
+    let report = |r, session: &Option<Session>| {
+        if let Some(h) = &herdr {
+            h.report(r, session.as_ref().and_then(|s| Resume::of(s, bounds)));
+        }
+    };
+    report(Report::Idle, &session);
 
     let (tx, rx) = mpsc::channel();
     let keyboard = std::thread::spawn({
@@ -225,7 +243,11 @@ pub fn run(
     });
 
     loop {
-        let result = match rx.recv() {
+        let request = rx.recv();
+        if matches!(request, Ok(Request::Prompt(_) | Request::Compact)) {
+            report(Report::Working, &session);
+        }
+        let result = match request {
             Ok(Request::Prompt(prompt)) => {
                 runtime.block_on(agent.run(&prompt, &mut frontend, &cancel))
             }
@@ -239,6 +261,10 @@ pub fn run(
             Ok(Request::Exit) | Err(_) => break,
         };
         frontend.after_tool = false;
+        let saved = match &mut session {
+            Some(s) => s.save(agent.provider(), agent.model(), agent.messages()),
+            None => Ok(()),
+        };
         let usage = frontend.meter.finish();
         let status = frontend.meter.status(agent.model());
         let mut screen = frontend.screen();
@@ -249,6 +275,10 @@ pub fn run(
                 &printable(&format!("error: {e:#}")),
             );
         }
+        if let Err(e) = saved {
+            let text = printable(&format!("session not saved: {e:#}"));
+            let _ = screen.line(Tone::Role(Style::Error), &text);
+        }
         if let Some(usage) = usage {
             let _ = screen.line(Tone::Role(Style::Muted), &usage);
         }
@@ -256,10 +286,16 @@ pub fn run(
         screen.busy_since = None;
         busy.store(false, Ordering::SeqCst);
         let _ = screen.draw();
+        report(Report::Idle, &session);
     }
 
     stop.store(true, Ordering::SeqCst);
     let _ = keyboard.join();
+    // A quit only. SIGHUP and SIGTERM exit without releasing, so a stopped Herdr session keeps
+    // the resume command; a release would clear it.
+    if let Some(herdr) = herdr {
+        herdr.release();
+    }
     lock(&screen).close()
 }
 

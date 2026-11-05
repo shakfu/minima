@@ -15,10 +15,13 @@ use std::pin::Pin;
 use std::time::Duration;
 
 use futures_util::Stream;
+use serde::{Deserialize, Serialize};
 
 use crate::config::Config;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Serialized for session files; see `session.rs`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Role {
     System,
     User,
@@ -26,7 +29,7 @@ pub enum Role {
     Tool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCall {
     /// What the result must be addressed to. Chat and Anthropic use their own id; Responses
     /// distinguishes the streaming item id from the `call_id` a result quotes, and this is the
@@ -38,7 +41,7 @@ pub struct ToolCall {
     pub arguments: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
     pub role: Role,
     pub content: Option<String>,

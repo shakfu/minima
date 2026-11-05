@@ -49,6 +49,10 @@ Options:
       --mock <PATH>     Replay a scripted JSON stream instead of the network
       --max-turns <N>   Max provider round-trips per user turn [default: 100]
       --refresh-models  Re-fetch the model list, ignoring the cache
+  -c, --continue        Resume the newest saved session for the root
+      --resume <ID>     Resume the saved session with this id. Provider and
+                        model come from it unless given
+      --no-session      Do not save this session [env: MINIMA_NO_SESSION=]
   -h, --help            Print help
   -V, --version         Print version
 ```
@@ -112,7 +116,11 @@ Options:
 
 - **Network:** up to 4 retries with backoff after a rate limit, a 5xx response, or a request that fails before any response arrives. A `Retry-After` up to 60 s is honoured; a longer one is reported. A response whose connection fails mid-stream is requested again, up to 4 times: none of its tool calls has run, so only its text is shown twice. Requests time out after 10 s to connect or 300 s without data. With `openai` or `anthropic`, minima also fetches OpenRouter's public model list, without a key and at most once a day, for prices, missing context windows and output limits. After a failed fetch it waits an hour before trying again. `--base-url` turns this off.
 
-- **Persistence:** a model list cache, prompt history, the last provider, and the last model per provider. See [Build](#build) for where they live.
+- **Sessions:** saved by default after each prompt and `/compact`, newest 10 per root. `--continue` resumes the newest for the root; `--resume ID` a given one, whose id `--json` reports as `session`. `--no-session` or `MINIMA_NO_SESSION` writes nothing. A session holds every tool result, including any file `read` opened. See `docs/dev/session-resume.md`.
+
+- **Herdr:** inside a [Herdr](https://herdr.dev) pane, the REPL reports `working` or `idle` to Herdr and releases the pane on quit. Once saved, each report carries `minima --root DIR --resume ID`, with `--sandbox` and `--writable` if set, so a restored Herdr session reopens the conversation. `minima` must be on `PATH`. Nothing is reported outside Herdr or under `-p`.
+
+- **Persistence:** a model list cache, prompt history, sessions, the last provider, and the last model per provider. See [Build](#build) for where they live.
 
 - **Colour:** on for a terminal, off for a pipe, `--no-color` or `NO_COLOR`.
 

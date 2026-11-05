@@ -114,12 +114,32 @@ pub struct Cli {
     /// Re-fetch the model list, ignoring the cache.
     #[arg(long)]
     pub refresh_models: bool,
+
+    /// Resume the newest saved session for the root.
+    #[arg(short = 'c', long = "continue", conflicts_with = "resume")]
+    pub continue_last: bool,
+
+    /// Resume the saved session with this id. Provider and model come from it unless given.
+    #[arg(long, value_name = "ID")]
+    pub resume: Option<String>,
+
+    /// Do not save this session.
+    #[arg(long, env = "MINIMA_NO_SESSION")]
+    pub no_session: bool,
 }
 
 impl Cli {
     /// The positional PROMPT, if any, for the REPL to submit first.
     pub fn first_prompt(&self) -> Option<String> {
         (!self.first.is_empty()).then(|| self.first.join(" "))
+    }
+
+    /// Takes the provider and model of a resumed session, where no flag names them.
+    pub fn adopt(&mut self, provider: &str, model: &str) {
+        let named = self.provider.get_or_insert_with(|| provider.to_string());
+        if *named == *provider && self.model.is_none() {
+            self.model = Some(model.to_string());
+        }
     }
 
     /// Resolve the root before loading prompts or starting the agent.
@@ -364,7 +384,30 @@ mod tests {
             mock: None,
             max_turns: 32,
             refresh_models: refresh,
+            continue_last: false,
+            resume: None,
+            no_session: false,
         }
+    }
+
+    /// A resumed session supplies the provider and model the flags leave unset. Its model is
+    /// kept only for its own provider.
+    #[test]
+    fn a_session_fills_in_what_the_flags_leave_unset() {
+        let pick = |provider: Option<&str>, model: Option<&str>| {
+            let mut c = cli(model, None, false);
+            c.provider = provider.map(String::from);
+            c.adopt("anthropic", "claude-x");
+            (c.provider, c.model)
+        };
+        let some = |s: &str| Some(s.to_string());
+        assert_eq!(pick(None, None), (some("anthropic"), some("claude-x")));
+        assert_eq!(pick(None, Some("m")), (some("anthropic"), some("m")));
+        assert_eq!(
+            pick(Some("anthropic"), None),
+            (some("anthropic"), some("claude-x"))
+        );
+        assert_eq!(pick(Some("openai"), None), (some("openai"), None));
     }
 
     /// Off unless asked for: a run without the flag bounds nothing, as before the flag existed.
