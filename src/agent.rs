@@ -57,10 +57,13 @@ pub struct Agent {
     pending: u32,
     /// Estimated tokens of the system prompt and tool schemas, which every request carries.
     overhead: u32,
+    /// Armed until the first turn streams, and again by `switch_model`.
     on_first_turn: Option<FirstTurn>,
+    /// What `on_first_turn` was given, kept to arm it again.
+    remember: Option<FirstTurn>,
 }
 
-type FirstTurn = Box<dyn FnOnce(&Config)>;
+type FirstTurn = std::rc::Rc<dyn Fn(&Config)>;
 
 enum Attempt {
     Done(Turn),
@@ -96,6 +99,7 @@ impl Agent {
             pending: overhead,
             overhead,
             on_first_turn: None,
+            remember: None,
         }
     }
 
@@ -132,8 +136,40 @@ impl Agent {
 
     /// Runs once, after the first turn streams to completion: the point at which the provider
     /// has accepted the model.
-    pub fn on_first_turn(&mut self, f: impl FnOnce(&Config) + 'static) {
-        self.on_first_turn = Some(Box::new(f));
+    pub fn on_first_turn(&mut self, f: impl Fn(&Config) + 'static) {
+        let f: FirstTurn = std::rc::Rc::new(f);
+        self.remember = Some(f.clone());
+        self.on_first_turn = Some(f);
+    }
+
+    pub fn config(&self) -> &Config {
+        &self.config
+    }
+
+    /// Continues the conversation on another model of the same provider. The window and limits
+    /// come from the model's list entry, or the 128k fallback where there is none, so a
+    /// `--context` flag does not carry over: it described the first model. The model is
+    /// remembered once a turn streams with it, as at startup.
+    pub fn switch_model(&mut self, model: &str, entry: Option<&crate::cache::Entry>) {
+        let window = entry.and_then(|e| e.context_length);
+        // Reasoning blocks may be signed for the old model, and clearing them is always valid;
+        // see `Saved::restore`.
+        if model != self.config.model {
+            self.messages.iter_mut().for_each(|m| m.replay.clear());
+        }
+        let c = &mut self.config;
+        c.model = model.to_string();
+        c.context = window.unwrap_or(128_000);
+        c.context_guessed = window.is_none();
+        c.max_output = entry.and_then(|e| e.max_output);
+        c.adaptive_thinking = entry.is_some_and(|e| e.adaptive_thinking);
+        c.pricing = None;
+        self.on_first_turn = self.remember.clone();
+    }
+
+    /// What OpenRouter lists for the model, after `switch_model`.
+    pub fn apply_listing(&mut self, listing: crate::price::Listing) {
+        listing.apply(&mut self.config);
     }
 
     /// One user prompt and every turn it spawns, until the model stops asking for tools.
@@ -1202,6 +1238,24 @@ mod tests {
         assert!(err.contains("no name"), "{err}");
         assert_eq!(agent.messages.len(), 2, "only the system and user messages");
         assert!(!std::path::Path::new(&path).exists(), "the named call ran");
+    }
+
+    #[tokio::test]
+    async fn a_model_switch_rearms_the_hook_and_drops_reasoning() {
+        let calls = Rc::new(Cell::new(0));
+        let mut agent = agent_with(r#"[[{"text": "a"}], [{"text": "b"}]]"#);
+        let counter = Rc::clone(&calls);
+        agent.on_first_turn(move |_| counter.set(counter.get() + 1));
+        run(&mut agent).await.unwrap();
+        agent.messages[1].replay = vec![serde_json::json!({"type": "thinking"})];
+
+        agent.switch_model("other", None);
+        assert_eq!(agent.model(), "other");
+        assert_eq!(agent.context_window(), 128_000);
+        assert!(agent.messages[1].replay.is_empty());
+
+        run(&mut agent).await.unwrap();
+        assert_eq!(calls.get(), 2);
     }
 
     #[tokio::test]

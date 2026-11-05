@@ -148,3 +148,11 @@ fn reports_state_to_herdr_and_releases_on_quit() {
     ];
     assert!(shape.ends_with(&tail), "{calls}");
 }
+
+/// `/model` switches in session, then the status bar and the confirmation name the new model.
+#[test]
+fn model_switches_in_session() {
+    let drawn = repl("model", "context", "0.5", &["/model", "other-model"]);
+    assert!(drawn.contains("model:other-model,context128k"), "{drawn}");
+    assert!(!drawn.contains("hifromthemock"), "no turn ran: {drawn}");
+}

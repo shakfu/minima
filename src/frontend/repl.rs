@@ -32,6 +32,8 @@ const CALL_WIDTH: usize = 56;
 
 pub const EXIT: [&str; 2] = ["/quit", "/exit"];
 const COMPACT: &str = "/compact";
+const MODELS: &str = "/models";
+const MODEL: &str = "/model";
 
 /// Token and cost counters, apart from the terminal so they can be tested without one.
 #[derive(Default)]
@@ -180,7 +182,63 @@ impl Frontend for Repl {
 enum Request {
     Prompt(String),
     Compact,
+    /// `/models [FILTER]`: refresh the list and print the ids containing the filter.
+    Models(String),
+    /// `/model [ID]`: switch, or with no id name the current one.
+    Model(String),
     Exit,
+}
+
+/// `/models`: re-fetches the provider's list, then prints the ids that contain `filter`, the
+/// current model marked.
+async fn list_models(agent: &Agent, filter: &str, frontend: &Repl) -> Result<()> {
+    let config = agent.config();
+    let mut models = crate::cache::Models::load(&config.base_url);
+    models
+        .refresh(&config.base_url, &config.api_key, config.dialect)
+        .await?;
+    let mut ids: Vec<_> = models.ids().filter(|id| id.contains(filter)).collect();
+    ids.sort_unstable();
+    if ids.is_empty() {
+        anyhow::bail!("no model matches {filter:?} among {}", models.count());
+    }
+    let mut screen = frontend.screen();
+    for id in &ids {
+        let mark = if *id == agent.model() { "* " } else { "  " };
+        screen.line(Tone::Plain, &printable(&format!("{mark}{id}")))?;
+    }
+    let total = format!("{} of {} models", ids.len(), models.count());
+    screen.line(Tone::Role(Style::Muted), &total)?;
+    screen.draw()
+}
+
+/// `/model ID`: continues the conversation on `name`, or with no name reports the current one.
+/// A name the list does not hold is accepted with a warning, since many endpoints serve no list;
+/// the provider rejects a wrong one at the next prompt.
+async fn select_model(agent: &mut Agent, name: &str, frontend: &Repl) -> Result<()> {
+    if name.is_empty() {
+        let text = format!("model: {}", agent.model());
+        let mut screen = frontend.screen();
+        screen.line(Tone::Role(Style::Muted), &printable(&text))?;
+        return screen.draw();
+    }
+    let models = crate::cache::Models::load(&agent.config().base_url);
+    let entry = models.find(name).cloned();
+    agent.switch_model(name, entry.as_ref());
+    if let Some(listing) = crate::price::lookup(agent.config(), false).await {
+        agent.apply_listing(listing);
+    }
+    let mut screen = frontend.screen();
+    if entry.is_none() && models.count() > 0 {
+        let text = format!("{name} is not in the model list; /models shows it");
+        screen.line(Tone::Role(Style::Warn), &printable(&text))?;
+    }
+    let text = format!(
+        "model: {name}, context {}",
+        count(agent.context_window().into())
+    );
+    screen.line(Tone::Role(Style::Muted), &printable(&text))?;
+    screen.draw()
 }
 
 /// Runs on the main thread and drives the runtime with `block_on`; the keyboard thread hands
@@ -258,9 +316,16 @@ pub fn run(
                 )),
                 other => other.map(|_| ()),
             },
+            Ok(Request::Models(filter)) => {
+                runtime.block_on(list_models(agent, &filter, &frontend))
+            }
+            Ok(Request::Model(name)) => runtime.block_on(select_model(agent, &name, &frontend)),
             Ok(Request::Exit) | Err(_) => break,
         };
         frontend.after_tool = false;
+        // A model switch changes the window and whether costs are estimated.
+        frontend.meter.context = agent.context_window();
+        frontend.meter.estimate = agent.cost_is_estimate();
         let saved = match &mut session {
             Some(s) => s.save(agent.provider(), agent.model(), agent.messages()),
             None => Ok(()),
@@ -499,10 +564,12 @@ impl Keyboard {
         let _ = screen.line(Tone::Prompt, &format!("> {trimmed}"));
         screen.busy_since = Some(Instant::now());
         self.busy.store(true, Ordering::SeqCst);
-        let request = if trimmed == COMPACT {
-            Request::Compact
-        } else {
-            Request::Prompt(trimmed.to_string())
+        let (word, arg) = trimmed.split_once(char::is_whitespace).unwrap_or((trimmed, ""));
+        let request = match word {
+            _ if trimmed == COMPACT => Request::Compact,
+            MODELS => Request::Models(arg.trim().to_string()),
+            MODEL => Request::Model(arg.trim().to_string()),
+            _ => Request::Prompt(trimmed.to_string()),
         };
         let _ = self.tx.send(request);
         true

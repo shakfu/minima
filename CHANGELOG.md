@@ -4,6 +4,8 @@
 
 ### Added
 
+- `/models [TEXT]` and `/model ID` in the REPL. `/models` re-fetches the provider's model list and prints the ids containing TEXT. `/model` switches the conversation to another model of the same provider; the status bar, window, limits and prices follow, and the model is remembered once a turn streams with it. A name missing from a non-empty list is accepted with a warning, since many endpoints serve no list.
+
 - `minima [OPTIONS] PROMPT...` starts the REPL with the words, joined by spaces, submitted as the first prompt, so a launcher can start an interactive session already working. It conflicts with `-p` and `--json`.
 
 - `--features codemode` (experimental, off by default) adds a `js` tool: QuickJS through rquickjs, with the other tools callable from scripts. `MINIMA_CODEMODE` picks the variant, and `scripts/codemode_bench.py` compares them. It is a build feature, so default builds gain no C dependency. See `docs/dev/codemode.md`.

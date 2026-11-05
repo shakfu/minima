@@ -119,6 +119,10 @@ impl Models {
         self.entries.len()
     }
 
+    pub fn ids(&self) -> impl Iterator<Item = &str> {
+        self.entries.iter().map(|e| e.id.as_str())
+    }
+
     /// Only unambiguous when the endpoint serves one model, which is the llama.cpp and Ollama
     /// single-model case. Otherwise the user names it.
     pub fn default_model(&self) -> Option<String> {
