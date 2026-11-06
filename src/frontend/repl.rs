@@ -316,9 +316,7 @@ pub fn run(
                 )),
                 other => other.map(|_| ()),
             },
-            Ok(Request::Models(filter)) => {
-                runtime.block_on(list_models(agent, &filter, &frontend))
-            }
+            Ok(Request::Models(filter)) => runtime.block_on(list_models(agent, &filter, &frontend)),
             Ok(Request::Model(name)) => runtime.block_on(select_model(agent, &name, &frontend)),
             Ok(Request::Exit) | Err(_) => break,
         };
@@ -564,7 +562,9 @@ impl Keyboard {
         let _ = screen.line(Tone::Prompt, &format!("> {trimmed}"));
         screen.busy_since = Some(Instant::now());
         self.busy.store(true, Ordering::SeqCst);
-        let (word, arg) = trimmed.split_once(char::is_whitespace).unwrap_or((trimmed, ""));
+        let (word, arg) = trimmed
+            .split_once(char::is_whitespace)
+            .unwrap_or((trimmed, ""));
         let request = match word {
             _ if trimmed == COMPACT => Request::Compact,
             MODELS => Request::Models(arg.trim().to_string()),
