@@ -9,7 +9,6 @@ Exits 3 if --until never appears within --timeout; otherwise with the command's 
 import argparse
 import fcntl
 import os
-import pty
 import re
 import select
 import struct
@@ -29,10 +28,15 @@ def main():
     args = parser.parse_args()
     command = args.command[1:] if args.command[:1] == ["--"] else args.command
 
-    pid, fd = pty.fork()
+    # Sized before the fork: sized after `pty.fork`, the child could read 0x0 first.
+    fd, tty = os.openpty()
+    fcntl.ioctl(tty, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
+    pid = os.fork()
     if pid == 0:
+        os.close(fd)
+        os.login_tty(tty)
         os.execvp(command[0], command)
-    fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
+    os.close(tty)
 
     seen = b""
     deadline = time.monotonic() + args.timeout
