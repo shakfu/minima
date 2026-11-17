@@ -156,3 +156,40 @@ fn model_switches_in_session() {
     assert!(drawn.contains("model:other-model,context128k"), "{drawn}");
     assert!(!drawn.contains("hifromthemock"), "no turn ran: {drawn}");
 }
+
+/// On a terminal that reports 0x0, the REPL exits with an error instead of hanging.
+#[test]
+fn an_unsized_terminal_is_refused() {
+    let dir = std::env::temp_dir().join(format!("minima-repl-unsized-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("scratch directory");
+    let output = Command::new("python3")
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/pty_driver.py"
+        ))
+        .args([
+            "--until",
+            "never drawn",
+            "--timeout",
+            "10",
+            "--size",
+            "0x0",
+            "--",
+        ])
+        .arg(env!("CARGO_BIN_EXE_minima"))
+        .arg("--mock")
+        .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/mock/say-hi.json"))
+        .args(["--no-color", "--root"])
+        .arg(&dir)
+        .arg("hello")
+        .env("XDG_CONFIG_HOME", &dir)
+        .env_remove("HERDR_ENV")
+        .output()
+        .expect("python3 is required for the REPL tests");
+    let _ = std::fs::remove_dir_all(&dir);
+    let drawn = String::from_utf8_lossy(&output.stdout).replace(char::is_whitespace, "");
+    // 3: minima ended before `--until` appeared; 4 would be the driver's timeout.
+    assert_eq!(output.status.code(), Some(3), "{drawn}");
+    assert!(drawn.contains("terminalreports0x0"), "{drawn}");
+}

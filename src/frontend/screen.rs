@@ -11,9 +11,9 @@
 
 use std::io::Stdout;
 use std::ops::Range;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use crossterm::{event, execute, terminal};
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Layout, Position};
@@ -30,6 +30,8 @@ use crate::theme;
 /// The input box grows with its text up to this many rows, then scrolls.
 const MAX_INPUT_ROWS: u16 = 6;
 const SPINNER: [char; 4] = ['|', '/', '-', '\\'];
+/// How long a terminal that reports 0 rows or columns has to report a real size.
+const SIZE_WAIT: Duration = Duration::from_secs(1);
 
 /// How a committed row looks: the roles `theme` names, plus the banner and the echoed prompt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,6 +61,7 @@ pub struct Screen {
 
 impl Screen {
     pub fn new() -> Result<Self> {
+        wait_for_size()?;
         terminal::enable_raw_mode()?;
         execute!(std::io::stdout(), event::EnableBracketedPaste)?;
         let input = new_input("");
@@ -218,6 +221,22 @@ impl Screen {
 impl Drop for Screen {
     fn drop(&mut self) {
         crate::term::restore();
+    }
+}
+
+/// ratatui's `insert_before` never returns on a 0-row terminal, so the REPL refuses to start on one.
+/// A short wait first, as a pseudo-terminal may be sized just after its process starts.
+fn wait_for_size() -> Result<()> {
+    let deadline = Instant::now() + SIZE_WAIT;
+    loop {
+        let (cols, rows) = terminal::size()?;
+        if cols > 0 && rows > 0 {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            bail!("the terminal reports {cols}x{rows}; the REPL needs a sized terminal, or use -p");
+        }
+        std::thread::sleep(Duration::from_millis(20));
     }
 }
 

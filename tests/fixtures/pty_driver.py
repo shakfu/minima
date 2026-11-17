@@ -3,7 +3,8 @@
 Waits for --until in the output, compared without whitespace, then --settle seconds more, then
 sends Ctrl-D. Answers the cursor-position query the inline viewport sends at start, which a real
 terminal would answer.
-Exits 3 if --until never appears within --timeout; otherwise with the command's status.
+Exits 3 if the command ends before --until appears, 4 if --timeout passes first; otherwise with
+the command's status. --size is COLSxROWS, 80x24 by default.
 """
 
 import argparse
@@ -24,13 +25,15 @@ def main():
     parser.add_argument("--until", required=True)
     parser.add_argument("--settle", type=float, default=0.0)
     parser.add_argument("--timeout", type=float, default=20.0)
+    parser.add_argument("--size", default="80x24")
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     command = args.command[1:] if args.command[:1] == ["--"] else args.command
 
     # Sized before the fork: sized after `pty.fork`, the child could read 0x0 first.
     fd, tty = os.openpty()
-    fcntl.ioctl(tty, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
+    cols, rows = (int(n) for n in args.size.split("x"))
+    fcntl.ioctl(tty, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
     pid = os.fork()
     if pid == 0:
         os.close(fd)
@@ -47,7 +50,7 @@ def main():
         if now > deadline:
             os.kill(pid, 9)
             sys.stdout.write(plain(seen))
-            sys.exit(3)
+            sys.exit(4)
         if quit_at is None and squeeze(args.until.encode()) in squeeze(strip(seen)):
             quit_at = now + args.settle
         if quit_at is not None and not sent and now >= quit_at:
