@@ -4,6 +4,8 @@
 
 ### Added
 
+- `-r`/`--recurse`: recursive agents. The agent reaches its family through `bash`: `minima -r spawn --name NAME -- TASK` starts a child agent in its own process group, headless, whose final answer lands in the parent's mailbox; `recv [--wait SECS]`, `send --to NAME_OR_ID TEXT`, `agents [--prune]` and `shutdown [--grace SECS]` do the rest. Mail that arrives between prompts is put before the next one. A child inherits the root, `--sandbox` and the `--writable` set from the family's registry, and cannot widen them; under `--sandbox` it saves no session, since the session directory is outside the writable set. `--budget-tokens N` and `--budget-cost USD` on the root give the family a budget: each request is checked first against the family's ledger plus a projection of its own size, holding back 5%, and crossing it stops every other member and fails the request. No daemon: the registry, mailboxes and ledger are files under `$XDG_STATE_HOME/minima/family/<id>/`, held with `flock`. Subcommands are recognised only directly after `-r`, so a prompt that starts with their names is unaffected. Design: `docs/dev/recursion.md`.
+
 - `/models [TEXT]` and `/model ID` in the REPL. `/models` re-fetches the provider's model list and prints the ids containing TEXT. `/model` switches the conversation to another model of the same provider; the status bar, window, limits and prices follow, and the model is remembered once a turn streams with it. A name missing from a non-empty list is accepted with a warning, since many endpoints serve no list.
 
 - `minima [OPTIONS] PROMPT...` starts the REPL with the words, joined by spaces, submitted as the first prompt, so a launcher can start an interactive session already working. It conflicts with `-p` and `--json`.

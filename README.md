@@ -27,34 +27,42 @@ Arguments:
                Words are joined with spaces
 
 Options:
-      --root <DIR>      Directory the agent works in, and the bound --sandbox
-                        applies. Default: the current directory
-      --sandbox         Confine writes to the root: bash under the platform's
-                        filesystem sandbox, write and edit by path
-      --writable <DIR>  Another directory bash may write to under --sandbox.
-                        Repeatable
-  -p, --prompt <TEXT>   Answer one prompt, print the result, exit
-      --json            With -p: print JSON lines, ending in a `result` record
-  -P, --provider <ID>   Provider id. Default: the first one whose key is set
-                        [env: MINIMA_PROVIDER=]
-  -m, --model <ID>      Model id. Default: the last one used with this provider
-                        [env: MINIMA_MODEL=]
-      --base-url <URL>  Override the provider's endpoint. The wire format stays
-                        the same [env: MINIMA_BASE_URL=]
-      --api-key <KEY>   Provider key. Requires --provider [env: MINIMA_API_KEY]
-      --no-color        Disable colour. Also off for non-terminals or when
-                        NO_COLOR is set
-      --context <N>     Context window in tokens. Default: the cached value for
-                        the model [env: MINIMA_CONTEXT=]
-      --mock <PATH>     Replay a scripted JSON stream instead of the network
-      --max-turns <N>   Max provider round-trips per user turn [default: 100]
-      --refresh-models  Re-fetch the model list, ignoring the cache
-  -c, --continue        Resume the newest saved session for the root
-      --resume <ID>     Resume the saved session with this id. Provider and
-                        model come from it unless given
-      --no-session      Do not save this session [env: MINIMA_NO_SESSION=]
-  -h, --help            Print help
-  -V, --version         Print version
+      --root <DIR>         Directory the agent works in, and the bound --sandbox
+                           applies. Default: the current directory
+      --sandbox            Confine writes to the root: bash under the platform's
+                           filesystem sandbox, write and edit by path
+      --writable <DIR>     Another directory bash may write to under --sandbox.
+                           Repeatable
+  -p, --prompt <TEXT>      Answer one prompt, print the result, exit
+      --json               With -p: print JSON lines, ending in a `result`
+                           record
+  -P, --provider <ID>      Provider id. Default: the first one whose key is set
+                           [env: MINIMA_PROVIDER=]
+  -m, --model <ID>         Model id. Default: the last one used with this
+                           provider [env: MINIMA_MODEL=]
+      --base-url <URL>     Override the provider's endpoint. The wire format
+                           stays the same [env: MINIMA_BASE_URL=]
+      --api-key <KEY>      Provider key. Requires --provider [env:
+                           MINIMA_API_KEY]
+      --no-color           Disable colour. Also off for non-terminals or when
+                           NO_COLOR is set
+      --context <N>        Context window in tokens. Default: the cached value
+                           for the model [env: MINIMA_CONTEXT=]
+      --mock <PATH>        Replay a scripted JSON stream instead of the network
+      --max-turns <N>      Max provider round-trips per user turn [default: 100]
+      --refresh-models     Re-fetch the model list, ignoring the cache
+  -c, --continue           Resume the newest saved session for the root
+      --resume <ID>        Resume the saved session with this id. Provider and
+                           model come from it unless given
+      --no-session         Do not save this session [env: MINIMA_NO_SESSION=]
+  -r, --recurse            Let the agent spawn and message other agents. See
+                           docs/dev/recursion.md
+      --budget-tokens <N>  With -r: total tokens the family may use. Every agent
+                           in it stops before the next request could cross it
+      --budget-cost <USD>  With -r: total cost in USD the family may use, as
+                           --budget-tokens
+  -h, --help               Print help
+  -V, --version            Print version
 ```
 
 ## Features
@@ -62,6 +70,8 @@ Options:
 - **Providers:** 5 in a fixed registry, over 3 wire formats: openai-chat, openai-responses and anthropic-messages. See [Providers](#providers).
 
 - **Tools:** 4. `read` returns numbered lines, 2000 by default. `write` creates or replaces a file. `edit` replaces one exact string. Both replace a file by rename, so a crash leaves either the old or the new contents; `docs/dev/atomic-writes.md` lists the exceptions. `bash` runs a command under `bash -c`.
+
+- **Recursion:** off by default. `-r` lets the agent start child agents and message them through `bash`: `minima -r spawn|send|recv|agents|shutdown`. Children inherit the root, `--sandbox` and `--writable`, and cannot widen them. `--budget-tokens` and `--budget-cost` stop the whole family before a request could cross the budget. No daemon: state is files under `$XDG_STATE_HOME/minima/family/`. See `docs/dev/recursion.md`.
 
 - **Shell commands:** each call runs in its own process group. A timeout (120 s default, 600 s cap) or a cancel kills the group. Background jobs outlive the call and die with minima. A login-shell wrapper such as `bash -lc` is refused, because a login profile can reorder `PATH`.
 

@@ -10,9 +10,10 @@ use futures_util::StreamExt;
 
 use crate::cancel::Cancel;
 use crate::config::{Bounds, CONTEXT_MARGIN, Config};
+use crate::family::Family;
 use crate::frontend::Frontend;
 use crate::prompt::system_prompt;
-use crate::provider::{Error, Message, Provider, Role};
+use crate::provider::{Error, Message, Provider, Role, Usage};
 use crate::tools::{self, Tool};
 use crate::turn::{Assembler, Turn};
 
@@ -61,6 +62,8 @@ pub struct Agent {
     on_first_turn: Option<FirstTurn>,
     /// What `on_first_turn` was given, kept to arm it again.
     remember: Option<FirstTurn>,
+    /// Set under `--recurse`: the mailbox and the budget.
+    family: Option<Family>,
 }
 
 type FirstTurn = std::rc::Rc<dyn Fn(&Config)>;
@@ -100,7 +103,25 @@ impl Agent {
             overhead,
             on_first_turn: None,
             remember: None,
+            family: None,
         }
+    }
+
+    /// Tells the model about its family, and reads mail and checks the budget from now on.
+    pub fn join(&mut self, family: Family) {
+        let text = family.prompt();
+        let tokens = estimate(&text);
+        if let Some(system) = self.messages[0].content.as_mut() {
+            system.push_str("\n\n");
+            system.push_str(&text);
+        }
+        self.overhead = self.overhead.saturating_add(tokens);
+        self.pending = self.pending.saturating_add(tokens);
+        self.family = Some(family);
+    }
+
+    pub fn family(&self) -> Option<&Family> {
+        self.family.as_ref()
     }
 
     pub fn context_window(&self) -> u32 {
@@ -180,6 +201,7 @@ impl Agent {
         cancel: &Cancel,
     ) -> Result<()> {
         cancel.reset();
+        let prompt = &self.with_mail(prompt)?;
         // Named apart from the general check: "start a new session" cannot fix an AGENTS.md.
         if self.overhead.saturating_add(CONTEXT_MARGIN) >= self.config.context {
             bail!(
@@ -217,6 +239,7 @@ impl Agent {
                 return Ok(());
             };
             self.price(&mut turn);
+            self.spend(&turn.usage);
 
             frontend.turn_end(turn.usage);
             if turn.usage.total_tokens > 0 {
@@ -396,6 +419,7 @@ impl Agent {
             return Ok(Compaction::Cancelled);
         };
         self.price(&mut turn);
+        self.spend(&turn.usage);
         quiet.0.turn_end(turn.usage);
         let summary = turn.text.trim();
         if summary.is_empty() {
@@ -461,6 +485,7 @@ impl Agent {
         frontend: &mut dyn Frontend,
         cancel: &Cancel,
     ) -> Result<Option<Turn>> {
+        self.check_budget(room)?;
         let mut attempt = 0;
         loop {
             let dropped = match self.attempt(messages, room, frontend, cancel).await? {
@@ -587,6 +612,64 @@ impl Agent {
     }
 
     /// Estimated tokens the window has left for the response.
+    /// Mail that arrived since the last prompt, put before it.
+    fn with_mail(&self, prompt: &str) -> Result<String> {
+        let Some(family) = &self.family else {
+            return Ok(prompt.to_string());
+        };
+        let mut text = String::new();
+        for m in family.take_mail()? {
+            text.push_str(&format!(
+                "[message from {} ({})]\n{}\n\n",
+                m.from_name, m.from, m.text
+            ));
+        }
+        text.push_str(prompt);
+        Ok(text)
+    }
+
+    /// Before each request: whether the family's spend plus this request could cross its budget.
+    /// The request's input is what the window holds less `room`, its output at most the model's
+    /// ceiling. Crossing stops every other member; this one reports why.
+    fn check_budget(&self, room: u32) -> Result<()> {
+        let Some(family) = &self.family else {
+            return Ok(());
+        };
+        let input = self.config.context.saturating_sub(room);
+        let output = self
+            .config
+            .max_output
+            // What minima asks of Anthropic when the model list gives no ceiling.
+            .unwrap_or(crate::provider::anthropic::DEFAULT_MAX_TOKENS)
+            .min(room);
+        let next = Usage {
+            prompt_tokens: input,
+            completion_tokens: output,
+            total_tokens: input.saturating_add(output),
+            ..Usage::default()
+        };
+        let cost = self.config.pricing.as_ref().map_or(0.0, |p| p.cost(&next));
+        if let Err(e) = family.check_budget(u64::from(next.total_tokens), cost) {
+            if let Err(stop) = family.shutdown_others() {
+                return Err(e.context(format!("shutting the family down failed: {stop:#}")));
+            }
+            return Err(e);
+        }
+        Ok(())
+    }
+
+    /// Records a request's usage against the family's budget.
+    fn spend(&self, usage: &Usage) {
+        if let Some(family) = &self.family {
+            let tokens = usage
+                .total_tokens
+                .max(usage.prompt_tokens.saturating_add(usage.completion_tokens));
+            if let Err(e) = family.spend(u64::from(tokens), usage.cost.unwrap_or(0.0)) {
+                tracing::warn!("recording usage: {e:#}");
+            }
+        }
+    }
+
     fn room(&self) -> u32 {
         let used = self.used.saturating_add(self.pending);
         self.config.context.saturating_sub(used)

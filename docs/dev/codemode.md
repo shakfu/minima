@@ -47,13 +47,17 @@ Without `--sandbox`, `bash` runs unconfined. This happens when the user omits th
 In that mode, codemode with a restricted tool set is a confined channel that `bash` cannot be:
 
 - QuickJS has no filesystem, network or process access. A script reaches only the tools passed in.
+
 - Pass `read`, `write` and `edit`, not `bash`. Apply `confine_path` to `write` and `edit` inside codemode whether or not `--sandbox` is set.
+
 - Multi-file reading, filtering and edits then run with writes bounded to the root and no process spawned. Today the same work goes through unconfined `bash`, and the prompt line pushes more of it there.
+
 - In-process QuickJS adds little exposure here: unconfined `bash` already runs with the same privileges.
 
 Limits:
 
 - `bash` stays available, and nothing makes the model prefer codemode for work `bash` can also do. A "no-`bash`" mode that offers only `read` and codemode, plus confined `write` and `edit`, would make the channel enforced instead of advisory. It also loses builds and tests.
+
 - `read` stays unbounded, so the restricted set confines writes only. Reading `~/.ssh` is still possible, with no network to send it out except through the model's reply.
 
 ## Defects in the commonly suggested harness
@@ -107,17 +111,25 @@ Built as `cargo build --features codemode`. Off by default; the default build is
 Implementation (`src/tools/js.rs`):
 
 - Native rquickjs, without the `futures` feature. Each call gets a fresh runtime on its own thread. Tool calls block on the tokio handle from that thread, so scripts stay synchronous and no worker stalls.
+
 - `tools.all([[name, args], ...])` runs calls concurrently with `join_all`. This replaces `Promise.all`.
+
 - Limits: 64 MiB heap, 1 MiB stack, per-call deadline (default 120 s, max 600 s). The interrupt handler also polls `Cancel`.
+
 - Script `write` and `edit` always go through `confine_path`, with or without `--sandbox`.
+
 - `scripts/codemode_bench.py` runs five checked tasks under each variant on a fresh `git archive HEAD` copy. It records pass rate, tokens, turns, cost and calls per tool. By default it runs without `--sandbox`.
 
 Findings so far, from building it:
 
 - **The tool cap breaks aggregation.** The first version passed script reads through the `read` tool, which stops at `TOOL_OUTPUT_CAP` (32 KiB). A line count of `agent.rs` returned 732 of 1206 lines, with no error. Scripts now read the whole file, up to 8 MiB; only the script's result is capped. Inner `bash` output in `js-bash` is still capped.
+
 - **`js-only` needs a way to list files.** Without `bash`, the four tools cannot list a directory, so scripts also get `tools.ls(dir)`. That makes the variant a fifth capability, not only a new channel.
+
 - **Inner calls are invisible.** The user sees one `js` call; reads and edits inside it are not shown.
+
 - **No state between calls.** Pi's `store()` has no equivalent here.
+
 - **Cost of the dependency.** The release binary grows from 6.5 MiB to 7.6 MiB on macOS arm64. rquickjs-sys 0.14.0 vendors quickjs-ng 0.16.2 (`QJS_VERSION_*` in its `quickjs/`), not Bellard's QuickJS.
 
 ### Results: Qwen3.5-9B, local (incomplete)
@@ -134,8 +146,11 @@ Findings so far, from building it:
 | count-tests | js-only | 0/1 | 42656 | 8 | bash=7, all refused |
 
 - The model never called `js`, in any variant.
+
 - In `js-only` it called `bash`, which was not advertised, seven times. Every call was refused, and it still answered with per-file counts it had no way to obtain.
+
 - Every `count-tests` answer was wrong (the true total is 206; grep agrees with the checker).
+
 - So at 9B the variants do not differ in the way that matters, because codemode is never tried. Token differences across variants come from different `bash` strategies.
 
 ### Results: Claude Haiku 5.5 and Sonnet 5.5
@@ -151,11 +166,17 @@ Findings so far, from building it:
 | `js-only` | 4/5 | 6 of 7 | 5/5 | 5 of 5 |
 
 - Neither model chose `js` for a task one `bash` call could do. Sonnet's 3 `js` calls were all on `doc-gaps`, where attributes between `///` and `pub fn` make a one-liner awkward.
+
 - On `doc-gaps`, Sonnet's optional `js` cost more than `line`: 6657 and 6170 input tokens against 5031, at 3 turns each. The model explored with `bash` first. `js-only` used 3327 tokens in 2 turns, the lowest of any variant.
+
 - On the other four tasks, `js-only` cost Sonnet 7-80% more than `none`. A script takes more output tokens than a pipeline.
+
 - Offering `js` adds 700-800 input tokens per request, from the schema and the aggregation line. On Sonnet that is 10-15% of a simple run's cost, paid whether or not `js` is called.
+
 - Haiku's one failure was in `js-only`: all three line counts one high (1207 for 1206), consistent with counting `split('\n')` elements.
+
 - Four of five tasks finish in one call and two turns under every `bash` variant. These tasks cannot show an efficiency gain over `bash`.
+
 - Reported cost: Sonnet $0.22. Haiku $0.0145, about 5x below what its token counts imply at list price; the price-list match for `claude-haiku-5-5` is unverified.
 
 ### Conclusion
@@ -168,7 +189,7 @@ The spike stays behind `--features codemode`. Default builds are unchanged.
 
 ### Resuming
 
-```
+```text
 cargo build --features codemode
 ANTHROPIC_API_KEY=... scripts/codemode_bench.py --provider anthropic \
   --model <model> --reps 3 --out codemode-bench.jsonl

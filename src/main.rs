@@ -9,6 +9,7 @@ mod agent;
 mod cache;
 mod cancel;
 mod config;
+mod family;
 mod frontend;
 mod herdr;
 mod price;
@@ -30,10 +31,11 @@ use tracing_subscriber::EnvFilter;
 use crate::agent::Agent;
 use crate::cancel::Cancel;
 use crate::config::{Bounds, Cli};
+use crate::family::Family;
 use crate::frontend::Frontend;
 use crate::frontend::headless::Headless;
 use crate::frontend::json::Json;
-use crate::provider::{Provider, http::Http, mock::Mock};
+use crate::provider::{Provider, Role, http::Http, mock::Mock};
 use crate::session::Session;
 
 fn main() -> ExitCode {
@@ -55,20 +57,34 @@ fn main() -> ExitCode {
 }
 
 fn start() -> Result<ExitCode> {
-    let mut cli = Cli::parse();
+    let args: Vec<_> = std::env::args_os().collect();
+    if let Some(code) = family::dispatch(&args)? {
+        return Ok(code);
+    }
+    let mut cli = Cli::parse_from(args);
     #[cfg(feature = "codemode")]
     tools::js::init_variant()?;
+    let inherited = match cli.recurse {
+        true => family::inherit(&mut cli)?,
+        false => None,
+    };
     let root = cli.resolve_root()?;
     std::env::set_current_dir(&root)
         .with_context(|| format!("changing to root {}", root.display()))?;
     theme::init(cli.no_color);
+    let mut bounds = cli.bounds(root)?;
+    // Before the runtime: `join` sets the environment every `bash` command inherits, which is
+    // sound only while no other thread runs.
+    let family = match cli.recurse {
+        true => Some(family::join(inherited, &mut bounds, &cli)?),
+        false => None,
+    };
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
 
-    exit_on_hangup_or_terminate(&runtime)?;
+    exit_on_hangup_or_terminate(&runtime, family.clone())?;
 
-    let bounds = cli.bounds(root)?;
     // The kernel policy can fail to install, so it is tried once here. It runs against the real
     // bounds, so a `--writable` path the policy will not take fails here rather than on the
     // model's first command.
@@ -105,7 +121,13 @@ fn start() -> Result<ExitCode> {
         Some(path) => Provider::Mock(Mock::load(path)?),
         None => Provider::Http(Http::new()?),
     };
+    if let Some(family) = &family {
+        family.describe(&config.provider, &config.model)?;
+    }
     let mut agent = Agent::with_bounds(provider, config, bounds.clone());
+    if let Some(family) = family.clone() {
+        agent.join(family);
+    }
     // Recorded once a turn streams, so a model the provider rejects is never remembered. Not in
     // resolve(), so config resolution has no disk side effect and its tests write nothing.
     if cli.mock.is_none() {
@@ -123,11 +145,15 @@ fn start() -> Result<ExitCode> {
     // `--no-session` with `--continue` reads the session and writes nothing back.
     let session = session.filter(|_| !cli.no_session);
 
-    match cli.prompt.as_deref() {
+    let code = match cli.prompt.as_deref() {
         Some(prompt) => runtime.block_on(headless(&mut agent, session, prompt, cli.json, &bounds)),
         None => frontend::repl::run(&runtime, &mut agent, session, &bounds, cli.first_prompt())
             .map(|()| ExitCode::SUCCESS),
+    };
+    if let Some(family) = &family {
+        family.leave();
     }
+    code
 }
 
 /// Background jobs from `bash` live until minima exits, not past it.
@@ -142,7 +168,10 @@ impl Drop for KillBackgroundJobs {
 /// `process::exit` runs no destructors, so this kills the jobs and restores the terminal itself.
 /// Without it, closing the terminal would leave the jobs running: they are in their own process
 /// groups, which the hangup does not reach.
-fn exit_on_hangup_or_terminate(runtime: &tokio::runtime::Runtime) -> Result<()> {
+fn exit_on_hangup_or_terminate(
+    runtime: &tokio::runtime::Runtime,
+    family: Option<Family>,
+) -> Result<()> {
     use tokio::signal::unix::{SignalKind, signal};
 
     // Registered here rather than in the task, so a signal that arrives before the task first runs
@@ -158,6 +187,9 @@ fn exit_on_hangup_or_terminate(runtime: &tokio::runtime::Runtime) -> Result<()> 
         };
         term::restore();
         tools::kill_background();
+        if let Some(family) = &family {
+            family.leave();
+        }
         std::process::exit(code);
     });
     Ok(())
@@ -174,6 +206,7 @@ async fn headless(
     let cancel = Cancel::new();
     let watcher = tokio::spawn({
         let cancel = cancel.clone();
+        let family = agent.family().cloned();
         async move {
             if tokio::signal::ctrl_c().await.is_ok() {
                 cancel.cancel();
@@ -181,6 +214,9 @@ async fn headless(
                 // could only be killed from another terminal.
                 if tokio::signal::ctrl_c().await.is_ok() {
                     tools::kill_background();
+                    if let Some(family) = &family {
+                        family.leave();
+                    }
                     std::process::exit(130);
                 }
             }
@@ -193,6 +229,19 @@ async fn headless(
     let frontend: &mut dyn Frontend = if as_json { &mut json } else { &mut plain };
     let result = agent.run(prompt, frontend, &cancel).await;
     watcher.abort();
+    if let Some(family) = agent.family() {
+        let answer = match &result {
+            Err(e) => format!("failed: {e:#}"),
+            Ok(()) if cancel.is_cancelled() => "cancelled".into(),
+            Ok(()) => last_answer(agent.messages()),
+        };
+        if let Err(e) = family.answer_parent(&answer) {
+            eprintln!(
+                "minima: answer not sent to the parent: {}",
+                frontend::printable(&format!("{e:#}"))
+            );
+        }
+    }
     // Reported, not fatal: the answer is already printed.
     if let Some(s) = &mut session
         && let Err(e) = s.save(agent.provider(), agent.model(), agent.messages())
@@ -220,4 +269,14 @@ async fn headless(
         Err(_) if as_json => Ok(ExitCode::FAILURE),
         result => result.map(|()| ExitCode::SUCCESS),
     }
+}
+
+/// A spawned agent's final answer: its last text.
+fn last_answer(messages: &[provider::Message]) -> String {
+    messages
+        .iter()
+        .rev()
+        .filter(|m| m.role == Role::Assistant)
+        .find_map(|m| m.content.clone().filter(|c| !c.trim().is_empty()))
+        .unwrap_or_else(|| "(no answer)".into())
 }

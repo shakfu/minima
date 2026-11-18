@@ -126,6 +126,19 @@ pub struct Cli {
     /// Do not save this session.
     #[arg(long, env = "MINIMA_NO_SESSION")]
     pub no_session: bool,
+
+    /// Let the agent spawn and message other agents. See docs/dev/recursion.md.
+    #[arg(short = 'r', long)]
+    pub recurse: bool,
+
+    /// With -r: total tokens the family may use. Every agent in it stops before the
+    /// next request could cross it.
+    #[arg(long, requires = "recurse", value_name = "N")]
+    pub budget_tokens: Option<u64>,
+
+    /// With -r: total cost in USD the family may use, as --budget-tokens.
+    #[arg(long, requires = "recurse", value_name = "USD")]
+    pub budget_cost: Option<f64>,
 }
 
 impl Cli {
@@ -387,6 +400,9 @@ mod tests {
             continue_last: false,
             resume: None,
             no_session: false,
+            recurse: false,
+            budget_tokens: None,
+            budget_cost: None,
         }
     }
 

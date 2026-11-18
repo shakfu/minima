@@ -50,7 +50,7 @@ An allow-list of programs is the only version that resists these. It still fails
 
 One policy type, two implementations, selected at compile time.
 
-```
+```text
 struct Confine { root: PathBuf, tmp: PathBuf }
 ```
 
@@ -110,7 +110,7 @@ Status: Apple deprecated the interface, it remains present and functional in cur
 
 The shape:
 
-```
+```text
 sandbox-exec -p '(version 1)(allow default)(deny file-write*)
                  (allow file-write* (subpath "<root>") (subpath "<tmp>"))' bash -c '<command>'
 ```
@@ -165,14 +165,11 @@ Landlock is pinned to ABI 3 as a hard requirement, which means kernel 6.2. ABI 1
 
 Degradation is open decision 1, answered as it was written: `tools::preflight` runs one confined command at startup and fails the run if the sandbox cannot be installed. That answer is what makes the sandbox opt-in. A mode that refuses to start cannot be the default when the floor excludes Debian 12, RHEL 9 and Ubuntu 22.04 GA, and the alternative -- starting unconfined with a warning -- is the quiet failure the decision rejects. The flag carries the choice instead of the runtime guessing.
 
-Measured 2026-09-20, correcting the measurement below: an offline `cargo build` opens
-`$CARGO_HOME/.package-cache`, `.global-cache` and `.package-cache-mutate` with `O_RDWR|O_CREAT` on
-every invocation. The earlier note that a build "wrote 0 files" under `~/.cargo` counted content writes, not opens. Cache writes are therefore required for any build, not only for a dependency fetch, which is what moved the caches onto the permissive side of the policy.
+Measured 2026-09-20, correcting the measurement below: an offline `cargo build` opens `$CARGO_HOME/.package-cache`, `.global-cache` and `.package-cache-mutate` with `O_RDWR|O_CREAT` on every invocation. The earlier note that a build "wrote 0 files" under `~/.cargo` counted content writes, not opens. Cache writes are therefore required for any build, not only for a dependency fetch, which is what moved the caches onto the permissive side of the policy.
 
 ## Protected paths
 
-Added 2026-09-20, after the sandbox. `write` and `edit` refuse a resolved path under the root with a `.git` component, or a component beginning `.env`. The model used was [pi's protected-paths extension](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/examples/extensions/protected-paths.ts),
-which blocks its `write` and `edit` on `path.includes(".env" | ".git/" | "node_modules/")`.
+Added 2026-09-20, after the sandbox. `write` and `edit` refuse a resolved path under the root with a `.git` component, or a component beginning `.env`. The model used was [pi's protected-paths extension](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/examples/extensions/protected-paths.ts), which blocks its `write` and `edit` on `path.includes(".env" | ".git/" | "node_modules/")`.
 
 Three changes to that rule. It matches the path after resolution, so `../elsewhere/.env` is caught and a root reached through a symlink still matches. It matches whole components, so `.github/`, `.gitignore` and `env.sample` are not caught, and `.env` matches as a prefix, so `.env.production` is.
 
@@ -302,7 +299,7 @@ Assessed 2026-09-22 from documentation and kernel semantics. Nothing here was me
 
 The candidate is the shape [Codex's Linux sandbox](https://github.com/openai/codex/blob/main/codex-rs/linux-sandbox/README.md) now uses by default ([openai/codex#13996](https://github.com/openai/codex/pull/13996)):
 
-```
+```text
 bwrap --ro-bind / / --dev /dev --proc /proc \
       --bind <root> <root> --bind <tmp> <tmp> [--bind <cache> <cache> ...] \
       --ro-bind <root>/.git <root>/.git \

@@ -12,7 +12,7 @@ use crate::config::Config;
 
 /// Required by the wire, with no Chat equivalent. Used when the model list gives no ceiling; every
 /// current Claude model accepts it, and a `write` of a whole file needs the room.
-const DEFAULT_MAX_TOKENS: u32 = 32_000;
+pub(crate) const DEFAULT_MAX_TOKENS: u32 = 32_000;
 
 /// `room` is what the window has left, and no response can be longer. Claude models before 4.5
 /// reject a request whose input plus `max_tokens` exceeds the window; later ones stop at it.
