@@ -55,10 +55,12 @@ Options:
       --resume <ID>        Resume the saved session with this id. Provider and
                            model come from it unless given
       --no-session         Do not save this session [env: MINIMA_NO_SESSION=]
-  -r, --recurse            Let the agent spawn and message other agents. See
+  -r, --recurse            Let the agent spawn child agents and wait for their
+                           answers. Needs --budget-tokens. See
                            docs/dev/recursion.md
-      --budget-tokens <N>  With -r: total tokens the family may use. Every agent
-                           in it stops before the next request could cross it
+      --budget-tokens <N>  With -r, required: total tokens the family may use.
+                           Every agent in it stops before the next request could
+                           cross it
       --budget-cost <USD>  With -r: total cost in USD the family may use, as
                            --budget-tokens
   -h, --help               Print help
@@ -71,7 +73,7 @@ Options:
 
 - **Tools:** 4. `read` returns numbered lines, 2000 by default. `write` creates or replaces a file. `edit` replaces one exact string. Both replace a file by rename, so a crash leaves either the old or the new contents; `docs/dev/atomic-writes.md` lists the exceptions. `bash` runs a command under `bash -c`.
 
-- **Recursion:** off by default. `-r` lets the agent start child agents and message them through `bash`: `minima -r spawn|send|recv|agents|shutdown`. Children inherit the root, `--sandbox` and `--writable`, and cannot widen them. `--budget-tokens` and `--budget-cost` stop the whole family before a request could cross the budget. No daemon: state is files under `$XDG_STATE_HOME/minima/family/`. See `docs/dev/recursion.md`.
+- **Recursion:** off by default. `-r` lets the agent start child agents and collect their answers through `bash`: `minima -r spawn|wait|agents|shutdown`. A child stops when its parent exits. Children inherit the root, `--sandbox` and `--writable`, and cannot widen them. `--budget-tokens` is required, and `--budget-cost` optional; a request that would cross either fails and stops the requesting agent's children. No daemon: state is files under `$XDG_STATE_HOME/minima/family/`. See `docs/dev/recursion.md`.
 
 - **Shell commands:** each call runs in its own process group. A timeout (120 s default, 600 s cap) or a cancel kills the group. Background jobs outlive the call and die with minima. A login-shell wrapper such as `bash -lc` is refused, because a login profile can reorder `PATH`.
 

@@ -75,7 +75,7 @@ pub fn build_body(cfg: &Config, messages: &[Message], tools: &[Value], room: u32
     mark_previous_request(&mut wire);
     let mut body = json!({
         "model": cfg.model,
-        "max_tokens": cfg.max_output.unwrap_or(DEFAULT_MAX_TOKENS).min(room).max(1),
+        "max_tokens": super::output_cap(cfg, room),
         "stream": true,
         "messages": wire,
         // Anthropic caches only up to a marked block. The top-level marker is automatic caching:

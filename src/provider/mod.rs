@@ -211,11 +211,22 @@ impl Dialect {
         cache_key: &str,
         room: u32,
     ) -> serde_json::Value {
-        match self {
-            Dialect::Chat => chat::build_body(cfg, messages, tools, cache_key),
-            Dialect::Responses => responses::build_body(cfg, messages, tools, cache_key),
-            Dialect::Messages => anthropic::build_body(cfg, messages, tools, room),
+        // Chat and Responses need no cap, and send one only when the config asks.
+        let (mut body, cap) = match self {
+            Dialect::Chat => (
+                chat::build_body(cfg, messages, tools, cache_key),
+                "max_tokens",
+            ),
+            Dialect::Responses => (
+                responses::build_body(cfg, messages, tools, cache_key),
+                "max_output_tokens",
+            ),
+            Dialect::Messages => return anthropic::build_body(cfg, messages, tools, room),
+        };
+        if cfg.cap_output {
+            body[cap] = serde_json::json!(output_cap(cfg, room));
         }
+        body
     }
 
     /// One SSE frame in, zero or more provider-independent events out. Only Anthropic needs the
@@ -227,6 +238,15 @@ impl Dialect {
             Dialect::Messages => anthropic::parse_frame(event, data),
         }
     }
+}
+
+/// The most output a request asks for: the model's ceiling, else Anthropic's default, bounded by
+/// what the window has left. No response can be longer than `room`.
+pub fn output_cap(cfg: &crate::config::Config, room: u32) -> u32 {
+    cfg.max_output
+        .unwrap_or(anthropic::DEFAULT_MAX_TOKENS)
+        .min(room)
+        .max(1)
 }
 
 pub enum Provider {

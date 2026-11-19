@@ -140,7 +140,11 @@ fn start() -> Result<ExitCode> {
             agent.resume(saved.restore(agent.provider(), agent.model()));
             Some(session)
         }
-        None => config_dir.map(|dir| Session::new(&dir, &bounds.root)),
+        // A spawned child saves under its member id, so `--resume ID` opens it.
+        None => config_dir.map(|dir| match family.as_ref().filter(|f| f.parent.is_some()) {
+            Some(f) => Session::with_id(&dir, &bounds.root, &f.me),
+            None => Session::new(&dir, &bounds.root),
+        }),
     };
     // `--no-session` with `--continue` reads the session and writes nothing back.
     let session = session.filter(|_| !cli.no_session);
@@ -167,7 +171,8 @@ impl Drop for KillBackgroundJobs {
 
 /// `process::exit` runs no destructors, so this kills the jobs and restores the terminal itself.
 /// Without it, closing the terminal would leave the jobs running: they are in their own process
-/// groups, which the hangup does not reach.
+/// groups, which the hangup does not reach. A family member takes the same path when its parent
+/// exits or `shutdown` asks it to stop.
 fn exit_on_hangup_or_terminate(
     runtime: &tokio::runtime::Runtime,
     family: Option<Family>,
@@ -181,9 +186,25 @@ fn exit_on_hangup_or_terminate(
     let mut terminate = signal(SignalKind::terminate())?;
     runtime.spawn(async move {
         // 128 + the signal number, as a shell reports it.
+        let stopped = async {
+            match &family {
+                Some(f) => f.stopped().await,
+                None => std::future::pending().await,
+            }
+        };
         let code = tokio::select! {
             _ = hangup.recv() => 129,
             _ = terminate.recv() => 143,
+            stop = stopped => match stop {
+                family::Stop::Parent => {
+                    eprintln!("minima: the parent agent exited; stopping");
+                    1
+                }
+                family::Stop::Asked => {
+                    eprintln!("minima: stopped by the family");
+                    143
+                }
+            },
         };
         term::restore();
         tools::kill_background();
@@ -229,19 +250,6 @@ async fn headless(
     let frontend: &mut dyn Frontend = if as_json { &mut json } else { &mut plain };
     let result = agent.run(prompt, frontend, &cancel).await;
     watcher.abort();
-    if let Some(family) = agent.family() {
-        let answer = match &result {
-            Err(e) => format!("failed: {e:#}"),
-            Ok(()) if cancel.is_cancelled() => "cancelled".into(),
-            Ok(()) => last_answer(agent.messages()),
-        };
-        if let Err(e) = family.answer_parent(&answer) {
-            eprintln!(
-                "minima: answer not sent to the parent: {}",
-                frontend::printable(&format!("{e:#}"))
-            );
-        }
-    }
     // Reported, not fatal: the answer is already printed.
     if let Some(s) = &mut session
         && let Err(e) = s.save(agent.provider(), agent.model(), agent.messages())
@@ -250,6 +258,21 @@ async fn headless(
             "minima: session not saved: {}",
             frontend::printable(&format!("{e:#}"))
         );
+    }
+    // After the session is saved: the parent may exit as soon as it reads the answer, and this
+    // process with it.
+    if let Some(family) = agent.family() {
+        let answer = match &result {
+            Err(e) => format!("failed: {e:#}"),
+            Ok(()) if cancel.is_cancelled() => "cancelled".into(),
+            Ok(()) => last_answer(agent.messages()),
+        };
+        if let Err(e) = family.answer(&answer) {
+            eprintln!(
+                "minima: answer not written for the parent: {}",
+                frontend::printable(&format!("{e:#}"))
+            );
+        }
     }
     if as_json {
         json.result(

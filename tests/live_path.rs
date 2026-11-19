@@ -332,7 +332,7 @@ fn every_dialect_sends_its_own_shape_and_reassembles_fragments() {
             dialect: "responses",
             provider: "openai",
             present: &["input", "instructions", "store"],
-            absent: &["messages", "system", "max_tokens"],
+            absent: &["messages", "system", "max_tokens", "max_output_tokens"],
             tool_schema_key: "/parameters",
         },
         Case {
@@ -494,4 +494,44 @@ fn everything_written_to_the_config_directory_is_owner_only() {
         }
     }
     assert!(checked > 0, "the run wrote nothing to check");
+}
+
+/// Under `-r`, a request asks for no more output than the family's budget grants, on every
+/// dialect: Chat and Responses send no cap outside a family, so the grant would otherwise go
+/// unenforced. 30000 is below the 32000 default ceiling, so an ungranted request would ask for the
+/// ceiling.
+#[test]
+fn a_family_request_asks_for_no_more_output_than_the_budget_grants() {
+    for (provider, dialect, field) in [
+        ("openrouter", "chat", "max_tokens"),
+        ("openai", "responses", "max_output_tokens"),
+        ("anthropic", "messages", "max_tokens"),
+    ] {
+        let fixture = Fixture::spawn("full", dialect, true);
+        let out = Command::new(env!("CARGO_BIN_EXE_minima"))
+            .current_dir(fixture.dir.path())
+            .env("XDG_CONFIG_HOME", fixture.dir.path())
+            .env("XDG_STATE_HOME", fixture.dir.path().join("state"))
+            .env(
+                "MINIMA_BASE_URL",
+                format!("http://127.0.0.1:{}/v1", fixture.port),
+            )
+            .env("MINIMA_API_KEY", "test")
+            .env_remove("MINIMA_CONTEXT")
+            .args(["--provider", provider, "--model", "fake-model"])
+            .args(["-r", "--budget-tokens", "30000", "--no-session"])
+            .args(["--max-turns", "1", "-p", "hi"])
+            .output()
+            .expect("running minima");
+        assert!(
+            out.status.success(),
+            "{dialect}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let asked = fixture.captured_request()[field]
+            .as_u64()
+            .unwrap_or_else(|| panic!("{dialect}: no {field}"));
+        // 28500 is the line; the input takes some of it.
+        assert!((4096..28500).contains(&asked), "{dialect}: {field} {asked}");
+    }
 }

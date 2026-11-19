@@ -1,15 +1,17 @@
-//! Recursive agents under `-r`/`--recurse`: the family registry, mailboxes, the budget ledger, and
+//! Recursive agents under `-r`/`--recurse`: the family registry, answers, the budget ledger, and
 //! the subcommands an agent reaches through `bash`. Design: `docs/dev/recursion.md`.
 //!
 //! A family lives in one directory, `<state dir>/family/<family id>/`:
 //!
 //! - `registry.json`: settings the root fixed (root, sandbox, writable set, budget) and members.
 //! - `ledger.jsonl`: one line of usage per provider request, by any member.
-//! - `<member id>.mail`: messages waiting for that member, one JSON line each.
+//! - `<member id>.answer`: a spawned child's final answer, for its parent's `wait`.
 //! - `<member id>.log`: a spawned child's stdout and stderr.
+//! - `<member id>.stop`: written by `shutdown`; the member polls for it and exits.
 //! - `lock`: held with `flock` around every read-modify-write of the files above.
 //!
-//! No daemon: each member reads and writes the files itself.
+//! No daemon: each member reads and writes the files itself. A child watches its parent and
+//! stops when the parent exits, so no member outlives the agent that started it.
 
 use std::ffi::OsString;
 use std::fs::OpenOptions;
@@ -29,7 +31,7 @@ const SCHEMA: u32 = 1;
 /// The share of a budget held back, so a request the projection undercounts still lands inside it.
 const RESERVE_PERCENT: u64 = 5;
 const ROOT_NAME: &str = "root";
-const SUBCOMMANDS: [&str; 5] = ["spawn", "send", "recv", "agents", "shutdown"];
+const SUBCOMMANDS: [&str; 4] = ["spawn", "wait", "agents", "shutdown"];
 
 /// Set on every member, so the commands its `bash` runs know whose they are.
 const ENV_FAMILY: &str = "MINIMA_FAMILY";
@@ -45,7 +47,7 @@ struct Registry {
     root: PathBuf,
     sandbox: bool,
     writable: Vec<PathBuf>,
-    budget_tokens: Option<u64>,
+    budget_tokens: u64,
     budget_cost: Option<f64>,
     members: Vec<Member>,
 }
@@ -69,19 +71,34 @@ impl Member {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct Mail {
-    pub from: String,
-    pub from_name: String,
-    pub at: u64,
-    pub text: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
 struct Spend {
     member: String,
     at: u64,
     tokens: u64,
     cost: f64,
+    /// A reservation for a request not yet answered, counted until a later line settles it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    hold: bool,
+    /// The line number of the hold whose request this line records.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    settles: Option<usize>,
+}
+
+/// A reservation in the ledger: its line number, for `settle`, and what it holds.
+#[derive(Debug)]
+pub struct Hold {
+    line: usize,
+    tokens: u64,
+    cost: f64,
+}
+
+/// What `try_reserve` found.
+#[derive(Debug)]
+pub enum Reserve {
+    /// Held: the request may ask for at most this much output.
+    Granted(Hold, u64),
+    /// Other running members' holds take the room; it frees as their requests complete.
+    Busy,
 }
 
 /// This process's place in its family.
@@ -92,7 +109,9 @@ pub struct Family {
     pub me: String,
     pub name: String,
     pub parent: Option<String>,
-    budget_tokens: Option<u64>,
+    /// The parent's pid, watched so this member stops when the parent does.
+    parent_pid: Option<u32>,
+    budget_tokens: u64,
     budget_cost: Option<f64>,
 }
 
@@ -124,7 +143,7 @@ fn now() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
-/// The same shape as a session id, so a child's session can be resumed by its member id.
+/// The same shape as a session id: a spawned child saves its session under its member id.
 fn new_id() -> String {
     format!("{}-{}", now(), std::process::id())
 }
@@ -168,13 +187,19 @@ fn load(dir: &Path) -> Result<Registry> {
     Ok(registry)
 }
 
-fn store(dir: &Path, registry: &Registry) -> Result<()> {
-    let path = dir.join("registry.json");
+/// Owner-only, through a temporary file and a rename, so a reader never sees half of it.
+fn write_whole(path: &Path, body: &[u8]) -> Result<()> {
     let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, serde_json::to_vec_pretty(registry)?)
-        .with_context(|| format!("writing {}", tmp.display()))?;
+    std::fs::write(&tmp, body).with_context(|| format!("writing {}", tmp.display()))?;
     crate::config::restrict_to_owner(&tmp)?;
-    std::fs::rename(&tmp, &path).with_context(|| format!("writing {}", path.display()))
+    std::fs::rename(&tmp, path).with_context(|| format!("writing {}", path.display()))
+}
+
+fn store(dir: &Path, registry: &Registry) -> Result<()> {
+    write_whole(
+        &dir.join("registry.json"),
+        &serde_json::to_vec_pretty(registry)?,
+    )
 }
 
 fn update<T>(dir: &Path, f: impl FnOnce(&mut Registry) -> Result<T>) -> Result<T> {
@@ -198,41 +223,63 @@ fn append(path: &Path, line: &impl Serialize) -> Result<()> {
         .with_context(|| format!("writing {}", path.display()))
 }
 
-fn mailbox(dir: &Path, id: &str) -> PathBuf {
-    dir.join(format!("{id}.mail"))
+fn answer_path(dir: &Path, id: &str) -> PathBuf {
+    dir.join(format!("{id}.answer"))
 }
 
-/// Takes every message waiting for `id`, oldest first, and empties the mailbox.
-fn take_mail(dir: &Path, id: &str) -> Result<Vec<Mail>> {
-    let _lock = lock(dir)?;
-    let path = mailbox(dir, id);
+fn log_path(dir: &Path, id: &str) -> PathBuf {
+    dir.join(format!("{id}.log"))
+}
+
+fn stop_path(dir: &Path, id: &str) -> PathBuf {
+    dir.join(format!("{id}.stop"))
+}
+
+/// Why a member stops on its own.
+pub enum Stop {
+    /// The agent that spawned it exited.
+    Parent,
+    /// `shutdown`, or a crossed budget, asked it to.
+    Asked,
+}
+
+fn ledger(dir: &Path) -> Result<Vec<Spend>> {
+    let path = dir.join("ledger.jsonl");
     let raw = match std::fs::read_to_string(&path) {
         Ok(raw) => raw,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
     };
-    std::fs::write(&path, "").with_context(|| format!("emptying {}", path.display()))?;
     raw.lines()
         .filter(|l| !l.trim().is_empty())
         .map(|l| serde_json::from_str(l).with_context(|| format!("parsing {}", path.display())))
         .collect()
 }
 
-/// Tokens and USD spent by the whole family so far.
-fn spent(dir: &Path) -> Result<(u64, f64)> {
-    let path = dir.join("ledger.jsonl");
-    let raw = match std::fs::read_to_string(&path) {
-        Ok(raw) => raw,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok((0, 0.0)),
-        Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
-    };
-    raw.lines()
-        .filter(|l| !l.trim().is_empty())
-        .try_fold((0, 0.0), |(tokens, cost), l| {
-            let s: Spend =
-                serde_json::from_str(l).with_context(|| format!("parsing {}", path.display()))?;
-            Ok((tokens + s.tokens, cost + s.cost))
-        })
+/// Spent and held tokens and USD. Settled lines count as spent, and so do the open holds of
+/// members no longer running: such a request spent an unknown amount, at most its hold. Open
+/// holds of running members are held: they settle when their requests complete.
+fn totals(lines: &[Spend], running: &[String]) -> (u64, f64, u64, f64) {
+    let settled: Vec<usize> = lines.iter().filter_map(|s| s.settles).collect();
+    let mut t = (0u64, 0.0, 0u64, 0.0);
+    for (i, s) in lines.iter().enumerate() {
+        if s.hold && settled.contains(&i) {
+            continue;
+        }
+        if s.hold && running.contains(&s.member) {
+            t.2 = t.2.saturating_add(s.tokens);
+            t.3 += s.cost;
+        } else {
+            t.0 = t.0.saturating_add(s.tokens);
+            t.1 += s.cost;
+        }
+    }
+    t
+}
+
+/// `budget` less its reserve.
+fn below_reserve(budget: u64) -> u64 {
+    budget / 100 * (100 - RESERVE_PERCENT) + budget % 100 * (100 - RESERVE_PERCENT) / 100
 }
 
 /// A pid of a process that still exists. EPERM means it exists under another user.
@@ -246,18 +293,27 @@ fn alive(pid: u32) -> bool {
 }
 
 /// Guards against a pid the registry still lists but the system has given to another program.
+/// Compared with this executable's name, since `spawn` starts every member from it.
 fn is_minima(pid: u32) -> bool {
+    // Not `comm`, which Linux cuts to 15 bytes. A replaced binary reads as "PATH (deleted)".
     #[cfg(target_os = "linux")]
-    let name = std::fs::read_to_string(format!("/proc/{pid}/comm")).unwrap_or_default();
+    let name = std::fs::read_link(format!("/proc/{pid}/exe"))
+        .map(|p| {
+            p.to_string_lossy()
+                .trim_end_matches(" (deleted)")
+                .to_string()
+        })
+        .unwrap_or_default();
     #[cfg(not(target_os = "linux"))]
     let name = Command::new("ps")
         .args(["-p", &pid.to_string(), "-o", "comm="])
         .output()
         .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
         .unwrap_or_default();
-    Path::new(name.trim())
-        .file_name()
-        .is_some_and(|n| n == "minima")
+    let exe = std::env::current_exe().ok();
+    let own = exe.as_deref().and_then(Path::file_name);
+    let theirs = Path::new(name.trim()).file_name();
+    own.is_some() && theirs == own
 }
 
 /// The member's process group if it leads one, as every spawned child does, else the process.
@@ -317,12 +373,15 @@ pub fn join(inherited: Option<Inherited>, bounds: &mut Bounds, cli: &Cli) -> Res
     let family = match inherited {
         Some(child) => {
             let dir = families()?.join(&child.family);
-            let registry = update(&dir, |registry| {
+            let (budget_tokens, budget_cost, parent_pid) = update(&dir, |registry| {
                 if let Some(m) = registry.members.iter_mut().find(|m| m.id == child.me) {
                     m.pid = pid;
                     m.ended_at = None;
                 }
-                Ok((registry.budget_tokens, registry.budget_cost))
+                let Some(parent) = registry.members.iter().find(|m| m.id == child.parent) else {
+                    bail!("parent {} is not in the family", child.parent);
+                };
+                Ok((registry.budget_tokens, registry.budget_cost, parent.pid))
             })?;
             Family {
                 dir,
@@ -330,11 +389,16 @@ pub fn join(inherited: Option<Inherited>, bounds: &mut Bounds, cli: &Cli) -> Res
                 me: child.me,
                 name: child.name,
                 parent: Some(child.parent),
-                budget_tokens: registry.0,
-                budget_cost: registry.1,
+                parent_pid: Some(parent_pid),
+                budget_tokens,
+                budget_cost,
             }
         }
         None => {
+            // Required: the budget is the one bound on how much a family can spend.
+            let Some(budget_tokens) = cli.budget_tokens else {
+                bail!("-r needs --budget-tokens N, the most tokens the whole family may use");
+            };
             let id = new_id();
             let dir = families()?.join(&id);
             std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
@@ -347,7 +411,7 @@ pub fn join(inherited: Option<Inherited>, bounds: &mut Bounds, cli: &Cli) -> Res
                 root: bounds.root.clone(),
                 sandbox: bounds.sandbox,
                 writable: bounds.writable.clone(),
-                budget_tokens: cli.budget_tokens,
+                budget_tokens,
                 budget_cost: cli.budget_cost,
                 members: vec![Member {
                     id: id.clone(),
@@ -368,7 +432,8 @@ pub fn join(inherited: Option<Inherited>, bounds: &mut Bounds, cli: &Cli) -> Res
                 id,
                 name: ROOT_NAME.into(),
                 parent: None,
-                budget_tokens: cli.budget_tokens,
+                parent_pid: None,
+                budget_tokens,
                 budget_cost: cli.budget_cost,
             }
         }
@@ -406,51 +471,114 @@ impl Family {
         });
     }
 
-    pub fn take_mail(&self) -> Result<Vec<Mail>> {
-        take_mail(&self.dir, &self.me)
-    }
-
-    /// A spawned child's final answer, for its parent.
-    pub fn answer_parent(&self, text: &str) -> Result<()> {
-        let Some(parent) = &self.parent else {
-            return Ok(());
-        };
-        deliver(&self.dir, &self.me, parent, text)
-    }
-
-    /// Fails when the family's spend plus the next request could cross a budget less its reserve.
-    pub fn check_budget(&self, next_tokens: u64, next_cost: f64) -> Result<()> {
-        if self.budget_tokens.is_none() && self.budget_cost.is_none() {
-            return Ok(());
-        }
-        let (tokens, cost) = spent(&self.dir)?;
-        if let Some(budget) = self.budget_tokens {
-            let line = budget * (100 - RESERVE_PERCENT) / 100;
-            if tokens + next_tokens > line {
-                bail!(
-                    "family token budget: {tokens} of {budget} spent, and the next request could \
-                     take {next_tokens} more; the family is shut down"
-                );
+    /// Resolves once `shutdown` asks this member to stop, or its parent has exited.
+    pub async fn stopped(&self) -> Stop {
+        let marker = stop_path(&self.dir, &self.me);
+        loop {
+            if marker.exists() {
+                return Stop::Asked;
             }
-        }
-        if let Some(budget) = self.budget_cost {
-            let line = budget * (100 - RESERVE_PERCENT) as f64 / 100.0;
-            if cost + next_cost > line {
-                bail!(
-                    "family cost budget: ${cost:.4} of ${budget:.4} spent, and the next request \
-                     could cost ${next_cost:.4} more; the family is shut down"
-                );
+            // Sampled each second: a pid is reused only once the counter wraps, which takes longer.
+            if self.parent_pid.is_some_and(|pid| !alive(pid)) {
+                return Stop::Parent;
             }
+            tokio::time::sleep(Duration::from_secs(1)).await;
         }
-        Ok(())
     }
 
-    /// Records one request's usage. Skipped without a budget, which nothing else reads it for.
-    pub fn spend(&self, tokens: u64, cost: f64) -> Result<()> {
-        if self.budget_tokens.is_none() && self.budget_cost.is_none() {
+    /// A spawned child's final answer, for its parent's `wait`.
+    pub fn answer(&self, text: &str) -> Result<()> {
+        if self.parent.is_none() {
             return Ok(());
         }
+        write_whole(&answer_path(&self.dir, &self.me), text.as_bytes())
+    }
+
+    /// Holds room for a request of `input` tokens and at most `output` of output, granting less
+    /// output when the budget has less left, but no less than `floor`. `price(input, output)` is
+    /// the request's cost. Busy when only running members' holds stand in the way; fails when
+    /// spending alone leaves too little. The check and the hold share one lock, so two members
+    /// cannot both take the same remainder.
+    pub fn try_reserve(
+        &self,
+        input: u64,
+        output: u64,
+        floor: u64,
+        price: &dyn Fn(u64, u64) -> f64,
+    ) -> Result<Reserve> {
         let _lock = lock(&self.dir)?;
+        let lines = ledger(&self.dir)?;
+        let running: Vec<String> = load(&self.dir)?
+            .members
+            .into_iter()
+            .filter(Member::running)
+            .map(|m| m.id)
+            .collect();
+        let (spent, spent_cost, held, held_cost) = totals(&lines, &running);
+        let floor = floor.min(output).max(1);
+        let token_line = below_reserve(self.budget_tokens);
+        let cost_line = self
+            .budget_cost
+            .map(|b| b * (100 - RESERVE_PERCENT) as f64 / 100.0);
+        // The most output that fits beside `used` tokens and `used_cost` USD.
+        let by_tokens = |used: u64| token_line.saturating_sub(used.saturating_add(input));
+        let fits = |used: u64, used_cost: f64| -> u64 {
+            let mut most = output.min(by_tokens(used));
+            if let Some(line) = cost_line {
+                let left = line - used_cost - price(input, 0);
+                let per_token = price(0, 1_000_000) / 1e6;
+                most = most.min(match left {
+                    l if l < 0.0 => 0,
+                    l if per_token > 0.0 => (l / per_token) as u64,
+                    _ => u64::MAX,
+                });
+            }
+            most
+        };
+        let grant = fits(spent.saturating_add(held), spent_cost + held_cost);
+        if grant >= floor {
+            let hold = Hold {
+                line: lines.len(),
+                tokens: input.saturating_add(grant),
+                cost: price(input, grant),
+            };
+            self.record(hold.tokens, hold.cost, true, None)?;
+            return Ok(Reserve::Granted(hold, grant));
+        }
+        if fits(spent, spent_cost) >= floor {
+            return Ok(Reserve::Busy);
+        }
+        let budget = self.budget_tokens;
+        if by_tokens(spent) < floor {
+            bail!(
+                "family token budget: {spent} of {budget} spent, and the next request needs at \
+                 least {} more; this agent stops, with its descendants",
+                input.saturating_add(floor)
+            );
+        }
+        bail!(
+            "family cost budget: ${spent_cost:.4} of ${:.4} spent, and the next request needs at \
+             least ${:.4} more; this agent stops, with its descendants",
+            self.budget_cost.unwrap_or_default(),
+            price(input, floor)
+        );
+    }
+
+    /// Records a request's usage in place of its hold.
+    pub fn settle(&self, hold: Hold, tokens: u64, cost: f64) -> Result<()> {
+        let _lock = lock(&self.dir)?;
+        self.record(tokens, cost, false, Some(hold.line))
+    }
+
+    /// Settles a hold whose request did not complete at its full size: what it spent is unknown,
+    /// and at most the hold. Without this, the member's own hold would keep it `Busy`.
+    pub fn forfeit(&self, hold: Hold) -> Result<()> {
+        let (tokens, cost) = (hold.tokens, hold.cost);
+        self.settle(hold, tokens, cost)
+    }
+
+    /// Appends one ledger line. The caller holds the lock.
+    fn record(&self, tokens: u64, cost: f64, hold: bool, settles: Option<usize>) -> Result<()> {
         append(
             &self.dir.join("ledger.jsonl"),
             &Spend {
@@ -458,13 +586,16 @@ impl Family {
                 at: now(),
                 tokens,
                 cost,
+                hold,
+                settles,
             },
         )
     }
 
-    /// Stops every other member. This one is left to report why and refuse further requests.
-    pub fn shutdown_others(&self) -> Result<()> {
-        shutdown(&self.dir, Duration::from_secs(5)).map(|_| ())
+    /// Stops this member's subtree after a crossed budget: the descendants by signal, this one
+    /// by refusing each request. Its parent learns why from its answer.
+    pub fn stop_descendants(&self) -> Result<()> {
+        shutdown(&self.dir, Duration::from_secs(5), &Scope::Below(&self.me)).map(|_| ())
     }
 
     /// The system prompt's account of the family and the commands that reach it.
@@ -478,43 +609,18 @@ impl Family {
         format!(
             "You are agent \"{name}\" (id {me}{parent}) in a family of minima agents. Through bash:\n\
              - `{exe} -r spawn --name NAME -- \"TASK\"` starts a child agent on a self-contained \
-             task and prints its id. It runs once, with its own context, and its final answer \
-             arrives in your mailbox.\n\
-             - `{exe} -r recv --wait SECS` prints messages sent to you, waiting up to SECS for one.\n\
-             - `{exe} -r send --to NAME_OR_ID \"TEXT\"` messages a running member.\n\
+             task and prints its id. It runs once, headless, with its own context.\n\
+             - `{exe} -r wait NAME_OR_ID` prints the child's final answer, waiting up to 100 \
+             seconds for it; run it again while the child is still working. `--timeout SECS` \
+             waits longer; keep it under the bash timeout.\n\
              - `{exe} -r agents` lists the family.\n\
-             - `{exe} -r shutdown` stops every agent in the family.\n\
-             Messages that arrive between prompts are put before the next prompt. Children share \
-             your root, sandbox and budget.",
+             - `{exe} -r shutdown` stops your children and theirs.\n\
+             Your children stop when you exit, so wait for every answer you need before giving \
+             your own. Children share your root, sandbox and budget.",
             name = self.name,
             me = self.me,
         )
     }
-}
-
-/// Puts `text` in `to`'s mailbox, from `from`. Fails when `to` is not running, so nothing is
-/// dropped unseen.
-fn deliver(dir: &Path, from: &str, to: &str, text: &str) -> Result<()> {
-    let _lock = lock(dir)?;
-    let registry = load(dir)?;
-    let target = resolve(&registry, to)?;
-    if !target.running() {
-        bail!("{} ({}) is not running", target.name, target.id);
-    }
-    let from_name = registry
-        .members
-        .iter()
-        .find(|m| m.id == from)
-        .map_or_else(|| from.to_string(), |m| m.name.clone());
-    append(
-        &mailbox(dir, &target.id),
-        &Mail {
-            from: from.into(),
-            from_name,
-            at: now(),
-            text: text.into(),
-        },
-    )
 }
 
 /// By id, else by the name of a running member. Names are unique among siblings only.
@@ -532,42 +638,110 @@ fn resolve<'a>(registry: &'a Registry, to: &str) -> Result<&'a Member> {
     }
 }
 
-/// SIGTERM to every running member but this process, SIGKILL after `grace`, then prune. Returns
-/// how many were signalled.
-fn shutdown(dir: &Path, grace: Duration) -> Result<usize> {
-    let me = std::process::id();
-    let targets: Vec<Member> = {
-        let _lock = lock(dir)?;
-        load(dir)?
-            .members
-            .into_iter()
-            .filter(|m| m.pid != me && m.running())
-            .collect()
+/// `target`'s final answer, once it has one. Fails when it exits without one, or is still
+/// running at `timeout`.
+fn wait(dir: &Path, target: &str, timeout: Duration) -> Result<String> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let member = resolve(&load(dir)?, target)?.clone();
+        // Sampled before the answer is read: a child writes its answer before it exits.
+        let running = member.running();
+        match std::fs::read_to_string(answer_path(dir, &member.id)) {
+            Ok(answer) => return Ok(answer),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e).context("reading the answer"),
+        }
+        if !running {
+            bail!(
+                "{} ({}) exited without an answer; its output is in {}",
+                member.name,
+                member.id,
+                log_path(dir, &member.id).display()
+            );
+        }
+        if Instant::now() >= deadline {
+            bail!(
+                "{} ({}) is still running after {}s; run wait again",
+                member.name,
+                member.id,
+                timeout.as_secs()
+            );
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+}
+
+/// Which members `shutdown` stops.
+enum Scope<'a> {
+    /// Every member: `shutdown` run outside the family.
+    All,
+    /// This member's descendants: `shutdown` run by an agent, or a budget it crossed.
+    Below(&'a str),
+}
+
+fn targets(registry: &Registry, scope: &Scope) -> Vec<Member> {
+    let mut below: Vec<&str> = match scope {
+        Scope::Below(id) => vec![id],
+        _ => Vec::new(),
     };
-    let mut signalled = Vec::new();
+    // A parent is listed before its children, so one pass in order reaches every descendant.
+    for m in &registry.members {
+        if let Some(p) = &m.parent
+            && below.contains(&p.as_str())
+        {
+            below.push(&m.id);
+        }
+    }
+    registry
+        .members
+        .iter()
+        .filter(|m| m.running())
+        .filter(|m| match scope {
+            Scope::All => true,
+            Scope::Below(id) => m.id != *id && below.contains(&m.id.as_str()),
+        })
+        .cloned()
+        .collect()
+}
+
+/// Asks every member in `scope` to stop through its `.stop` marker, SIGKILLs one still running
+/// after `grace`, then prunes. Returns how many were asked. A marker rather than SIGTERM: under
+/// the macOS sandbox, a member may signal only processes in its own sandbox.
+fn shutdown(dir: &Path, grace: Duration, scope: &Scope) -> Result<usize> {
+    let targets = {
+        let _lock = lock(dir)?;
+        targets(&load(dir)?, scope)
+    };
     for m in &targets {
+        write_whole(&stop_path(dir, &m.id), b"")?;
+    }
+    // Not under the lock: a member's exit hook takes it to record its end.
+    let deadline = Instant::now() + grace;
+    while targets.iter().any(|m| alive(m.pid)) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let mut killed = Vec::new();
+    for m in targets.iter().filter(|m| alive(m.pid)) {
         if is_minima(m.pid) {
-            signal(m.pid, libc::SIGTERM);
-            signalled.push(m.pid);
+            signal(m.pid, libc::SIGKILL);
+            killed.push(m);
         } else {
             eprintln!(
-                "minima: skipped {} ({}): pid {} is no longer minima",
+                "minima: skipped {} ({}): pid {} did not stop, and is not minima or cannot be checked",
                 m.name, m.id, m.pid
             );
         }
     }
-    // Not under the lock: a member's exit hook takes it to record its end.
-    let deadline = Instant::now() + grace;
-    while signalled.iter().any(|&p| alive(p)) && Instant::now() < deadline {
+    if !killed.is_empty() {
         std::thread::sleep(Duration::from_millis(100));
     }
-    let survivors: Vec<u32> = signalled.iter().copied().filter(|&p| alive(p)).collect();
-    for &pid in &survivors {
-        signal(pid, libc::SIGKILL);
-    }
-    std::thread::sleep(Duration::from_millis(100));
-    if let Some(pid) = survivors.iter().find(|&&p| alive(p)) {
-        bail!("pid {pid} survived SIGKILL");
+    if let Some(m) = killed.iter().find(|m| alive(m.pid)) {
+        bail!(
+            "{} ({}) did not stop: pid {} survived SIGKILL",
+            m.name,
+            m.id,
+            m.pid
+        );
     }
     let ids: Vec<String> = targets.iter().map(|m| m.id.clone()).collect();
     update(dir, |r| {
@@ -577,19 +751,27 @@ fn shutdown(dir: &Path, grace: Duration) -> Result<usize> {
         Ok(())
     })?;
     prune(dir)?;
-    Ok(signalled.len())
+    Ok(targets.len())
 }
 
-/// Drops ended members with their mail and logs. A family with none left is removed whole,
-/// ledger included.
+/// Drops ended members whose parent has ended too, with their answers and logs: while the parent
+/// runs, it may still `wait` for the answer. A family with none left is removed whole.
 fn prune(dir: &Path) -> Result<usize> {
     let (pruned, empty) = update(dir, |r| {
-        let (gone, kept): (Vec<Member>, Vec<Member>) =
-            r.members.drain(..).partition(|m| !m.running());
+        let running: Vec<String> = r
+            .members
+            .iter()
+            .filter(|m| m.running())
+            .map(|m| m.id.clone())
+            .collect();
+        let (gone, kept): (Vec<Member>, Vec<Member>) = r.members.drain(..).partition(|m| {
+            !running.contains(&m.id) && m.parent.as_ref().is_none_or(|p| !running.contains(p))
+        });
         r.members = kept;
         for m in &gone {
-            let _ = std::fs::remove_file(mailbox(dir, &m.id));
-            let _ = std::fs::remove_file(dir.join(format!("{}.log", m.id)));
+            let _ = std::fs::remove_file(answer_path(dir, &m.id));
+            let _ = std::fs::remove_file(log_path(dir, &m.id));
+            let _ = std::fs::remove_file(stop_path(dir, &m.id));
         }
         Ok((gone.len(), r.members.is_empty()))
     })?;
@@ -625,29 +807,25 @@ enum Cmd {
         #[arg(required = true, num_args = 1.., value_name = "TASK")]
         task: Vec<String>,
     },
-    /// Message a running member.
-    Send {
-        #[arg(long, value_name = "NAME_OR_ID")]
-        to: String,
-        #[arg(required = true, num_args = 1.., value_name = "TEXT")]
-        text: Vec<String>,
-    },
-    /// Print messages sent to this agent.
-    Recv {
-        /// Wait up to SECS for a message when none is waiting.
-        #[arg(long, value_name = "SECS", default_value_t = 0)]
-        wait: u64,
+    /// Print a child's final answer, waiting for it.
+    Wait {
+        #[arg(value_name = "NAME_OR_ID")]
+        target: String,
+        /// Fail if the child is still running after SECS.
+        #[arg(long, value_name = "SECS", default_value_t = 100)]
+        timeout: u64,
     },
     /// List the family.
     Agents {
         /// The family to list. Default: this agent's, else the newest for this directory.
         #[arg(long, value_name = "ID")]
         family: Option<String>,
-        /// Drop ended members, with their mail and logs.
+        /// Drop ended members whose parent has ended, with their answers and logs.
         #[arg(long)]
         prune: bool,
     },
-    /// Stop every agent in the family: SIGTERM, then SIGKILL after the grace period.
+    /// Stop agents: ask each to stop, then SIGKILL after the grace period. Run by an agent,
+    /// its descendants; otherwise the whole family.
     Shutdown {
         /// The family to stop. Default: this agent's, else the newest for this directory.
         #[arg(long, value_name = "ID")]
@@ -690,27 +868,10 @@ pub fn dispatch(args: &[OsString]) -> Result<Option<ExitCode>> {
             )?;
             println!("{id}");
         }
-        Cmd::Send { to, text } => {
-            let (family, me) = own()?;
-            deliver(&base.join(family), &me, &to, &text.join(" "))?;
-        }
-        Cmd::Recv { wait } => {
-            let (family, me) = own()?;
-            let dir = base.join(family);
-            let deadline = Instant::now() + Duration::from_secs(wait);
-            let mail = loop {
-                let mail = take_mail(&dir, &me)?;
-                if !mail.is_empty() || Instant::now() >= deadline {
-                    break mail;
-                }
-                std::thread::sleep(Duration::from_millis(500));
-            };
-            if mail.is_empty() {
-                println!("no messages");
-            }
-            for m in mail {
-                println!("from {} ({}):\n{}\n", m.from_name, m.from, m.text);
-            }
+        Cmd::Wait { target, timeout } => {
+            let (family, _) = own()?;
+            let answer = wait(&base.join(family), &target, Duration::from_secs(timeout))?;
+            println!("{answer}");
         }
         Cmd::Agents {
             family,
@@ -730,8 +891,11 @@ pub fn dispatch(args: &[OsString]) -> Result<Option<ExitCode>> {
             );
         }
         Cmd::Shutdown { family, grace } => {
-            let dir = base.join(find(&base, family)?);
-            let n = shutdown(&dir, Duration::from_secs(grace))?;
+            let id = find(&base, family)?;
+            // An agent stopping its own family keeps itself and its ancestors.
+            let me = own().ok().filter(|(f, _)| *f == id).map(|(_, me)| me);
+            let scope = me.as_deref().map_or(Scope::All, Scope::Below);
+            let n = shutdown(&base.join(id), Duration::from_secs(grace), &scope)?;
             println!("stopped {n}");
         }
     }
@@ -784,6 +948,15 @@ fn spawn(
     mock: Option<PathBuf>,
     task: &str,
 ) -> Result<String> {
+    // Printed in the `agents` table, which the model reads.
+    if name.is_empty()
+        || name.len() > 32
+        || !name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        bail!("--name must be 1 to 32 letters, digits, '-' or '_': {name:?}");
+    }
     let id = new_id();
     let exe = std::env::current_exe().context("finding the minima executable")?;
     let mock = mock
@@ -810,12 +983,13 @@ fn spawn(
             }
             (Some(provider), model) => (provider, model.unwrap_or_default()),
         };
-        let log_path = dir.join(format!("{id}.log"));
+        let log_path = log_path(dir, &id);
         let log = std::fs::File::create(&log_path)
             .with_context(|| format!("creating {}", log_path.display()))?;
         crate::config::restrict_to_owner(&log_path)?;
         let mut command = Command::new(&exe);
-        command.args(["--recurse", "--no-color", "-p", task]);
+        // One argument, so a task starting with `-` is not read as a flag.
+        command.args(["--recurse", "--no-color", &format!("--prompt={task}")]);
         match &mock {
             Some(path) => {
                 command.arg("--mock").arg(path);
@@ -909,34 +1083,41 @@ mod tests {
         }
     }
 
-    fn registry(dir: &Path, members: Vec<Member>) {
+    fn ended(mut m: Member) -> Member {
+        m.ended_at = Some(1);
+        m
+    }
+
+    fn registry(dir: &Path, members: Vec<Member>) -> Registry {
         let r = Registry {
             schema: SCHEMA,
             root: dir.into(),
             sandbox: false,
             writable: Vec::new(),
-            budget_tokens: None,
+            budget_tokens: 1_000_000,
             budget_cost: None,
             members,
         };
         store(dir, &r).unwrap();
+        r
     }
 
-    fn family(dir: &Path, tokens: Option<u64>, cost: Option<f64>) -> Family {
+    fn family(dir: &Path, tokens: u64, cost: Option<f64>) -> Family {
         Family {
             dir: dir.into(),
             id: "f".into(),
             me: "a".into(),
             name: ROOT_NAME.into(),
             parent: None,
+            parent_pid: None,
             budget_tokens: tokens,
             budget_cost: cost,
         }
     }
 
     #[test]
-    fn mail_is_delivered_in_order_and_taken_once() {
-        let dir = scratch("mail");
+    fn wait_returns_the_answer_by_name_or_id() {
+        let dir = scratch("answer");
         let me = std::process::id();
         registry(
             &dir,
@@ -945,63 +1126,205 @@ mod tests {
                 member("b", "kid", Some("a"), me),
             ],
         );
-        deliver(&dir, "b", "a", "one").unwrap();
-        deliver(&dir, "b", "root", "two").unwrap();
-        let mail = take_mail(&dir, "a").unwrap();
-        let texts: Vec<_> = mail
-            .iter()
-            .map(|m| (m.from_name.as_str(), m.text.as_str()))
-            .collect();
-        assert_eq!(texts, [("kid", "one"), ("kid", "two")]);
-        assert!(take_mail(&dir, "a").unwrap().is_empty());
+        Family {
+            me: "b".into(),
+            parent: Some("a".into()),
+            ..family(&dir, 1, None)
+        }
+        .answer("hello")
+        .unwrap();
+        let t = Duration::ZERO;
+        assert_eq!(wait(&dir, "kid", t).unwrap(), "hello");
+        // Read again, not taken: a second wait sees the same answer.
+        assert_eq!(wait(&dir, "b", t).unwrap(), "hello");
     }
 
     #[test]
-    fn mail_to_an_ended_member_is_refused() {
-        let dir = scratch("ended");
-        let mut gone = member("b", "kid", Some("a"), std::process::id());
-        gone.ended_at = Some(1);
+    fn wait_tells_a_running_child_from_one_that_exited_without_an_answer() {
+        let dir = scratch("no-answer");
+        let me = std::process::id();
         registry(
             &dir,
-            vec![member("a", "root", None, std::process::id()), gone],
+            vec![
+                member("a", "root", None, me),
+                member("b", "busy", Some("a"), me),
+                ended(member("c", "dead", Some("a"), me)),
+            ],
         );
-        let err = deliver(&dir, "a", "kid", "hi").unwrap_err().to_string();
-        assert!(err.contains("not running"), "{err}");
+        let busy = wait(&dir, "busy", Duration::ZERO).unwrap_err().to_string();
+        assert!(busy.contains("still running"), "{busy}");
+        let dead = wait(&dir, "dead", Duration::ZERO).unwrap_err().to_string();
+        assert!(dead.contains("exited without an answer"), "{dead}");
+    }
+
+    #[test]
+    fn shutdown_by_an_agent_reaches_its_descendants_only() {
+        let dir = scratch("scope");
+        let me = std::process::id();
+        let r = registry(
+            &dir,
+            vec![
+                member("a", "root", None, me),
+                member("b", "kid", Some("a"), me),
+                member("c", "grandkid", Some("b"), me),
+                member("d", "sibling", Some("a"), me),
+            ],
+        );
+        let ids = |scope: Scope| -> Vec<String> {
+            targets(&r, &scope).into_iter().map(|m| m.id).collect()
+        };
+        assert_eq!(ids(Scope::Below("b")), ["c"]);
+        assert_eq!(ids(Scope::Below("a")), ["b", "c", "d"]);
+        assert_eq!(ids(Scope::All), ["a", "b", "c", "d"]);
+    }
+
+    fn free(_: u64, _: u64) -> f64 {
+        0.0
+    }
+
+    /// Members `a` and `b` running, `gone` ended, under a budget of `tokens` and `cost`.
+    fn budgeted(name: &str, tokens: u64, cost: Option<f64>) -> (PathBuf, Family, Family) {
+        let dir = scratch(name);
+        let me = std::process::id();
+        registry(
+            &dir,
+            vec![
+                member("a", "root", None, me),
+                member("b", "kid", Some("a"), me),
+                ended(member("gone", "old", Some("a"), me)),
+            ],
+        );
+        let a = family(&dir, tokens, cost);
+        let b = Family {
+            me: "b".into(),
+            ..a.clone()
+        };
+        (dir, a, b)
+    }
+
+    fn granted(r: Result<Reserve>) -> (Hold, u64) {
+        match r.unwrap() {
+            Reserve::Granted(hold, output) => (hold, output),
+            Reserve::Busy => panic!("busy"),
+        }
     }
 
     #[test]
     fn the_budget_holds_back_its_reserve_and_counts_every_member() {
-        let dir = scratch("budget");
-        let f = family(&dir, Some(1000), None);
-        f.spend(600, 0.0).unwrap();
-        Family {
-            me: "b".into(),
-            ..f.clone()
-        }
-        .spend(200, 0.0)
-        .unwrap();
-        // 950 is the line: 1000 less 5%.
-        f.check_budget(150, 0.0).unwrap();
-        assert!(f.check_budget(151, 0.0).is_err());
+        let (_dir, a, b) = budgeted("budget", 1000, None);
+        let (hold, _) = granted(a.try_reserve(500, 100, 100, &free));
+        a.settle(hold, 600, 0.0).unwrap();
+        let (hold, _) = granted(b.try_reserve(100, 100, 100, &free));
+        b.settle(hold, 200, 0.0).unwrap();
+        // 950 is the line: 1000 less 5%, and 800 is spent.
+        assert!(a.try_reserve(51, 100, 100, &free).is_err());
+        granted(a.try_reserve(50, 100, 100, &free));
     }
 
     #[test]
-    fn a_cost_budget_is_checked_apart_from_tokens() {
-        let dir = scratch("cost");
-        let f = family(&dir, None, Some(1.0));
-        f.spend(10, 0.9).unwrap();
-        f.check_budget(10, 0.04).unwrap();
-        let err = f.check_budget(10, 0.06).unwrap_err().to_string();
+    fn a_short_budget_grants_less_output_down_to_the_floor() {
+        let (_dir, a, _) = budgeted("grant", 1000, None);
+        let (_, output) = granted(a.try_reserve(100, 2000, 50, &free));
+        assert_eq!(output, 850);
+    }
+
+    #[test]
+    fn a_running_members_hold_makes_another_wait_until_it_settles() {
+        let (_dir, a, b) = budgeted("busy", 1000, None);
+        let (hold, _) = granted(a.try_reserve(800, 100, 100, &free));
+        assert!(matches!(
+            b.try_reserve(0, 100, 100, &free),
+            Ok(Reserve::Busy)
+        ));
+        a.settle(hold, 10, 0.0).unwrap();
+        granted(b.try_reserve(0, 100, 100, &free));
+    }
+
+    #[test]
+    fn an_ended_members_open_hold_counts_as_spent() {
+        let (_dir, a, b) = budgeted("ended-hold", 1000, None);
+        let gone = Family {
+            me: "gone".into(),
+            ..a.clone()
+        };
+        granted(gone.try_reserve(800, 100, 100, &free));
+        // Not busy: an ended member's hold never settles.
+        let err = b.try_reserve(0, 100, 100, &free).unwrap_err().to_string();
+        assert!(err.contains("family token budget"), "{err}");
+    }
+
+    #[test]
+    fn a_forfeited_hold_counts_whole_and_no_longer_waits() {
+        let (_dir, a, b) = budgeted("forfeit", 1000, None);
+        let (hold, _) = granted(a.try_reserve(800, 100, 100, &free));
+        a.forfeit(hold).unwrap();
+        assert!(b.try_reserve(0, 100, 100, &free).is_err());
+        assert!(a.try_reserve(0, 100, 100, &free).is_err());
+    }
+
+    #[test]
+    fn concurrent_members_cannot_both_take_one_remainder() {
+        let (_dir, a, _) = budgeted("race", 1000, None);
+        // Room for 9 holds of 100 under the 950 line, and 16 members asking at once.
+        let passed = std::thread::scope(|s| {
+            let handles: Vec<_> = (0..16)
+                .map(|i| {
+                    let f = Family {
+                        me: format!("m{i}"),
+                        ..a.clone()
+                    };
+                    s.spawn(move || {
+                        matches!(f.try_reserve(0, 100, 100, &free), Ok(Reserve::Granted(..)))
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|h| h.join().unwrap())
+                .filter(|&ok| ok)
+                .count()
+        });
+        assert_eq!(passed, 9);
+    }
+
+    #[test]
+    fn a_huge_token_budget_does_not_overflow() {
+        let (_dir, a, _) = budgeted("huge", u64::MAX, None);
+        assert!(a.try_reserve(u64::MAX, 1, 1, &free).is_err());
+        granted(a.try_reserve(u64::MAX / 2, 1, 1, &free));
+    }
+
+    #[test]
+    fn a_cost_budget_grants_less_output_and_is_checked_apart_from_tokens() {
+        let (_dir, a, _) = budgeted("cost", 1_000_000, Some(1.0));
+        let price = |input: u64, output: u64| (input + output) as f64 * 0.001;
+        let (hold, _) = granted(a.try_reserve(10, 890, 1, &price));
+        a.settle(hold, 900, 0.9).unwrap();
+        // $0.95 is the line and $0.90 spent: $0.04 is left after the input's $0.01.
+        let err = a.try_reserve(10, 100, 50, &price).unwrap_err().to_string();
         assert!(err.contains("cost budget"), "{err}");
+        let (_, output) = granted(a.try_reserve(10, 100, 30, &price));
+        assert!((39..=40).contains(&output), "{output}");
     }
 
     #[test]
-    fn without_a_budget_nothing_is_recorded() {
-        let dir = scratch("no-budget");
-        let f = family(&dir, None, None);
-        f.spend(10, 1.0).unwrap();
-        assert!(!dir.join("ledger.jsonl").exists());
-        f.check_budget(u64::MAX / 2, 1e9).unwrap();
+    fn spawn_refuses_a_name_that_could_forge_a_table_row() {
+        let dir = scratch("name");
+        for name in ["", "a\nroot  self", "has space", &"x".repeat(33)] {
+            let err = spawn(&dir, "a", name, None, None, None, "t")
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("--name"), "{name:?}: {err}");
+        }
+    }
+
+    #[test]
+    fn is_minima_matches_this_executable_not_another() {
+        assert!(is_minima(std::process::id()));
+        let mut sleeper = Command::new("sleep").arg("30").spawn().unwrap();
+        assert!(!is_minima(sleeper.id()));
+        sleeper.kill().unwrap();
+        let _ = sleeper.wait();
     }
 
     #[test]
@@ -1009,30 +1332,32 @@ mod tests {
         let dir = scratch("recycled");
         let mut sleeper = Command::new("sleep").arg("30").spawn().unwrap();
         registry(&dir, vec![member("b", "kid", Some("a"), sleeper.id())]);
-        shutdown(&dir, Duration::from_millis(100)).unwrap();
+        shutdown(&dir, Duration::from_millis(100), &Scope::All).unwrap();
         assert!(sleeper.try_wait().unwrap().is_none(), "sleep was signalled");
         sleeper.kill().unwrap();
         let _ = sleeper.wait();
     }
 
     #[test]
-    fn prune_drops_ended_members_and_removes_an_empty_family() {
+    fn prune_keeps_an_answer_while_the_parent_runs() {
         let dir = scratch("prune");
-        let mut gone = member("b", "kid", Some("a"), std::process::id());
-        gone.ended_at = Some(1);
+        let me = std::process::id();
         registry(
             &dir,
-            vec![member("a", "root", None, std::process::id()), gone],
+            vec![
+                member("a", "root", None, me),
+                ended(member("b", "kid", Some("a"), me)),
+            ],
         );
-        std::fs::write(mailbox(&dir, "b"), "").unwrap();
-        assert_eq!(prune(&dir).unwrap(), 1);
-        assert!(!mailbox(&dir, "b").exists());
+        std::fs::write(answer_path(&dir, "b"), "done").unwrap();
+        assert_eq!(prune(&dir).unwrap(), 0);
+        assert!(answer_path(&dir, "b").exists());
         update(&dir, |r| {
             r.members[0].ended_at = Some(2);
             Ok(())
         })
         .unwrap();
-        prune(&dir).unwrap();
+        assert_eq!(prune(&dir).unwrap(), 2);
         assert!(!dir.exists());
     }
 
@@ -1041,8 +1366,14 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let dir = scratch("mode");
         registry(&dir, vec![member("a", "root", None, std::process::id())]);
-        deliver(&dir, "a", "a", "hi").unwrap();
-        for f in ["registry.json", "a.mail"] {
+        let f = Family {
+            me: "b".into(),
+            parent: Some("a".into()),
+            ..family(&dir, 1000, None)
+        };
+        f.answer("hi").unwrap();
+        f.try_reserve(1, 1, 1, &free).unwrap();
+        for f in ["registry.json", "b.answer", "ledger.jsonl"] {
             let mode = std::fs::metadata(dir.join(f)).unwrap().permissions().mode() & 0o777;
             assert_eq!(mode, 0o600, "{f}");
         }

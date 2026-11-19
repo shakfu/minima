@@ -127,12 +127,13 @@ pub struct Cli {
     #[arg(long, env = "MINIMA_NO_SESSION")]
     pub no_session: bool,
 
-    /// Let the agent spawn and message other agents. See docs/dev/recursion.md.
+    /// Let the agent spawn child agents and wait for their answers. Needs
+    /// --budget-tokens. See docs/dev/recursion.md.
     #[arg(short = 'r', long)]
     pub recurse: bool,
 
-    /// With -r: total tokens the family may use. Every agent in it stops before the
-    /// next request could cross it.
+    /// With -r, required: total tokens the family may use. Every agent in it stops
+    /// before the next request could cross it.
     #[arg(long, requires = "recurse", value_name = "N")]
     pub budget_tokens: Option<u64>,
 
@@ -213,6 +214,12 @@ pub struct Config {
     pub max_turns: u32,
     /// Set only when the provider reports no cost; see `price::lookup`.
     pub pricing: Option<crate::price::Pricing>,
+    /// The listed rates, whether or not the provider reports cost: a family projects each
+    /// request's cost from them before sending it.
+    pub rates: Option<crate::price::Pricing>,
+    /// Send an output cap on every dialect, not only Messages: set in a family, whose budget
+    /// grants each request its output.
+    pub cap_output: bool,
 }
 
 impl Config {
@@ -230,6 +237,8 @@ impl Config {
             adaptive_thinking: false,
             max_turns: 8,
             pricing: None,
+            rates: None,
+            cap_output: false,
         }
     }
 }
@@ -250,6 +259,8 @@ impl Cli {
                 adaptive_thinking: false,
                 max_turns: self.max_turns,
                 pricing: None,
+                rates: None,
+                cap_output: false,
             });
         }
 
@@ -344,6 +355,8 @@ impl Cli {
             dialect: entry.dialect,
             max_turns: self.max_turns,
             pricing: None,
+            rates: None,
+            cap_output: false,
         })
     }
 

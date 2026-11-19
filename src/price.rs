@@ -85,13 +85,21 @@ pub struct Listing {
     pub pricing: Option<Pricing>,
     pub context: Option<u32>,
     pub max_output: Option<u32>,
+    /// The provider reports each request's cost, so the rates serve only to project one.
+    pub reports_cost: bool,
 }
 
 impl Listing {
     /// The window only replaces the 128k fallback, and the output ceiling only fills a gap. A flag
     /// or the provider's own list outranks both.
     pub fn apply(self, config: &mut Config) {
-        config.pricing = self.pricing;
+        config.rates.clone_from(&self.pricing);
+        // A reported cost outranks one estimated from list rates.
+        config.pricing = if self.reports_cost {
+            None
+        } else {
+            self.pricing
+        };
         if let (true, Some(window)) = (config.context_guessed, self.context) {
             config.context = window;
         }
@@ -99,8 +107,8 @@ impl Listing {
     }
 }
 
-/// The listing for the configured model, when its provider is one OpenRouter mirrors. A failed
-/// fetch loses only the listing, so it never stops the run.
+/// The listing for the configured model, when its provider is OpenRouter or one it mirrors. A
+/// failed fetch loses only the listing, so it never stops the run.
 pub async fn lookup(config: &Config, refresh: bool) -> Option<Listing> {
     // A gateway or proxy need not bill at the vendor's rates.
     let entry = registry::find(&config.provider)?;
@@ -124,12 +132,17 @@ pub async fn lookup(config: &Config, refresh: bool) -> Option<Listing> {
         pricing: entry.pricing.as_ref().and_then(Pricing::from_openrouter),
         context: entry.context_length,
         max_output: entry.max_output,
+        reports_cost: config.provider == "openrouter",
     })
 }
 
 /// OpenRouter's candidate ids for a model: as given, then without a date suffix. Anthropic writes
-/// `claude-haiku-4-5-20251001` where OpenRouter writes `claude-haiku-4.5`.
+/// `claude-haiku-4-5-20251001` where OpenRouter writes `claude-haiku-4.5`. An OpenRouter model is
+/// already its own id.
 fn openrouter_ids(provider: &str, model: &str) -> Vec<String> {
+    if provider == "openrouter" {
+        return vec![model.to_string()];
+    }
     if !matches!(provider, "openai" | "anthropic") {
         return Vec::new();
     }
@@ -206,8 +219,11 @@ mod tests {
             openrouter_ids("openai", "gpt-5.6-luna"),
             ["openai/gpt-5.6-luna"]
         );
-        // OpenRouter reports its own cost, and local servers charge nothing.
-        assert!(openrouter_ids("openrouter", "openai/gpt-5").is_empty());
+        // OpenRouter's ids are its own; local servers charge nothing.
+        assert_eq!(
+            openrouter_ids("openrouter", "openai/gpt-5"),
+            ["openai/gpt-5"]
+        );
         assert!(openrouter_ids("ollama", "llama3").is_empty());
     }
 
@@ -245,11 +261,31 @@ mod tests {
     }
 
     #[test]
+    fn a_provider_that_reports_cost_gets_rates_but_no_estimate() {
+        let listing = |reports_cost| Listing {
+            pricing: Some(luna()),
+            context: None,
+            max_output: None,
+            reports_cost,
+        };
+        let mut reported = Config::for_test("openai/gpt-5.6-luna");
+        listing(true).apply(&mut reported);
+        assert_eq!(reported.rates, Some(luna()));
+        assert!(reported.pricing.is_none());
+
+        let mut estimated = Config::for_test("gpt-5.6-luna");
+        listing(false).apply(&mut estimated);
+        assert_eq!(estimated.rates, Some(luna()));
+        assert_eq!(estimated.pricing, Some(luna()));
+    }
+
+    #[test]
     fn a_listed_window_replaces_only_the_fallback() {
         let listing = || Listing {
             pricing: Some(luna()),
             context: Some(1_050_000),
             max_output: None,
+            reports_cost: false,
         };
         let mut guessed = Config {
             context_guessed: true,

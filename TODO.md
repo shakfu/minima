@@ -20,7 +20,17 @@
 
 - [ ] **`cargo audit` did not finish in review.** The advisory fetch and scan of 290 crates exceeded 300 s. Rerun on a connected machine before the next release and record the result. (REVIEW.md finding 7.)
 
+- [ ] **`-r`: output-cap enforcement is unverified on real gateways.** Inside a family, Chat sends `max_tokens` and Responses `max_output_tokens`; `tests/live_path.rs` checks only the request body. In five live runs no response came near its cap. OpenRouter accepts `max_tokens`; Ollama and llama.cpp are untested. Force a cap: a small `BUDGET` for `scripts/test_recurse.py` and a task with long output, then confirm the response ends at the cap with minima's output-limit error. Record the result in `docs/dev/recursion.md`, Limits. (`review-recurse.md`, Open.)
+
+- [ ] **`-r`: the sandbox tests have not run on Linux.** `a_sandboxed_family_writes_its_own_files_and_nothing_else` and `a_sandboxed_child_stops_with_its_parent_and_on_shutdown` in `tests/recursion.rs` pass on macOS. Landlock at ABI 3 should not scope signals, so `shutdown` should work; that is inferred. Check CI's ubuntu `test` job after the next push, and that `is_minima`'s `/proc/<pid>/exe` branch compiles under its lint job.
+
 ## Low
+
+- [ ] **`-r`: a grant takes the whole remainder.** Under a budget below one model ceiling, each request reserves everything left, so members run one at a time: 3 s of a 7 s run at `BUDGET=60000` (`docs/dev/recursion.md`, Worked example). Left as it is on 2026-11-19. If tight budgets with many children matter, grant `max(4096, min(ceiling, remaining / running members))`; the risk is cutting off a response that needs more than its share.
+
+- [ ] **`-r`: cost holds project the worst case.** A full hold reserves the model's whole output ceiling, about 500 times a typical request's cost on `openai/gpt-6-luna` ($0.06409 held, $0.00013 spent). A `--budget-cost` must cover the requests in flight, not their expected spend. Say so in the README's Recursion entry, or project from a smaller expected output and accept overshoot.
+
+- [ ] **`-r`: a cancel costs its full hold.** A request that does not complete settles at its whole reservation, often tens of thousands of tokens, since its real usage is unknown. Repeated Esc in a long REPL session uses up the budget faster than the real spend. Settle with the partial usage where the stream reported some before the cancel.
 
 - [ ] **Redact the API key and warn on plaintext `--base-url`.** `Config` derives `Debug` with `api_key: String` (`src/config.rs:184-190`), so a future `?config` log would leak it. Give `Config` a manual `Debug` that redacts the key. Warn when `--base-url` is `http://` and the host is not loopback. `--api-key` also appears in `ps`; the env route is the alternative to document. (REVIEW.md finding 5; inferred.)
 

@@ -7,7 +7,6 @@ license = "MIT"
 description = "A minimal coding agent for the terminal"
 authors = ["Shakeeb Alireza"]
 repository = "https://github.com/shakfu/minima"
-homepage = "https://github.com/shakfu/minima"
 readme = "README.md"
 keywords = ["agent", "llm", "cli", "openai", "anthropic"]
 categories = ["command-line-utilities", "development-tools"]

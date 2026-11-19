@@ -62,7 +62,12 @@ impl Session {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |d| d.as_secs());
-        let id = format!("{now}-{}", std::process::id());
+        Self::with_id(config, root, &format!("{now}-{}", std::process::id()))
+    }
+
+    /// A new session with an id fixed by the caller, in `new`'s format.
+    pub fn with_id(config: &Path, root: &Path, id: &str) -> Self {
+        let id = id.to_string();
         Self {
             path: dir(config, root).join(format!("{id}.json")),
             id,
