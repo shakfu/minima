@@ -58,3 +58,15 @@ jobs:
       # Real commands under --sandbox, judged on disk. The cargo case fetches, so this needs
       # the network.
       - run: cargo build && scripts/test_sandbox.py
+      # A `-r` child's stderr reaches only its family log, which the recursion tests leave in their
+      # scratch directories under the temp directory.
+      - if: failure()
+        id: tmp
+        run: dir="${TMPDIR:-/tmp}"; echo "dir=${dir%/}" >> "$GITHUB_OUTPUT"
+      - if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: family-logs-${{ matrix.runner }}
+          path: ${{ steps.tmp.outputs.dir }}/minima-recurse-*/state/minima/family/
+          if-no-files-found: ignore
+          retention-days: 7
