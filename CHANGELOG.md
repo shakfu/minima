@@ -26,6 +26,10 @@
 
 - `--sandbox` is scoped to a model's mistakes, not a hostile model. `write` and `edit` check the path in minima's unconfined process, so a symlink swapped in by a background `bash` job between the check and the write still escapes the root. That race is accepted rather than closed with a sandboxed write process: reads and the network stay open, so containing a hostile model needs a container either way. See `docs/dev/root-sandbox.md`.
 
+### Fixed
+
+- `--sandbox` preflight passed when `sandbox-exec` refused its profile. It ran through the `bash` tool, which reports a non-zero exit as an ordinary result, so exit 71 (`sandbox_apply: Operation not permitted`) counted as a working sandbox and every later command failed. A `-r` child on macOS now runs `bash` inside the sandbox it inherits from its parent's `bash`, since Seatbelt refuses a nested profile that is not equivalent to the outer one.
+
 ## 0.6.0
 
 ### Added

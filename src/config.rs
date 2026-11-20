@@ -28,6 +28,9 @@ pub struct Bounds {
     pub root: PathBuf,
     /// `--sandbox` only, and `bash` only. The file tools never leave the root.
     pub writable: Vec<PathBuf>,
+    /// A family member already inside its root's Seatbelt sandbox, which refuses a nested one.
+    /// `bash` runs in the inherited sandbox, whose policy is the family's.
+    pub confined: bool,
 }
 
 impl Bounds {
@@ -38,6 +41,7 @@ impl Bounds {
             sandbox,
             root,
             writable: Vec::new(),
+            confined: false,
         }
     }
 }
@@ -191,6 +195,7 @@ impl Cli {
             sandbox: self.sandbox,
             root,
             writable,
+            confined: false,
         })
     }
 }

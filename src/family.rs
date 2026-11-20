@@ -440,6 +440,8 @@ pub fn join(inherited: Option<Inherited>, bounds: &mut Bounds, cli: &Cli) -> Res
     };
     if bounds.sandbox {
         bounds.writable.push(std::fs::canonicalize(&family.dir)?);
+        // A child started by `spawn` under its parent's sandboxed `bash` already has the policy.
+        bounds.confined = family.parent.is_some() && sandboxed();
     }
     // SAFETY: called from `start` before the runtime or any other thread exists.
     unsafe {
@@ -447,6 +449,27 @@ pub fn join(inherited: Option<Inherited>, bounds: &mut Bounds, cli: &Cli) -> Res
         std::env::set_var(ENV_SELF, &family.me);
     }
     Ok(family)
+}
+
+/// Whether this process runs under a Seatbelt profile. Landlock stacks a nested policy, so Linux
+/// always applies it again.
+#[cfg(target_os = "macos")]
+fn sandboxed() -> bool {
+    unsafe extern "C" {
+        fn sandbox_check(
+            pid: libc::pid_t,
+            operation: *const libc::c_char,
+            kind: libc::c_int,
+            ...
+        ) -> libc::c_int;
+    }
+    // SAFETY: a null operation with SANDBOX_FILTER_NONE (0) reads no further arguments.
+    unsafe { sandbox_check(libc::getpid(), std::ptr::null(), 0) == 1 }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn sandboxed() -> bool {
+    false
 }
 
 impl Family {

@@ -89,7 +89,7 @@ fn start() -> Result<ExitCode> {
     // bounds, so a `--writable` path the policy will not take fails here rather than on the
     // model's first command.
     if bounds.sandbox {
-        runtime.block_on(tools::preflight(&bounds))?;
+        tools::preflight(&bounds)?;
     }
 
     // Loaded before config, which takes the session's provider and model where no flag names them.

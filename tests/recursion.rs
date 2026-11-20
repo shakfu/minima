@@ -8,6 +8,10 @@ use std::process::Command;
 
 const EXE: &str = env!("CARGO_BIN_EXE_minima");
 
+/// Waits up to 10 s for the child's `bash` to record its pid. Bounded, so a child whose `bash`
+/// never runs fails the test at once instead of at the root's 120 s tool timeout.
+const AWAIT_PID: &str = "for _ in $(seq 100); do [ -s child-bash.pid ] && break; sleep 0.1; done";
+
 fn bash_turn(i: usize, command: &str, total_tokens: u32) -> serde_json::Value {
     let arguments = serde_json::json!({ "command": command }).to_string();
     serde_json::json!([
@@ -151,7 +155,7 @@ fn a_child_stops_when_its_parent_exits() {
                 0,
                 &format!(
                     "'{EXE}' -r spawn --name kid --mock child.json -- work; \
-                     until [ -s child-bash.pid ]; do sleep 0.1; done"
+                     {AWAIT_PID}"
                 ),
                 10,
             ),
@@ -199,7 +203,7 @@ fn an_agents_shutdown_spares_the_agent() {
                 0,
                 &format!(
                     "'{EXE}' -r spawn --name kid --mock child.json -- work; \
-                     until [ -s child-bash.pid ]; do sleep 0.1; done; '{EXE}' -r shutdown"
+                     {AWAIT_PID}; '{EXE}' -r shutdown"
                 ),
                 10,
             ),
@@ -493,7 +497,7 @@ fn a_sandboxed_child_stops_with_its_parent_and_on_shutdown() {
                     0,
                     &format!(
                         "'{EXE}' -r spawn --name kid --mock child.json -- work; \\
-                         until [ -s child-bash.pid ]; do sleep 0.1; done"
+                         {AWAIT_PID}"
                     ),
                     10,
                 ),

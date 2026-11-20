@@ -255,3 +255,33 @@ fn a_saved_session_is_continued_by_the_next_run() {
     let stderr = String::from_utf8_lossy(&missing.stderr);
     assert!(stderr.contains("1-1.json"), "{stderr}");
 }
+
+/// Seatbelt refuses a profile nested in a narrower one. `sandbox-exec` then exits 71, which the
+/// `bash` tool reports as an ordinary failure, so preflight has to judge the exit status itself.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_refused_sandbox_stops_the_run_at_startup() {
+    let dir = std::env::temp_dir().join(format!("minima-refused-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("scratch directory");
+    std::fs::write(dir.join("script.json"), bash_turns(&["true"])).expect("mock script");
+    let out = Command::new("/usr/bin/sandbox-exec")
+        .args(["-p", "(version 1) (allow default) (deny file-write*)"])
+        .arg(env!("CARGO_BIN_EXE_minima"))
+        .args([
+            "--sandbox",
+            "--no-session",
+            "--mock",
+            "script.json",
+            "-p",
+            "go",
+        ])
+        .current_dir(&dir)
+        .env("XDG_CONFIG_HOME", &dir)
+        .env("XDG_STATE_HOME", &dir)
+        .output()
+        .expect("running minima");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "{stderr}");
+    assert!(stderr.contains("could not be installed"), "{stderr}");
+}

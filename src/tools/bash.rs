@@ -80,7 +80,7 @@ pub async fn call(args: Args, cancel: &Cancel, bounds: &Bounds) -> Result<Outcom
         .map_or(DEFAULT_TIMEOUT, Duration::from_millis)
         .min(MAX_TIMEOUT);
 
-    let mut command = if bounds.sandbox {
+    let mut command = if bounds.sandbox && !bounds.confined {
         sandbox_command(bounds, &args.command)?
     } else {
         plain_command(&args.command)
@@ -190,16 +190,21 @@ const OPEN_DENIED: &str =
 const SNAP_CONFINE: &str = "snap-confine is packaged without necessary permissions";
 const SNAP_DENIED: &str = "--sandbox cannot run snap-packaged programs; use a build of the program that is not a snap, or run without --sandbox";
 
-/// `bash -c command` under the kernel policy: writes only under the root, the paths
-/// `sanduk_sandbox::caches` names, and `--writable`. Reads and the network stay open.
-fn sandbox_command(bounds: &Bounds, command: &str) -> Result<Command> {
+/// The kernel policy: writes only under the root, the paths `sanduk_sandbox::caches` names, and
+/// `--writable`. Reads and the network stay open.
+fn policy(bounds: &Bounds) -> Result<Policy> {
     let mut policy = Policy::new(&bounds.root).context("resolving the sandbox root")?;
     for dir in &bounds.writable {
         policy = policy
             .writable(dir)
             .with_context(|| format!("resolving --writable {}", dir.display()))?;
     }
-    let mut process = policy
+    Ok(policy)
+}
+
+/// `bash -c command` under the kernel policy.
+fn sandbox_command(bounds: &Bounds, command: &str) -> Result<Command> {
+    let mut process = policy(bounds)?
         .command("bash")
         .context("installing the filesystem sandbox")?;
     process.arg("-c").arg(command);
@@ -207,17 +212,15 @@ fn sandbox_command(bounds: &Bounds, command: &str) -> Result<Command> {
 }
 
 /// One confined command before the agent starts. A kernel without Landlock, or a macOS without
-/// `sandbox-exec`, fails here rather than on whichever tool call the model makes first.
-pub async fn preflight(bounds: &Bounds) -> Result<()> {
-    sanduk_sandbox::caches::create();
-    let args = Args {
-        command: "exit 0".into(),
-        timeout_ms: Some(10_000),
-    };
-    call(args, &Cancel::new(), bounds)
-        .await
-        .context("the filesystem sandbox could not be installed; run without --sandbox")?;
-    Ok(())
+/// `sandbox-exec` or refusing a nested profile, fails here rather than on the model's first
+/// command. A confined family member has no profile of its own to install.
+pub fn preflight(bounds: &Bounds) -> Result<()> {
+    if bounds.confined {
+        return Ok(());
+    }
+    policy(bounds)?
+        .preflight()
+        .context("the filesystem sandbox could not be installed; run without --sandbox")
 }
 
 /// Stdout followed by stderr as one body, plus stderr alone for the note.
@@ -716,10 +719,8 @@ mod tests {
         assert!(out.body.contains(OPEN_DENIED), "{out:?}");
     }
 
-    #[tokio::test]
-    async fn preflight_installs_the_sandbox() {
-        preflight(&sandboxed())
-            .await
-            .expect("the sandbox should install on a supported platform");
+    #[test]
+    fn preflight_installs_the_sandbox() {
+        preflight(&sandboxed()).expect("the sandbox should install on a supported platform");
     }
 }
