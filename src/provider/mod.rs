@@ -142,6 +142,8 @@ pub enum Event {
     Break,
     /// The response stopped at the output token limit, so the text or the last call is cut off.
     Truncated,
+    /// The model refused to answer: Anthropic's `refusal`, Chat's `content_filter`.
+    Refused,
     /// A stop reason arrived: the model finished the turn. Only Chat reports this apart from the
     /// stream's end, because its usage frame follows the stop reason.
     Stop,
@@ -265,7 +267,7 @@ impl Provider {
     ) -> Result<EventStream, Error> {
         match self {
             Provider::Http(p) => p.stream(cfg, messages, tools, room).await,
-            Provider::Mock(p) => p.stream().await,
+            Provider::Mock(p) => p.stream(messages).await,
         }
     }
 }

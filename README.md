@@ -136,7 +136,9 @@ Options:
 
 - **Colour:** on for a terminal, off for a pipe, `--no-color` or `NO_COLOR`.
 
-- **Offline runs:** `--mock` replays a scripted JSON stream instead of calling the network.
+- **Offline runs:** `--mock` replays a scripted JSON stream instead of calling the network. A script can pause between steps with `{"pause": MS}`, and can be an object from prompt text to turns, so one script answers several prompts. See `src/provider/mock.rs`.
+
+- **ACP:** `--acp` serves the Agent Client Protocol for an editor or a broker. See [ACP](#acp).
 
 ### Providers
 
@@ -157,6 +159,31 @@ Listed in autoselect order.
 | `openai` | openai-responses | `OPENAI_API_KEY` |
 | `ollama` | openai-chat | none |
 | `llamacpp` | openai-chat | none |
+
+## ACP
+
+`minima --acp` serves the [Agent Client Protocol](https://agentclientprotocol.com/protocol/), version 1, as JSON-RPC lines on stdin and stdout. stdout carries only protocol messages; notes go to stderr. It conflicts with `-p`, `--json`, a positional prompt, `--continue`, `--resume` and `-r`. Provider, model, `--sandbox`, `--writable` and `--max-turns` apply to every session. For the minos broker: `minosb -agent acp -- minima --acp`.
+
+- **Sessions:** a session's `cwd` is its root. It must be the process's root or under it: `--root`, or the directory minima starts in. Any other `cwd` gets `-32602`, so a client cannot widen what `--sandbox` bounds. Sessions are saved as in the REPL. `session/load` streams the saved conversation as `session/update` messages, then answers; a session already open in this process replays from memory. A loaded session takes its saved provider and model where no flag names them, as `--resume` does. `--no-session` turns off saving and `loadSession`.
+
+- **Updates:** `agent_message_chunk` for text; `tool_call` and `tool_call_update` for each call, with `kind`, `rawInput` and the file in `locations`; `usage_update` after each request whose usage the provider reports, only when the context window is known (from `--context` or the model list). Its cost is the session's total, saved with the session, so it carries across `session/load`. A cancelled tool call ends `failed`.
+
+- **Permissions:** every tool but `read` sends `session/request_permission` before it runs. The options are allow once, allow that tool for the rest of the session, and reject. A cancelled request, an error or an unknown option is a denial. The model then gets `not run: the user denied permission for this call`.
+
+- **Cancellation:** `session/cancel` stops the request, retry wait, permission wait or tool, as Esc does in the REPL, for the running prompt and any queued behind it. Each answers `stopReason: "cancelled"`. Closing stdin cancels them all.
+
+- **Stop reasons:** `end_turn`; `max_turn_requests` after `--max-turns`; `max_tokens` when a response hits the output limit; `refusal` when the provider reports one (Anthropic's `refusal`, Chat's `content_filter`), after which the prompt and its reply are dropped from the conversation, as ACP requires. A provider error is a JSON-RPC error on the prompt.
+
+- **Not supported:** MCP servers are accepted and ignored. The client's `fs` and `terminal` methods are never called; the tools use the local disk. Image, audio and embedded-context prompts are not advertised. A `resource_link` reaches the model as its URI.
+
+- **Order:** requests run one at a time. During a prompt only `session/cancel` and answers to permission requests are read at once; other requests wait for the prompt to end.
+
+`mock/acp.json` answers three prompts: `say hello` (twice, each with a cost), `count slowly` (runs for 5 s) and `write a note` (asks permission). From a minos checkout, the conformance suite runs against it:
+
+```text
+make acp-conformance ACP_EXPECT_USAGE=1 ACP_SLOW_PROMPT='count slowly' ACP_PERMISSION_PROMPT='write a note' \
+  ACP_AGENT='/path/to/minima --acp --mock /path/to/minima/mock/acp.json'
+```
 
 ## Build
 

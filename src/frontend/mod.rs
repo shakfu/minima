@@ -3,6 +3,7 @@
 //! Sync on purpose: every method is a write to an already-open stream, so making the trait async
 //! would buy nothing and cost object safety.
 
+pub mod acp;
 pub mod headless;
 mod history;
 pub mod json;
@@ -11,6 +12,8 @@ pub mod repl;
 mod screen;
 
 use std::time::Duration;
+
+use futures_util::future::LocalBoxFuture;
 
 use crate::provider::Usage;
 
@@ -32,6 +35,15 @@ pub trait Frontend {
     fn compacted(&mut self, before: u32, after: u32);
 
     fn cancelled(&mut self);
+
+    /// Called after `tool_start`. `None` runs the call; otherwise it runs only if the future
+    /// resolves true. Only `--acp` asks.
+    fn permit(&mut self, _name: &str, _arguments: &str) -> Option<LocalBoxFuture<'static, bool>> {
+        None
+    }
+
+    /// The model refused the prompt. Called before `run` returns; only `--acp` acts on it.
+    fn refused(&mut self) {}
 }
 
 /// `1.2k`, `3.45M`: short enough for the status bar.

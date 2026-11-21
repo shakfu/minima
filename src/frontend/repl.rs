@@ -306,16 +306,21 @@ pub fn run(
             report(Report::Working, &session);
         }
         let result = match request {
+            // One Esc cancels one user turn, not the session.
             Ok(Request::Prompt(prompt)) => {
+                cancel.reset();
                 runtime.block_on(agent.run(&prompt, &mut frontend, &cancel))
             }
-            Ok(Request::Compact) => match runtime.block_on(agent.compact(&mut frontend, &cancel)) {
-                Ok(Compaction::Nothing) => Err(anyhow::anyhow!(
-                    "nothing compacted: the conversation is no longer than the part kept \
-                     verbatim or than its summary, or the summary request would not fit"
-                )),
-                other => other.map(|_| ()),
-            },
+            Ok(Request::Compact) => {
+                cancel.reset();
+                match runtime.block_on(agent.compact(&mut frontend, &cancel)) {
+                    Ok(Compaction::Nothing) => Err(anyhow::anyhow!(
+                        "nothing compacted: the conversation is no longer than the part kept \
+                         verbatim or than its summary, or the summary request would not fit"
+                    )),
+                    other => other.map(|_| ()),
+                }
+            }
             Ok(Request::Models(filter)) => runtime.block_on(list_models(agent, &filter, &frontend)),
             Ok(Request::Model(name)) => runtime.block_on(select_model(agent, &name, &frontend)),
             Ok(Request::Exit) | Err(_) => break,

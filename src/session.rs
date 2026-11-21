@@ -24,6 +24,9 @@ struct File {
     provider: String,
     model: String,
     messages: Vec<Message>,
+    /// USD over the session's life. Only `--acp` keeps it; older files lack it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cost: Option<f64>,
 }
 
 /// A conversation as loaded, before the agent takes it.
@@ -54,6 +57,8 @@ pub struct Session {
     root: PathBuf,
     /// The file exists, so the session can be resumed.
     pub saved: bool,
+    /// Written with the conversation, and read back by `open`.
+    pub cost: Option<f64>,
 }
 
 impl Session {
@@ -73,6 +78,7 @@ impl Session {
             id,
             root: root.to_path_buf(),
             saved: false,
+            cost: None,
         }
     }
 
@@ -119,6 +125,7 @@ impl Session {
             path: path.to_path_buf(),
             root: root.to_path_buf(),
             saved: true,
+            cost: file.cost,
         };
         let saved = Saved {
             provider: file.provider,
@@ -146,6 +153,7 @@ impl Session {
             provider: provider.to_string(),
             model: model.to_string(),
             messages,
+            cost: self.cost,
         };
         let dir = self
             .path

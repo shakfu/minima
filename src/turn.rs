@@ -14,6 +14,7 @@ pub struct Turn {
     pub calls: Vec<ToolCall>,
     pub usage: Usage,
     pub truncated: bool,
+    pub refused: bool,
     /// Items to send back as received, in the order the model opened them; see `Message::replay`.
     pub replay: Vec<Value>,
 }
@@ -36,6 +37,7 @@ pub struct Assembler {
     replay: Vec<(String, Value)>,
     usage: Usage,
     truncated: bool,
+    refused: bool,
     done: bool,
 }
 
@@ -55,6 +57,7 @@ impl Assembler {
             Event::Text(t) => self.text.push_str(&t),
             Event::Usage(u) => self.usage = merge_usage(self.usage, u),
             Event::Truncated => self.truncated = true,
+            Event::Refused => self.refused = true,
             Event::Stop | Event::Done => self.done = true,
             Event::Break => {
                 if !self.text.is_empty() && !self.text.ends_with("\n\n") {
@@ -123,6 +126,7 @@ impl Assembler {
             calls,
             usage: self.usage,
             truncated: self.truncated,
+            refused: self.refused,
             replay: self.replay.into_iter().map(|(_, b)| b).collect(),
         })
     }

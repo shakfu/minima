@@ -198,6 +198,9 @@ impl Chunk {
                 if reason == "length" {
                     out.push(Ok(Event::Truncated));
                 }
+                if reason == "content_filter" {
+                    out.push(Ok(Event::Refused));
+                }
                 out.push(Ok(Event::Stop));
             }
         }
@@ -246,6 +249,13 @@ mod tests {
     fn a_length_stop_is_reported_as_truncation() {
         let events = parse_frame(r#"{"choices":[{"delta":{},"finish_reason":"length"}]}"#);
         assert_eq!(events[0].as_ref().unwrap(), &Event::Truncated);
+        assert_eq!(events[1].as_ref().unwrap(), &Event::Stop);
+    }
+
+    #[test]
+    fn a_content_filter_stop_is_reported_as_refusal() {
+        let events = parse_frame(r#"{"choices":[{"delta":{},"finish_reason":"content_filter"}]}"#);
+        assert_eq!(events[0].as_ref().unwrap(), &Event::Refused);
         assert_eq!(events[1].as_ref().unwrap(), &Event::Stop);
     }
 

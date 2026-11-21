@@ -206,8 +206,10 @@ pub fn parse_frame(event: &str, data: &str) -> Vec<Result<Event, Error>> {
                 .map(|output| Ok(Event::Usage(Usage::from_parts(0, output as u32))))
                 .into_iter()
                 .collect();
-            if root["delta"]["stop_reason"] == "max_tokens" {
-                out.push(Ok(Event::Truncated));
+            match root["delta"]["stop_reason"].as_str() {
+                Some("max_tokens") => out.push(Ok(Event::Truncated)),
+                Some("refusal") => out.push(Ok(Event::Refused)),
+                _ => {}
             }
             out
         }
@@ -478,5 +480,11 @@ mod tests {
             &Event::Usage(Usage::from_parts(0, 8192))
         );
         assert_eq!(events[1].as_ref().unwrap(), &Event::Truncated);
+    }
+
+    #[test]
+    fn a_refusal_stop_is_reported() {
+        let events = parse_frame("message_delta", r#"{"delta":{"stop_reason":"refusal"}}"#);
+        assert_eq!(events[0].as_ref().unwrap(), &Event::Refused);
     }
 }

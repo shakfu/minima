@@ -78,6 +78,14 @@ pub struct Cli {
     #[arg(long, requires = "prompt", conflicts_with = "first")]
     pub json: bool,
 
+    /// Serve the Agent Client Protocol on stdin and stdout, for an editor or another
+    /// client. Each session asks before any tool but read runs.
+    #[arg(
+        long,
+        conflicts_with_all = ["prompt", "first", "json", "continue_last", "resume", "recurse"]
+    )]
+    pub acp: bool,
+
     /// Provider id. Default: the first one whose key is set.
     #[arg(short = 'P', long, env = "MINIMA_PROVIDER", value_name = "ID")]
     pub provider: Option<String>,
@@ -406,6 +414,7 @@ mod tests {
             prompt: None,
             first: Vec::new(),
             json: false,
+            acp: false,
             provider: Some("openrouter".into()),
             model: model.map(String::from),
             base_url: None,
@@ -477,6 +486,28 @@ mod tests {
         assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
         let err = Cli::try_parse_from(["minima", "--json", "two"]).unwrap_err();
         assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    /// ACP owns stdin and stdout, so no mode that reads or prints there can share the run.
+    #[test]
+    fn acp_refuses_the_other_modes() {
+        assert!(Cli::try_parse_from(["minima", "--acp"]).unwrap().acp);
+        for other in [
+            &["-p", "x"][..],
+            &["words"],
+            &["-p", "x", "--json"],
+            &["--resume", "1-2"],
+            &["--continue"],
+            &["-r", "--budget-tokens", "9"],
+        ] {
+            let args = ["minima", "--acp"].iter().chain(other);
+            let err = Cli::try_parse_from(args).unwrap_err();
+            assert_eq!(
+                err.kind(),
+                clap::error::ErrorKind::ArgumentConflict,
+                "{other:?}"
+            );
+        }
     }
 
     #[test]

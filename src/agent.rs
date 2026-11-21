@@ -45,6 +45,18 @@ resolved; and the next steps. Be specific: paths, names, numbers. Reply with tex
 call tools.";
 const SUMMARY_HEAD: &str = "The earlier part of this conversation was compacted into this summary:";
 
+/// A run that ended without an answer for a reason the caller may report on its own terms.
+#[derive(Debug, thiserror::Error)]
+pub enum Stop {
+    #[error(
+        "stopped after {0} turns without a final answer; the work so far is kept, so a prompt \
+         such as \"continue\" resumes it, and --max-turns raises the limit"
+    )]
+    MaxTurns(u32),
+    #[error("the response hit the output token limit and is incomplete")]
+    Truncated,
+}
+
 const CONTEXT_FULL: &str = "not run: the context window is full";
 const TRUNCATED: &str = "not run: the response hit the output token limit before the call was \
 complete; split the work into smaller calls";
@@ -67,6 +79,8 @@ pub struct Agent {
     remember: Option<FirstTurn>,
     /// Set under `--recurse`: the budget.
     family: Option<Family>,
+    /// Index of the last prompt, for `forget_last_prompt`. A compaction moves it.
+    prompt: Option<usize>,
 }
 
 type FirstTurn = std::rc::Rc<dyn Fn(&Config)>;
@@ -117,6 +131,7 @@ impl Agent {
             on_first_turn: None,
             remember: None,
             family: None,
+            prompt: None,
         }
     }
 
@@ -161,8 +176,19 @@ impl Agent {
     pub fn resume(&mut self, messages: Vec<Message>) {
         self.messages.truncate(1);
         self.messages.extend(messages);
+        self.prompt = None;
         self.used = 0;
         self.pending = self.overhead.saturating_add(sum(&self.messages[1..]));
+    }
+
+    /// Drops the last prompt and everything after it, as ACP's `refusal` stop reason requires.
+    /// A prompt summarised by compaction leaves the summary, which holds the earlier history.
+    pub fn forget_last_prompt(&mut self) {
+        let Some(at) = self.prompt.take() else {
+            return;
+        };
+        let kept = self.messages[1..at].to_vec();
+        self.resume(kept);
     }
 
     /// True when costs come from a price list rather than from the provider.
@@ -209,14 +235,14 @@ impl Agent {
         listing.apply(&mut self.config);
     }
 
-    /// One user prompt and every turn it spawns, until the model stops asking for tools.
+    /// One user prompt and every turn it spawns, until the model stops asking for tools. A cancel
+    /// set before the call is kept, so a caller that reuses `cancel` resets it first.
     pub async fn run(
         &mut self,
         prompt: &str,
         frontend: &mut dyn Frontend,
         cancel: &Cancel,
     ) -> Result<()> {
-        cancel.reset();
         // Named apart from the general check: "start a new session" cannot fix an AGENTS.md.
         if self.overhead.saturating_add(CONTEXT_MARGIN) >= self.config.context {
             bail!(
@@ -237,6 +263,7 @@ impl Agent {
         }
         self.check_context(prompt_tokens)?;
         self.pending += prompt_tokens;
+        self.prompt = Some(self.messages.len());
         self.messages.push(Message::user(prompt));
 
         for _ in 0..self.config.max_turns {
@@ -267,6 +294,7 @@ impl Agent {
                 text,
                 calls,
                 truncated,
+                refused,
                 replay,
                 ..
             } = turn;
@@ -292,7 +320,10 @@ impl Agent {
             // A full window after an answer is left to the next prompt, which compacts first.
             if calls.is_empty() {
                 if truncated {
-                    bail!("the response hit the output token limit and is incomplete");
+                    return Err(Stop::Truncated.into());
+                }
+                if refused {
+                    frontend.refused();
                 }
                 return Ok(());
             }
@@ -329,6 +360,24 @@ impl Agent {
                 let name = call.name.as_str();
                 frontend.tool_start(name, &call.arguments);
 
+                let permitted = match frontend.permit(name, &call.arguments) {
+                    None => true,
+                    Some(asked) => tokio::select! {
+                        biased;
+                        () = cancel.cancelled() => false,
+                        allowed = asked => allowed,
+                    },
+                };
+                if !permitted {
+                    let reason = match cancel.is_cancelled() {
+                        true => tools::CANCELLED,
+                        false => tools::DENIED,
+                    };
+                    frontend.tool_end(reason, Some(reason), false);
+                    self.answer(&call.id, reason.to_string());
+                    continue;
+                }
+
                 let outcome = match Tool::from_name(name) {
                     Some(tool) => tool.call(&call.arguments, cancel, &self.bounds).await,
                     None => Err(anyhow::anyhow!("no such tool: {name}")),
@@ -354,11 +403,7 @@ impl Agent {
             }
         }
 
-        bail!(
-            "stopped after {} turns without a final answer; the work so far is kept, so a prompt \
-             such as \"continue\" resumes it, and --max-turns raises the limit",
-            self.config.max_turns
-        )
+        Err(Stop::MaxTurns(self.config.max_turns).into())
     }
 
     /// `/compact`: summarises all but the recent turns, whatever the window holds.
@@ -367,7 +412,6 @@ impl Agent {
         frontend: &mut dyn Frontend,
         cancel: &Cancel,
     ) -> Result<Compaction> {
-        cancel.reset();
         let outcome = self.summarise(frontend, cancel).await?;
         match outcome {
             Compaction::Done { before, after } => frontend.compacted(before, after),
@@ -452,6 +496,8 @@ impl Agent {
         self.messages.truncate(1);
         self.messages.push(summary);
         self.messages.extend(tail);
+        // The tail follows the summary at 2; a summarised prompt is cut back to the summary.
+        self.prompt = self.prompt.map(|p| p.saturating_sub(cut) + 2);
         self.used = 0;
         self.pending = after;
         Ok(Compaction::Done { before, after })
@@ -968,6 +1014,106 @@ mod tests {
         assert_eq!(results[1].1, "error: no such tool: grep");
     }
 
+    /// Answers every permission request with `allow`.
+    struct Asks {
+        allow: bool,
+    }
+
+    impl Frontend for Asks {
+        fn text(&mut self, _: &str) {}
+        fn tool_start(&mut self, _: &str, _: &str) {}
+        fn tool_end(&mut self, _: &str, _: Option<&str>, _: bool) {}
+        fn retry(&mut self, _: u32, _: Duration) {}
+        fn turn_end(&mut self, _: Usage) {}
+        fn compacted(&mut self, _: u32, _: u32) {}
+        fn cancelled(&mut self) {}
+        fn permit(
+            &mut self,
+            _: &str,
+            _: &str,
+        ) -> Option<futures_util::future::LocalBoxFuture<'static, bool>> {
+            Some(Box::pin(std::future::ready(self.allow)))
+        }
+    }
+
+    /// A denied call is answered without running, and the turn goes on to the answer.
+    #[tokio::test]
+    async fn a_call_runs_only_when_the_frontend_permits_it() {
+        for allow in [false, true] {
+            let dir = Scratch::new(&format!("agent-permit-{allow}"));
+            let path = dir.file("note.txt");
+            let write = serde_json::json!({ "path": path, "content": "x" });
+            let mut agent = agent_with(&format!(
+                r#"[[{}], [{{"text": "done"}}]]"#,
+                call("c1", "write", write)
+            ));
+            agent
+                .run("go", &mut Asks { allow }, &Cancel::new())
+                .await
+                .expect("two turns");
+            assert_eq!(std::path::Path::new(&path).exists(), allow);
+            let denied = results(&agent)[0].1 == tools::DENIED;
+            assert_eq!(denied, !allow, "{:?}", results(&agent));
+        }
+    }
+
+    /// ACP's reader may cancel before `run` starts; the cancel must still hold.
+    #[tokio::test]
+    async fn a_cancel_before_the_run_sends_nothing() {
+        let mut agent = agent_with("[]");
+        let cancel = Cancel::new();
+        cancel.cancel();
+        agent
+            .run("go", &mut Quiet::default(), &cancel)
+            .await
+            .expect("no request, so no error from the empty script");
+    }
+
+    #[derive(Default)]
+    struct Refusals(u32);
+
+    impl Frontend for Refusals {
+        fn text(&mut self, _: &str) {}
+        fn tool_start(&mut self, _: &str, _: &str) {}
+        fn tool_end(&mut self, _: &str, _: Option<&str>, _: bool) {}
+        fn retry(&mut self, _: u32, _: Duration) {}
+        fn turn_end(&mut self, _: Usage) {}
+        fn compacted(&mut self, _: u32, _: u32) {}
+        fn cancelled(&mut self) {}
+        fn refused(&mut self) {
+            self.0 += 1;
+        }
+    }
+
+    #[tokio::test]
+    async fn a_refusal_is_reported_and_its_prompt_can_be_forgotten() {
+        let mut agent = agent_with(r#"[[{"text": "a"}], [{"text": "no"}, "refused"]]"#);
+        let mut frontend = Refusals::default();
+        agent
+            .run("one", &mut frontend, &Cancel::new())
+            .await
+            .unwrap();
+        assert_eq!(frontend.0, 0);
+        agent
+            .run("two", &mut frontend, &Cancel::new())
+            .await
+            .unwrap();
+        assert_eq!(frontend.0, 1);
+        agent.forget_last_prompt();
+        let texts: Vec<_> = agent.messages[1..]
+            .iter()
+            .map(|m| m.content.as_deref().unwrap_or_default())
+            .collect();
+        assert_eq!(texts, ["one", "a"]);
+    }
+
+    #[tokio::test]
+    async fn the_stop_reasons_are_typed() {
+        let mut agent = agent_with(r#"[["truncated"]]"#);
+        let err = run(&mut agent).await.expect_err("truncated");
+        assert!(matches!(err.downcast_ref(), Some(Stop::Truncated)), "{err}");
+    }
+
     #[tokio::test]
     async fn max_turns_stops_a_model_that_never_answers() {
         let missing = serde_json::json!({"path": "/nonexistent"});
@@ -1010,6 +1156,33 @@ mod tests {
             agent.messages.last().unwrap().content.as_deref(),
             Some("done")
         );
+    }
+
+    /// A refusal after a mid-run compaction keeps the summary, which is a user message too.
+    #[tokio::test]
+    async fn a_refusal_after_compaction_keeps_the_summary() {
+        let dir = Scratch::new("agent-refusal");
+        let path = dir.file("note.txt");
+        let mut agent = agent_with(&format!(
+            r#"[[{}, {{"usage": {{"total_tokens": 127000}}}}],
+                [{{"text": "SUMMARY"}}],
+                [{{"text": "no"}}, "refused"]]"#,
+            call(
+                "c1",
+                "write",
+                serde_json::json!({ "path": path, "content": "x" })
+            )
+        ));
+        let mut frontend = Refusals::default();
+        agent
+            .run("go", &mut frontend, &Cancel::new())
+            .await
+            .unwrap();
+        assert_eq!(frontend.0, 1);
+        agent.forget_last_prompt();
+        assert_eq!(agent.messages.len(), 2, "{:?}", agent.messages);
+        let summary = agent.messages[1].content.as_deref().unwrap();
+        assert!(summary.ends_with("SUMMARY"), "{summary}");
     }
 
     /// The kept tail starts at a turn boundary, so the last call keeps its result and the large

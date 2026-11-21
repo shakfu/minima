@@ -1,0 +1,29 @@
+{
+  "say hello": [
+    [
+      { "text": "hello from the mock\n" },
+      { "usage": { "prompt_tokens": 120, "completion_tokens": 6, "cost": 0.0001 } }
+    ],
+    [
+      { "text": "hello again from the mock\n" },
+      { "usage": { "prompt_tokens": 140, "completion_tokens": 7, "cost": 0.0002 } }
+    ]
+  ],
+  "count slowly": [
+    [
+      { "text": "one\n" },
+      { "pause": 5000 },
+      { "text": "two\n" }
+    ]
+  ],
+  "write a note": [
+    [
+      { "text": "writing note.txt\n" },
+      { "tool_call": { "index": 0, "id": "w1", "name": "write",
+                       "arguments": "{\"path\":\"note.txt\",\"content\":\"hi\\n\"}" } }
+    ],
+    [
+      { "text": "done\n" }
+    ]
+  ]
+}

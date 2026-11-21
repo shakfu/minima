@@ -84,6 +84,10 @@ fn reports_state_to_herdr_and_releases_on_quit() {
     )
     .unwrap();
     std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    // macOS checks a new executable on its first exec, which can pass minima's 2 s report
+    // timeout under load. One run here pays for it; the warm-up's own line is dropped.
+    assert!(Command::new(&bin).status().unwrap().success());
+    std::fs::remove_file(&log).unwrap();
     let mock = dir.join("mock.json");
     std::fs::write(
         &mock,

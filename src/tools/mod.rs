@@ -25,6 +25,9 @@ use crate::provider::{Dialect, anthropic, chat, responses};
 /// The result recorded for a call the user cancelled or that never ran because of a cancel.
 pub const CANCELLED: &str = "cancelled by the user";
 
+/// The result recorded for a call the user did not permit.
+pub const DENIED: &str = "not run: the user denied permission for this call";
+
 /// What a tool produced. `note` is set when the tool ran but the work it did reported a problem,
 /// such as a command exiting non-zero. That is not a tool failure -- the model needs the output
 /// either way -- but the user should still see why a turn took two attempts.

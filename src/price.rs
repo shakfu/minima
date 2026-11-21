@@ -102,6 +102,7 @@ impl Listing {
         };
         if let (true, Some(window)) = (config.context_guessed, self.context) {
             config.context = window;
+            config.context_guessed = false;
         }
         config.max_output = config.max_output.or(self.max_output);
     }
@@ -293,6 +294,7 @@ mod tests {
         };
         listing().apply(&mut guessed);
         assert_eq!(guessed.context, 1_050_000);
+        assert!(!guessed.context_guessed, "a listed window is known");
         assert!(guessed.pricing.is_some());
 
         let mut known = Config::for_test("gpt-5.6-luna");

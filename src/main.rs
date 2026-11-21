@@ -23,6 +23,7 @@ mod tools;
 mod turn;
 
 use std::process::ExitCode;
+use std::rc::Rc;
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -117,6 +118,15 @@ fn start() -> Result<ExitCode> {
     {
         listing.apply(&mut config);
     }
+    if cli.acp {
+        let store = config_dir.filter(|_| !cli.no_session);
+        let bound = bounds.root.clone();
+        let make = acp_agents(cli, config, bounds);
+        let out = frontend::acp::Out::new(std::io::stdout());
+        let input = std::io::BufReader::new(std::io::stdin());
+        runtime.block_on(frontend::acp::serve(make, store, bound, input, out))?;
+        return Ok(ExitCode::SUCCESS);
+    }
     let provider = match &cli.mock {
         Some(path) => Provider::Mock(Mock::load(path)?),
         None => Provider::Http(Http::new()?),
@@ -158,6 +168,52 @@ fn start() -> Result<ExitCode> {
         family.leave();
     }
     code
+}
+
+/// One agent per ACP session, rooted where the session says. A mock script is loaded afresh for
+/// each, so every session replays it from the start. A loaded session's provider and model are
+/// adopted as `--resume` adopts them; config is resolved again only when they change it.
+fn acp_agents(cli: Cli, config: config::Config, bounds: Bounds) -> frontend::acp::MakeAgent {
+    let (cli, config, bounds) = (Rc::new(cli), Rc::new(config), Rc::new(bounds));
+    Box::new(move |root, saved| {
+        let (cli, config, bounds) = (cli.clone(), config.clone(), bounds.clone());
+        Box::pin(async move {
+            let mut adopted = (*cli).clone();
+            if let Some((provider, model)) = &saved {
+                adopted.adopt(provider, model);
+            }
+            let same = saved
+                .as_ref()
+                .is_none_or(|(p, m)| *p == config.provider && *m == config.model);
+            let unchanged = adopted.provider == cli.provider && adopted.model == cli.model;
+            let config = if same || unchanged {
+                (*config).clone()
+            } else {
+                let mut config = adopted.resolve().await?;
+                if adopted.mock.is_none()
+                    && let Some(listing) = price::lookup(&config, adopted.refresh_models).await
+                {
+                    listing.apply(&mut config);
+                }
+                config
+            };
+            let provider = match &cli.mock {
+                Some(path) => Provider::Mock(Mock::load(path)?),
+                None => Provider::Http(Http::new()?),
+            };
+            let bounds = Bounds {
+                root,
+                ..(*bounds).clone()
+            };
+            let mut agent = Agent::with_bounds(provider, config, bounds);
+            if cli.mock.is_none() {
+                agent.on_first_turn(|config| {
+                    state::State::load().remember(&config.provider, &config.model)
+                });
+            }
+            Ok(agent)
+        })
+    })
 }
 
 /// Background jobs from `bash` live until minima exits, not past it.

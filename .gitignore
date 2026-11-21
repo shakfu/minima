@@ -36,3 +36,6 @@ __pycache__/
 .claude
 CLAUDE.md
 REVIEW.md
+
+# Session files tests write when XDG_CONFIG_HOME is relative
+/.config/
