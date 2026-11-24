@@ -86,7 +86,18 @@ fn reports_state_to_herdr_and_releases_on_quit() {
     std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
     // macOS checks a new executable on its first exec, which can pass minima's 2 s report
     // timeout under load. One run here pays for it; the warm-up's own line is dropped.
-    assert!(Command::new(&bin).status().unwrap().success());
+    // On Linux a child forked by a parallel test can hold the write fd until it execs: ETXTBSY.
+    let mut tries = 0;
+    let status = loop {
+        match Command::new(&bin).status() {
+            Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy && tries < 50 => {
+                tries += 1;
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            other => break other.unwrap(),
+        }
+    };
+    assert!(status.success());
     std::fs::remove_file(&log).unwrap();
     let mock = dir.join("mock.json");
     std::fs::write(
