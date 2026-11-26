@@ -1,27 +1,23 @@
-//! The continuation loop, shared by both frontends.
+//! The continuation loop, shared by every frontend.
 //!
-//! Presentation and cancellation arrive through `Frontend` and `Cancel`, so the REPL and the
-//! headless path cannot drift apart by each growing their own copy of this loop.
+//! Presentation and cancellation arrive through `Frontend` and `Cancel`, the tools through
+//! `Tools`, so no caller grows its own copy of this loop.
 
 use std::time::Duration;
 
 use anyhow::{Result, bail};
 use futures_util::StreamExt;
+use futures_util::future::LocalBoxFuture;
 
 use crate::cancel::Cancel;
-use crate::config::{Bounds, CONTEXT_MARGIN, Config};
-use crate::family::{Family, Hold, Reserve};
+use crate::config::{CONTEXT_MARGIN, Config};
 use crate::frontend::Frontend;
-use crate::prompt::system_prompt;
 use crate::provider::{Error, Message, Provider, Role, Usage};
-use crate::tools::{self, Tool};
+use crate::tools::{self, Tools};
 use crate::turn::{Assembler, Turn};
 
 /// Retries after the first attempt, so one connection makes at most five requests.
 const MAX_RETRIES: u32 = 4;
-/// The least output a family request is granted when the budget is short. Below it, the request
-/// waits for other members' holds, or fails when the budget itself is spent.
-const MIN_GRANT: u64 = 4096;
 /// A server that asks for a longer wait than this is reported rather than waited out.
 const MAX_BACKOFF: Duration = Duration::from_secs(60);
 
@@ -61,12 +57,35 @@ const CONTEXT_FULL: &str = "not run: the context window is full";
 const TRUNCATED: &str = "not run: the response hit the output token limit before the call was \
 complete; split the work into smaller calls";
 
+/// A limit on what an agent's requests may use. The loop asks before each request and reports
+/// after it, one request at a time, so an implementation holds at most one grant.
+pub trait Budget {
+    /// Appended to the system prompt: what the model should know about the limit.
+    fn prompt(&self) -> String;
+
+    /// Holds room for one request of `input` tokens and at most `ceiling` of output. `price` gives
+    /// the cost of a token count. Resolves to the most output the request may ask for, or `None`
+    /// once `cancel` fires. An error stops the run.
+    fn reserve<'a>(
+        &'a self,
+        input: u64,
+        ceiling: u64,
+        price: &'a dyn Fn(u64, u64) -> f64,
+        cancel: &'a Cancel,
+    ) -> LocalBoxFuture<'a, Result<Option<u64>>>;
+
+    /// Ends the grant `reserve` gave: with the tokens and cost the request used, or `None` when it
+    /// failed or was cancelled.
+    fn settle(&self, used: Option<(u64, f64)>) -> Result<()>;
+}
+
 pub struct Agent {
     provider: Provider,
     config: Config,
-    bounds: Bounds,
+    tools: Box<dyn Tools>,
     messages: Vec<Message>,
-    tools: Vec<serde_json::Value>,
+    /// The tools' schemas in the dialect's shape, sent with every request.
+    specs: Vec<serde_json::Value>,
     /// Total tokens the last turn reported. Checked before each send once it nears the window.
     used: u32,
     /// Estimated tokens appended since `used` was reported. Starts at `overhead`.
@@ -77,23 +96,12 @@ pub struct Agent {
     on_first_turn: Option<FirstTurn>,
     /// What `on_first_turn` was given, kept to arm it again.
     remember: Option<FirstTurn>,
-    /// Set under `--recurse`: the budget.
-    family: Option<Family>,
+    budget: Option<Box<dyn Budget>>,
     /// Index of the last prompt, for `forget_last_prompt`. A compaction moves it.
     prompt: Option<usize>,
 }
 
 type FirstTurn = std::rc::Rc<dyn Fn(&Config)>;
-
-/// What `reserve` gave the next request.
-enum Reserved {
-    /// Not in a family: no budget to hold against.
-    Free,
-    /// Held, with the most output the request may ask for.
-    Granted(Hold, u64),
-    /// The user cancelled while waiting for room.
-    Cancelled,
-}
 
 enum Attempt {
     Done(Turn),
@@ -114,30 +122,34 @@ pub enum Compaction {
 }
 
 impl Agent {
-    pub fn with_bounds(provider: Provider, config: Config, bounds: Bounds) -> Self {
-        let system = system_prompt();
-        let tools = tools::specs(config.dialect);
-        let schemas = serde_json::to_string(&tools).unwrap_or_default();
+    /// `system` is the whole system prompt; `tools` are fixed for the agent's life.
+    pub fn new(provider: Provider, config: Config, system: String, tools: Box<dyn Tools>) -> Self {
+        let specs: Vec<_> = tools
+            .specs()
+            .iter()
+            .map(|s| s.wire(config.dialect))
+            .collect();
+        let schemas = serde_json::to_string(&specs).unwrap_or_default();
         let overhead = estimate(&system).saturating_add(estimate(&schemas));
         Self {
             provider,
             tools,
+            specs,
             config,
-            bounds,
             messages: vec![Message::system(system)],
             used: 0,
             pending: overhead,
             overhead,
             on_first_turn: None,
             remember: None,
-            family: None,
+            budget: None,
             prompt: None,
         }
     }
 
-    /// Tells the model about its family, and checks the budget from now on.
-    pub fn join(&mut self, family: Family) {
-        let text = family.prompt();
+    /// Tells the model about the budget, and holds every request against it from now on.
+    pub fn join(&mut self, budget: Box<dyn Budget>) {
+        let text = budget.prompt();
         let tokens = estimate(&text);
         if let Some(system) = self.messages[0].content.as_mut() {
             system.push_str("\n\n");
@@ -147,11 +159,7 @@ impl Agent {
         self.pending = self.pending.saturating_add(tokens);
         // The budget grants each request its output, so every dialect must send the grant.
         self.config.cap_output = true;
-        self.family = Some(family);
-    }
-
-    pub fn family(&self) -> Option<&Family> {
-        self.family.as_ref()
+        self.budget = Some(budget);
     }
 
     pub fn context_window(&self) -> u32 {
@@ -378,12 +386,9 @@ impl Agent {
                     continue;
                 }
 
-                let outcome = match Tool::from_name(name) {
-                    Some(tool) => tool.call(&call.arguments, cancel, &self.bounds).await,
-                    None => Err(anyhow::anyhow!("no such tool: {name}")),
-                };
+                let outcome = self.tools.call(name, &call.arguments, cancel).await;
                 let (ok, body, note) = match outcome {
-                    Ok(out) => (true, out.body, out.note),
+                    Ok(out) => (true, tools::cap(out.body), out.note),
                     // The user sees only the root cause: the call line already names the target
                     // that the outer context repeats.
                     Err(e) => (
@@ -542,30 +547,27 @@ impl Agent {
         frontend: &mut dyn Frontend,
         cancel: &Cancel,
     ) -> Result<Option<Turn>> {
-        let (hold, room) = match self.reserve(room, cancel).await? {
-            Reserved::Free => (None, room),
-            // `room` sets the request's `max_tokens`, so the grant bounds the response.
-            Reserved::Granted(hold, output) => (
-                Some(hold),
-                room.min(u32::try_from(output).unwrap_or(u32::MAX)),
-            ),
-            Reserved::Cancelled => return Ok(None),
+        // `room` sets the request's `max_tokens`, so the grant bounds the response.
+        let room = match self.reserve(room, cancel).await? {
+            Some(output) => room.min(u32::try_from(output).unwrap_or(u32::MAX)),
+            None => return Ok(None),
         };
         let mut result = self.attempts(messages, room, frontend, cancel).await;
         if let Ok(Some(turn)) = &mut result {
             self.price(turn);
         }
-        if let (Some(family), Some(hold)) = (&self.family, hold) {
-            let recorded = match &result {
+        if let Some(budget) = &self.budget {
+            let used = match &result {
                 Ok(Some(turn)) => {
                     let u = &turn.usage;
                     let tokens = u
                         .total_tokens
                         .max(u.prompt_tokens.saturating_add(u.completion_tokens));
-                    family.settle(hold, u64::from(tokens), u.cost.unwrap_or(0.0))
+                    Some((u64::from(tokens), u.cost.unwrap_or(0.0)))
                 }
-                _ => family.forfeit(hold),
+                _ => None,
             };
+            let recorded = budget.settle(used);
             if let Err(e) = recorded {
                 tracing::warn!("recording usage: {e:#}");
             }
@@ -678,7 +680,7 @@ impl Agent {
             let result = tokio::select! {
                 biased;
                 () = cancel.cancelled() => return Ok(None),
-                result = self.provider.stream(&self.config, messages, &self.tools, room) => result,
+                result = self.provider.stream(&self.config, messages, &self.specs, room) => result,
             };
             match result {
                 Ok(stream) => return Ok(Some(stream)),
@@ -706,13 +708,12 @@ impl Agent {
         }
     }
 
-    /// Before each request: holds its projected usage against the family's budget, waiting while
-    /// other members' holds take the room. The input is what the window holds less `room`, the
-    /// output at most the model's ceiling. The grant reaches the request as its output cap.
-    /// Crossing stops this member's descendants; this one reports why.
-    async fn reserve(&self, room: u32, cancel: &Cancel) -> Result<Reserved> {
-        let Some(family) = &self.family else {
-            return Ok(Reserved::Free);
+    /// Before each request: holds its projected usage against the budget. The input is what the
+    /// window holds less `room`, the output at most the model's ceiling. `Some(u64::MAX)` without
+    /// a budget; `None` when the user cancelled while waiting for room.
+    async fn reserve(&self, room: u32, cancel: &Cancel) -> Result<Option<u64>> {
+        let Some(budget) = &self.budget else {
+            return Ok(Some(u64::MAX));
         };
         let input = u64::from(self.config.context.saturating_sub(room));
         let ceiling = u64::from(crate::provider::output_cap(&self.config, room));
@@ -729,30 +730,7 @@ impl Agent {
                 })
             })
         };
-        loop {
-            match family.try_reserve(input, ceiling, MIN_GRANT, &price) {
-                Ok(Reserve::Granted(hold, output)) => return Ok(Reserved::Granted(hold, output)),
-                // Holds settle as their requests complete, within one response.
-                Ok(Reserve::Busy) => tokio::select! {
-                    () = tokio::time::sleep(Duration::from_millis(250)) => {}
-                    () = cancel.cancelled() => return Ok(Reserved::Cancelled),
-                },
-                Err(e) => {
-                    // Off the runtime's workers: `shutdown` sleeps through the grace period.
-                    let family = family.clone();
-                    let stopped = tokio::task::spawn_blocking(move || family.stop_descendants())
-                        .await
-                        .map_err(anyhow::Error::from)
-                        .and_then(|r| r);
-                    return match stopped {
-                        Err(stop) => {
-                            Err(e.context(format!("shutting the family down failed: {stop:#}")))
-                        }
-                        Ok(()) => Err(e),
-                    };
-                }
-            }
-        }
+        budget.reserve(input, ceiling, &price, cancel).await
     }
 
     /// Estimated tokens the window has left for the response.
@@ -879,15 +857,70 @@ mod tests {
         fn cancelled(&mut self) {}
     }
 
-    /// The script holds only the turns a test expects, so any further request fails the run.
-    fn agent_with(script: &str) -> Agent {
-        agent_with_root(script, std::env::current_dir().unwrap())
+    /// `read`, `write` and `edit` on the real disk, unbounded: the loop's tests need tools with
+    /// effects they can check, not minima's own.
+    struct Files;
+
+    #[derive(serde::Deserialize, schemars::JsonSchema)]
+    struct FileArgs {
+        path: String,
+        #[serde(default)]
+        content: String,
+        #[serde(default)]
+        old: String,
+        #[serde(default)]
+        new: String,
     }
 
-    fn agent_with_root(script: &str, root: std::path::PathBuf) -> Agent {
+    impl Tools for Files {
+        fn specs(&self) -> Vec<tools::Spec> {
+            ["read", "write", "edit"]
+                .map(|name| tools::Spec {
+                    name: name.into(),
+                    description: format!("{name} a file"),
+                    parameters: tools::schema_of::<FileArgs>(),
+                })
+                .into()
+        }
+
+        fn call<'a>(
+            &'a self,
+            name: &'a str,
+            arguments: &'a str,
+            cancel: &'a Cancel,
+        ) -> LocalBoxFuture<'a, Result<tools::Outcome>> {
+            Box::pin(async move {
+                let args: FileArgs = tools::parse(arguments)?;
+                let work = async {
+                    let path = &args.path;
+                    match name {
+                        "read" => Ok::<String, anyhow::Error>(std::fs::read_to_string(path)?),
+                        "write" => {
+                            std::fs::write(path, &args.content)?;
+                            Ok("written".into())
+                        }
+                        "edit" => {
+                            let text = std::fs::read_to_string(path)?;
+                            std::fs::write(path, text.replacen(&args.old, &args.new, 1))?;
+                            Ok("edited".into())
+                        }
+                        _ => bail!("no such tool: {name}"),
+                    }
+                };
+                tools::or_cancelled(cancel, work).await
+            })
+        }
+    }
+
+    /// The script holds only the turns a test expects, so any further request fails the run.
+    fn agent_with(script: &str) -> Agent {
         let mock = crate::provider::mock::Mock::from_script(script).expect("script");
-        let bounds = Bounds::new(false, root);
-        Agent::with_bounds(Provider::Mock(mock), Config::for_test("m"), bounds)
+        Agent::new(
+            Provider::Mock(mock),
+            Config::for_test("m"),
+            "system".into(),
+            Box::new(Files),
+        )
     }
 
     fn call(id: &str, name: &str, arguments: serde_json::Value) -> String {
@@ -972,8 +1005,7 @@ mod tests {
         let mut config = Config::for_test("m");
         config.base_url = format!("http://{}/v1", listener.local_addr().unwrap());
         let http = crate::provider::http::Http::new().unwrap();
-        let bounds = Bounds::new(false, std::env::current_dir().unwrap());
-        let mut agent = Agent::with_bounds(Provider::Http(http), config, bounds);
+        let mut agent = Agent::new(Provider::Http(http), config, String::new(), Box::new(Files));
 
         let cancel = Cancel::new();
         tokio::spawn({
@@ -998,14 +1030,12 @@ mod tests {
         let dir = Scratch::new("agent-dispatch");
         let path = dir.file("notes.txt");
         std::fs::write(&path, "hello from disk\n").unwrap();
-        let mut agent = agent_with_root(
-            &format!(
-                r#"[[{}, {}], [{{"text": "done"}}]]"#,
-                call("c1", "read", serde_json::json!({ "path": path })),
-                call("c2", "grep", serde_json::json!({})).replace("\"index\":0", "\"index\":1")
-            ),
-            std::path::Path::new(&path).parent().unwrap().to_path_buf(),
-        );
+        let mut agent = agent_with(&format!(
+            r#"[[{}, {}], [{{"text": "done"}}]]"#,
+            call("c1", "read", serde_json::json!({ "path": path })),
+            call("c2", "grep", serde_json::json!({"path": "x"}))
+                .replace("\"index\":0", "\"index\":1")
+        ));
 
         run(&mut agent).await.expect("two turns");
 

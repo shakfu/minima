@@ -1,0 +1,40 @@
+[package]
+name = "minima-core"
+version = "0.7.0"
+edition = "2024"
+rust-version = "1.88"
+license = "MIT"
+description = "Providers and the agent loop of the minima coding agent, without its tools or terminal"
+authors = ["Shakeeb Alireza"]
+repository = "https://github.com/shakfu/minima"
+keywords = ["agent", "llm", "openai", "anthropic"]
+categories = ["development-tools"]
+
+# Portable: no terminal, no sandbox, no process groups. Builds wherever tokio and reqwest do.
+[dependencies]
+tokio = { version = "1.53", features = ["macros", "sync", "time"] }
+futures-util = "0.3"
+# The `rustls` feature selects the aws-lc-rs provider, which builds `aws-lc-sys` from C and needs
+# cmake on the build host. Swapping to ring costs `rustls-no-provider` plus a hand-built
+# ClientConfig and the `webpki-roots` crate, roughly 15 lines; reqwest dropped its own
+# `rustls-native-certs` and `webpki-roots` features after 0.13.1.
+reqwest = { version = "0.13.5", default-features = false, features = [
+    "json", "stream", "http2", "rustls",
+] }
+eventsource-stream = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Tool schemas derived from the struct serde reads the arguments into; see `tools::schema_of`.
+schemars = "1"
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+
+[features]
+# `tools::Scratch` for dependents' tests.
+testing = []
+
+[dev-dependencies]
+# Paused time, so tests of retry backoff do not sleep for real; a runtime and a listener for
+# `#[tokio::test]` and the stalled-provider test.
+tokio = { version = "1.53", features = ["test-util", "rt-multi-thread", "net"] }

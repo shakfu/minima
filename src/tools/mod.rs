@@ -2,6 +2,7 @@
 //!
 //! The freeze pays for itself here: with the set closed at four, an enum removes the trait
 //! object, the `async-trait` dependency, and the registry. Adding a fifth tool is three lines.
+//! `Builtin` hands the set to the agent loop in `minima-core`.
 
 mod atomic;
 mod bash;
@@ -12,36 +13,19 @@ mod read;
 mod write;
 
 pub use bash::{kill_background, preflight};
+pub use minima_core::tools::{CANCELLED, Outcome, Spec, cap};
 
 use anyhow::{Context, Result, bail};
-use serde::Deserialize;
+use futures_util::future::LocalBoxFuture;
 
+use minima_core::tools::{or_cancelled, parse, schema_of};
 use sanduk_sandbox::confine_path;
 
-use crate::cancel::Cancel;
-use crate::config::{Bounds, TOOL_OUTPUT_CAP};
-use crate::provider::{Dialect, anthropic, chat, responses};
+use crate::config::Bounds;
+use minima_core::cancel::Cancel;
 
-/// The result recorded for a call the user cancelled or that never ran because of a cancel.
-pub const CANCELLED: &str = "cancelled by the user";
-
-/// The result recorded for a call the user did not permit.
-pub const DENIED: &str = "not run: the user denied permission for this call";
-
-/// What a tool produced. `note` is set when the tool ran but the work it did reported a problem,
-/// such as a command exiting non-zero. That is not a tool failure -- the model needs the output
-/// either way -- but the user should still see why a turn took two attempts.
-#[derive(Debug, Default)]
-pub struct Outcome {
-    pub body: String,
-    pub note: Option<String>,
-}
-
-impl From<String> for Outcome {
-    fn from(body: String) -> Self {
-        Self { body, note: None }
-    }
-}
+#[cfg(test)]
+pub use minima_core::tools::Scratch;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tool {
@@ -97,25 +81,17 @@ impl Tool {
         }
     }
 
-    /// One entry of the request's `tools` array. The three dialects nest this differently:
-    /// Chat wraps it under `function`, Responses keeps it flat, Anthropic renames `parameters`
-    /// to `input_schema`.
-    pub fn spec(self, dialect: Dialect) -> serde_json::Value {
-        let (name, description, parameters) = (self.name(), self.description(), self.parameters());
-        match dialect {
-            Dialect::Chat => chat::tool_spec(name, description, parameters),
-            Dialect::Responses => responses::tool_spec(name, description, parameters),
-            Dialect::Messages => anthropic::tool_spec(name, description, parameters),
+    pub fn spec(self) -> Spec {
+        Spec {
+            name: self.name().into(),
+            description: self.description().into(),
+            parameters: self.parameters(),
         }
     }
 
     /// `arguments` is the raw JSON string the model streamed, parsed here and nowhere else.
     pub async fn call(self, arguments: &str, cancel: &Cancel, bounds: &Bounds) -> Result<Outcome> {
-        let raw = if arguments.trim().is_empty() {
-            "{}"
-        } else {
-            arguments
-        };
+        let raw = arguments;
         let bound = bounds.sandbox.then_some(bounds.root.as_path());
         let out: Outcome = match self {
             // `read` is never bounded: `bash` reads the whole filesystem in every mode, so a jail
@@ -147,8 +123,27 @@ impl Tool {
     }
 }
 
-pub fn specs(dialect: Dialect) -> Vec<serde_json::Value> {
-    active().into_iter().map(|t| t.spec(dialect)).collect()
+/// The four tools under one run's bounds, as the agent loop calls them.
+pub struct Builtin(pub Bounds);
+
+impl minima_core::tools::Tools for Builtin {
+    fn specs(&self) -> Vec<Spec> {
+        active().into_iter().map(Tool::spec).collect()
+    }
+
+    fn call<'a>(
+        &'a self,
+        name: &'a str,
+        arguments: &'a str,
+        cancel: &'a Cancel,
+    ) -> LocalBoxFuture<'a, Result<Outcome>> {
+        Box::pin(async move {
+            match Tool::from_name(name) {
+                Some(tool) => tool.call(arguments, cancel, &self.0).await,
+                None => bail!("no such tool: {name}"),
+            }
+        })
+    }
 }
 
 /// The tools this run advertises. Only the `codemode` experiment varies the set.
@@ -157,24 +152,6 @@ fn active() -> Vec<Tool> {
     return js::active();
     #[cfg(not(feature = "codemode"))]
     Tool::ALL.to_vec()
-}
-
-/// Drops `work` on a cancel, so each file tool must be safe to drop at any await: `atomic` renames
-/// with no await between its last check and the rename. `bash` owns its cancel, to kill its group.
-async fn or_cancelled(
-    cancel: &Cancel,
-    work: impl Future<Output = Result<String>>,
-) -> Result<Outcome> {
-    tokio::select! {
-        biased;
-        () = cancel.cancelled() => Ok(CANCELLED.to_string().into()),
-        body = work => Ok(body?.into()),
-    }
-}
-
-/// The arguments are already in the transcript, so the error names only what is wrong with them.
-fn parse<T: for<'de> Deserialize<'de>>(raw: &str) -> Result<T> {
-    serde_json::from_str(raw).context("tool arguments were not valid")
 }
 
 /// Opens a regular file for reading. `O_NONBLOCK` lets the open of a FIFO return without a writer,
@@ -197,91 +174,25 @@ async fn open_regular(path: &str) -> Result<tokio::fs::File> {
     Ok(file)
 }
 
-/// Truncate from the middle: the head says what ran, the tail says how it ended. One `cat` of a
-/// build log must not consume the context window.
-pub fn cap(text: String) -> String {
-    if text.len() <= TOOL_OUTPUT_CAP {
-        return text;
-    }
-    let half = TOOL_OUTPUT_CAP / 2;
-    let head = floor_boundary(&text, half);
-    let tail = ceil_boundary(&text, text.len() - half);
-    let dropped = tail - head;
-    format!(
-        "{}\n... {dropped} bytes elided ...\n{}",
-        &text[..head],
-        &text[tail..]
-    )
-}
-
-fn floor_boundary(s: &str, mut i: usize) -> usize {
-    while i > 0 && !s.is_char_boundary(i) {
-        i -= 1;
-    }
-    i
-}
-
-fn ceil_boundary(s: &str, mut i: usize) -> usize {
-    while i < s.len() && !s.is_char_boundary(i) {
-        i += 1;
-    }
-    i
-}
-
-/// OpenAI rejects `$schema`, and `title` only adds tokens.
-fn schema_of<T: schemars::JsonSchema>() -> serde_json::Value {
-    let mut schema = schemars::schema_for!(T);
-    if let Some(obj) = schema.as_object_mut() {
-        obj.remove("$schema");
-        obj.remove("title");
-    }
-    schema.to_value()
-}
-
-/// A fresh directory for one test that removes itself, so tool tests never touch the repo.
-#[cfg(test)]
-pub struct Scratch(std::path::PathBuf);
-
-#[cfg(test)]
-impl Scratch {
-    pub fn new(name: &str) -> Self {
-        let dir = std::env::temp_dir().join(format!("minima-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("scratch directory");
-        Self(dir)
-    }
-
-    /// A path inside the directory, as the string a tool argument carries.
-    pub fn file(&self, name: &str) -> String {
-        self.0.join(name).display().to_string()
-    }
-}
-
-#[cfg(test)]
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use minima_core::provider::Dialect;
 
     /// A tool the model is never told about cannot be called, and a mock cannot catch that.
     /// Each dialect reads the name and schema from a different place.
     #[test]
     fn every_tool_advertises_an_object_schema_in_every_dialect() {
         for tool in Tool::ALL {
-            let chat = tool.spec(Dialect::Chat);
+            let chat = tool.spec().wire(Dialect::Chat);
             assert_eq!(chat["function"]["name"], tool.name());
             assert_eq!(chat["function"]["parameters"]["type"], "object");
 
-            let responses = tool.spec(Dialect::Responses);
+            let responses = tool.spec().wire(Dialect::Responses);
             assert_eq!(responses["name"], tool.name());
             assert_eq!(responses["parameters"]["type"], "object");
 
-            let messages = tool.spec(Dialect::Messages);
+            let messages = tool.spec().wire(Dialect::Messages);
             assert_eq!(messages["name"], tool.name());
             assert_eq!(messages["input_schema"]["type"], "object");
             assert!(messages.get("parameters").is_none());
@@ -303,9 +214,9 @@ mod tests {
 
     #[test]
     fn all_four_tools_are_advertised() {
-        for dialect in [Dialect::Chat, Dialect::Responses, Dialect::Messages] {
-            assert_eq!(specs(dialect).len(), 4);
-        }
+        use minima_core::tools::Tools;
+        let builtin = Builtin(Bounds::new(false, std::env::temp_dir()));
+        assert_eq!(builtin.specs().len(), 4);
     }
 
     #[test]
@@ -468,14 +379,6 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn a_cancel_ends_a_file_tool_that_is_still_working() {
-        let cancel = Cancel::new();
-        cancel.cancel();
-        let out = or_cancelled(&cancel, std::future::pending()).await.unwrap();
-        assert_eq!(out.body, CANCELLED);
-    }
-
     /// The transcript already holds the arguments; a failed 30 KiB `write` must not repeat them.
     #[tokio::test]
     async fn invalid_arguments_are_not_echoed_back() {
@@ -491,19 +394,5 @@ mod tests {
         let text = format!("{err:#}");
         assert!(text.starts_with("tool arguments were not valid"), "{text}");
         assert!(!text.contains("yyyy"), "{text}");
-    }
-
-    #[test]
-    fn cap_keeps_both_ends_and_utf8() {
-        let text = format!("{}{}", "a".repeat(TOOL_OUTPUT_CAP), "\u{00e9}z");
-        let out = cap(text);
-        assert!(out.len() < TOOL_OUTPUT_CAP + 64);
-        assert!(out.starts_with('a') && out.ends_with('z'));
-        assert!(out.contains("bytes elided"));
-    }
-
-    #[test]
-    fn cap_leaves_short_output_alone() {
-        assert_eq!(cap("hi".into()), "hi");
     }
 }

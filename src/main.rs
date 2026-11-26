@@ -5,22 +5,19 @@
 #[cfg(not(unix))]
 compile_error!("minima supports Unix only (Linux and macOS)");
 
-mod agent;
-mod cache;
-mod cancel;
 mod config;
 mod family;
 mod frontend;
 mod herdr;
-mod price;
 mod prompt;
-mod provider;
 mod session;
 mod state;
 mod term;
 mod theme;
 mod tools;
-mod turn;
+
+// The portable half, under the paths the CLI modules already use.
+use minima_core::{agent, cache, cancel, price, provider};
 
 use std::process::ExitCode;
 use std::rc::Rc;
@@ -134,9 +131,9 @@ fn start() -> Result<ExitCode> {
     if let Some(family) = &family {
         family.describe(&config.provider, &config.model)?;
     }
-    let mut agent = Agent::with_bounds(provider, config, bounds.clone());
+    let mut agent = builtin(provider, config, bounds.clone());
     if let Some(family) = family.clone() {
-        agent.join(family);
+        agent.join(Box::new(family::Ledger::new(family)));
     }
     // Recorded once a turn streams, so a model the provider rejects is never remembered. Not in
     // resolve(), so config resolution has no disk side effect and its tests write nothing.
@@ -160,7 +157,14 @@ fn start() -> Result<ExitCode> {
     let session = session.filter(|_| !cli.no_session);
 
     let code = match cli.prompt.as_deref() {
-        Some(prompt) => runtime.block_on(headless(&mut agent, session, prompt, cli.json, &bounds)),
+        Some(prompt) => runtime.block_on(headless(
+            &mut agent,
+            family.as_ref(),
+            session,
+            prompt,
+            cli.json,
+            &bounds,
+        )),
         None => frontend::repl::run(&runtime, &mut agent, session, &bounds, cli.first_prompt())
             .map(|()| ExitCode::SUCCESS),
     };
@@ -205,7 +209,7 @@ fn acp_agents(cli: Cli, config: config::Config, bounds: Bounds) -> frontend::acp
                 root,
                 ..(*bounds).clone()
             };
-            let mut agent = Agent::with_bounds(provider, config, bounds);
+            let mut agent = builtin(provider, config, bounds);
             if cli.mock.is_none() {
                 agent.on_first_turn(|config| {
                     state::State::load().remember(&config.provider, &config.model)
@@ -214,6 +218,12 @@ fn acp_agents(cli: Cli, config: config::Config, bounds: Bounds) -> frontend::acp
             Ok(agent)
         })
     })
+}
+
+/// An agent with the system prompt and the four tools, under `bounds`.
+fn builtin(provider: Provider, config: config::Config, bounds: Bounds) -> Agent {
+    let tools = Box::new(tools::Builtin(bounds));
+    Agent::new(provider, config, prompt::system_prompt(), tools)
 }
 
 /// Background jobs from `bash` live until minima exits, not past it.
@@ -275,6 +285,7 @@ fn exit_on_hangup_or_terminate(
 /// Ctrl-C latches the same flag Esc does in the REPL, so the loop samples one thing either way.
 async fn headless(
     agent: &mut Agent,
+    family: Option<&Family>,
     mut session: Option<Session>,
     prompt: &str,
     as_json: bool,
@@ -283,7 +294,7 @@ async fn headless(
     let cancel = Cancel::new();
     let watcher = tokio::spawn({
         let cancel = cancel.clone();
-        let family = agent.family().cloned();
+        let family = family.cloned();
         async move {
             if tokio::signal::ctrl_c().await.is_ok() {
                 cancel.cancel();
@@ -317,7 +328,7 @@ async fn headless(
     }
     // After the session is saved: the parent may exit as soon as it reads the answer, and this
     // process with it.
-    if let Some(family) = agent.family() {
+    if let Some(family) = family {
         let answer = match &result {
             Err(e) => format!("failed: {e:#}"),
             Ok(()) if cancel.is_cancelled() => "cancelled".into(),

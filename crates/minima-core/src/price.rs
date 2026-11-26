@@ -121,7 +121,7 @@ pub async fn lookup(config: &Config, refresh: bool) -> Option<Listing> {
         return None;
     }
     let base = registry::find("openrouter")?.base_url;
-    let mut list = Models::load(base);
+    let mut list = Models::load(config.cache_dir.as_deref(), base);
     if (refresh || (list.is_stale() && list.retry_due()))
         && let Err(e) = list.refresh(base, "", Dialect::Chat).await
     {

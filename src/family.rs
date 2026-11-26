@@ -472,6 +472,83 @@ fn sandboxed() -> bool {
     false
 }
 
+/// The least output a request is granted when the budget is short. Below it, the request waits
+/// for other members' holds, or fails when the budget itself is spent.
+const MIN_GRANT: u64 = 4096;
+
+/// The family's budget as the agent loop holds requests against it. One request runs at a time,
+/// so at most one hold is open.
+pub struct Ledger {
+    family: Family,
+    hold: std::cell::RefCell<Option<Hold>>,
+}
+
+impl Ledger {
+    pub fn new(family: Family) -> Self {
+        Self {
+            family,
+            hold: std::cell::RefCell::new(None),
+        }
+    }
+}
+
+impl minima_core::agent::Budget for Ledger {
+    fn prompt(&self) -> String {
+        self.family.prompt()
+    }
+
+    /// Waits while other members' holds take the room. Crossing the budget stops this member's
+    /// descendants; this one reports why.
+    fn reserve<'a>(
+        &'a self,
+        input: u64,
+        ceiling: u64,
+        price: &'a dyn Fn(u64, u64) -> f64,
+        cancel: &'a minima_core::Cancel,
+    ) -> futures_util::future::LocalBoxFuture<'a, Result<Option<u64>>> {
+        Box::pin(async move {
+            loop {
+                match self.family.try_reserve(input, ceiling, MIN_GRANT, price) {
+                    Ok(Reserve::Granted(hold, output)) => {
+                        *self.hold.borrow_mut() = Some(hold);
+                        return Ok(Some(output));
+                    }
+                    // Holds settle as their requests complete, within one response.
+                    Ok(Reserve::Busy) => tokio::select! {
+                        () = tokio::time::sleep(Duration::from_millis(250)) => {}
+                        () = cancel.cancelled() => return Ok(None),
+                    },
+                    Err(e) => {
+                        // Off the runtime's workers: `shutdown` sleeps through the grace period.
+                        let family = self.family.clone();
+                        let stopped =
+                            tokio::task::spawn_blocking(move || family.stop_descendants())
+                                .await
+                                .map_err(anyhow::Error::from)
+                                .and_then(|r| r);
+                        return match stopped {
+                            Err(stop) => {
+                                Err(e.context(format!("shutting the family down failed: {stop:#}")))
+                            }
+                            Ok(()) => Err(e),
+                        };
+                    }
+                }
+            }
+        })
+    }
+
+    fn settle(&self, used: Option<(u64, f64)>) -> Result<()> {
+        let Some(hold) = self.hold.borrow_mut().take() else {
+            return Ok(());
+        };
+        match used {
+            Some((tokens, cost)) => self.family.settle(hold, tokens, cost),
+            None => self.family.forfeit(hold),
+        }
+    }
+}
+
 impl Family {
     /// Records the provider and model, which `spawn` gives a child that names none.
     pub fn describe(&self, provider: &str, model: &str) -> Result<()> {

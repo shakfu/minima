@@ -12,21 +12,21 @@ PUBLISH_DIR := target/publish
 all: build
 
 build:
-	cargo build
+	cargo build --workspace
 
 release:
 	cargo build --release
 
 test:
-	cargo test
+	cargo test --workspace
 
 # Matches what CI runs. `make fmt` applies what `lint` only reports.
 lint:
-	cargo fmt --check
-	cargo clippy --all-targets -- -D warnings
+	cargo fmt --all --check
+	cargo clippy --workspace --all-targets -- -D warnings
 
 fmt:
-	cargo fmt
+	cargo fmt --all
 
 check: lint test
 
@@ -47,11 +47,13 @@ install: release
 	@install -m 755 target/release/minima $(INSTALL_DIR)/minima
 	@echo "installed minima to $(INSTALL_DIR)"
 
+# minima pins minima-core exactly, so the library goes first.
 package:
-	CARGO_TARGET_DIR=$(PUBLISH_DIR) cargo package --locked
+	CARGO_TARGET_DIR=$(PUBLISH_DIR) cargo package --locked --workspace
 
 publish:
-	CARGO_TARGET_DIR=$(PUBLISH_DIR) cargo publish --locked
+	CARGO_TARGET_DIR=$(PUBLISH_DIR) cargo publish --locked -p minima-core
+	CARGO_TARGET_DIR=$(PUBLISH_DIR) cargo publish --locked -p minima
 
 clean:
 	cargo clean
@@ -68,5 +70,5 @@ help:
 	@echo "release   optimised build"
 	@echo "install   release build, copied to $(INSTALL_DIR)"
 	@echo "package   cargo package, verified in $(PUBLISH_DIR)"
-	@echo "publish   cargo publish, verified in $(PUBLISH_DIR); never plain cargo publish"
+	@echo "publish   minima-core then minima, verified in $(PUBLISH_DIR); never plain cargo publish"
 	@echo "clean     remove target/"

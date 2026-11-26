@@ -1,8 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.7.0
 
 ### Added
+
+- `minima-core`, a library crate in `crates/minima-core`: the providers, the model and price lists, and the agent loop, for hosts other than the CLI. The loop takes its tools as a `Tools` implementation and an optional `Budget`, so the CLI's four tools, its sandbox and `-r`'s family budget stay in the `minima` package. The library has no Unix-only dependency, so it can serve a host that runs on Windows. The repository root stays the `minima` package and becomes the workspace root, so `cargo install minima` and every path under `src/`, `tests/` and `mock/` are unchanged. `make publish` publishes `minima-core` first, since `minima` pins it exactly.
 
 - `--acp` serves the Agent Client Protocol, version 1, on stdin and stdout, for an editor or `minosb -agent acp`. It is a frontend over the REPL's agent loop, sessions and cancellation; `session/load` replays a saved session, and `session/cancel` answers the prompt `cancelled`. Every tool but `read` asks `session/request_permission` first, because ACP gives the client no other point at which to approve a write or a command; a cancelled or unknown answer is a denial. The JSON-RPC layer is in-repo over serde_json rather than the `agent-client-protocol` crate, since minima uses seven of its methods. Mock scripts gain `{"pause": MS}`, `"refused"` and a form keyed by prompt, so `mock/acp.json` gives the minos conformance suite a normal, a slow and a permission-asking prompt. See [ACP](README.md#acp).
 

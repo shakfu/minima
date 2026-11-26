@@ -1,6 +1,6 @@
 [package]
 name = "minima"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2024"
 rust-version = "1.88"
 license = "MIT"
@@ -17,22 +17,21 @@ categories = ["command-line-utilities", "development-tools"]
 name = "minima"
 path = "src/main.rs"
 
+# The root package is the CLI; `minima-core` holds the providers and the agent loop, and builds
+# off Unix. The root stays a package, so src/, tests/, mock/ and scripts/ keep their paths.
+[workspace]
+members = ["crates/minima-core"]
+
 [dependencies]
+# Both versions move together; publish minima-core first.
+minima-core = { path = "crates/minima-core", version = "=0.7.0" }
+
 # Runtime. `select!` over the response stream and the key-event stream is the cancellation
 # primitive; the rest of the feature list is incidental to that choice.
 tokio = { version = "1.53", features = [
     "rt-multi-thread", "macros", "sync", "time", "process", "fs", "io-std", "io-util", "signal",
 ] }
 futures-util = "0.3"
-
-# Transport. The `rustls` feature selects the aws-lc-rs provider, which builds `aws-lc-sys` from
-# C and needs cmake on the build host. Swapping to ring costs `rustls-no-provider` plus a
-# hand-built ClientConfig and the `webpki-roots` crate, roughly 15 lines; reqwest dropped its own
-# `rustls-native-certs` and `webpki-roots` features after 0.13.1.
-reqwest = { version = "0.13.5", default-features = false, features = [
-    "json", "stream", "http2", "rustls",
-] }
-eventsource-stream = "0.2"
 
 # Wire format and tool schemas. schemars derives the JSON Schema a tool advertises from the same
 # struct serde deserializes its arguments into, so the two cannot drift.
@@ -57,7 +56,6 @@ pulldown-cmark = { version = "0.13", default-features = false }
 
 # Diagnostics and errors.
 anyhow = "1"
-thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
@@ -77,6 +75,7 @@ rquickjs = { version = "=0.14.0", optional = true }
 codemode = ["dep:rquickjs"]
 
 [dev-dependencies]
+minima-core = { path = "crates/minima-core", version = "=0.7.0", features = ["testing"] }
 # Paused time, so tests of retry backoff do not sleep for real.
 tokio = { version = "1.53", features = ["test-util"] }
 

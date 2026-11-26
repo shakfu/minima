@@ -196,7 +196,7 @@ make publish    # cargo publish, verified in its own target dir
 make help       # every target
 ```
 
-Plain `cargo build`, `cargo test` and `cargo clippy --all-targets -- -D warnings` work too.
+Plain `cargo build --workspace`, `cargo test --workspace` and `cargo clippy --workspace --all-targets -- -D warnings` work too. The repository is a workspace: the root package is the CLI, and `crates/minima-core` is the library holding the providers and the agent loop.
 
 `scripts/test_openrouter.sh`, `test_openai.sh` and `test_anthropic.sh` run five scenarios against a real endpoint -- text, `read`, `bash`, `write` with a read-back, then a skill the prompt does not name -- and exit non-zero if any of them misses. They take the key from the provider's usual environment variable or from `~/.config/minima/<provider>.key`, and work from a throwaway directory rather than the repo. `XDG_CONFIG_HOME` points at a throwaway directory too, so your own `AGENTS.md` and skills stay out of the prompt. The Anthropic one speaks native `anthropic-messages`.
 

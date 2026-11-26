@@ -2,7 +2,7 @@
 //!
 //! Session resume would reuse this file's atomic-write and schema-version handling.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
@@ -77,25 +77,33 @@ pub struct Models {
     failed_at: u64,
     endpoint: String,
     entries: Vec<Entry>,
+    /// Where this list is stored; `None` stores nothing.
+    #[serde(skip)]
+    dir: Option<PathBuf>,
 }
 
 impl Models {
-    pub fn load(base_url: &str) -> Self {
+    /// The list cached for `base_url` under `dir`, else an empty one.
+    pub fn load(dir: Option<&Path>, base_url: &str) -> Self {
         let empty = Self {
             schema: SCHEMA,
             fetched_at: 0,
             failed_at: 0,
             endpoint: base_url.to_string(),
             entries: Vec::new(),
+            dir: dir.map(Path::to_path_buf),
         };
-        let Some(path) = Self::path(base_url) else {
+        let Some(path) = empty.path() else {
             return empty;
         };
         let Ok(raw) = std::fs::read_to_string(&path) else {
             return empty;
         };
         match serde_json::from_str::<Self>(&raw) {
-            Ok(c) if c.schema == SCHEMA && c.endpoint == base_url => c,
+            Ok(c) if c.schema == SCHEMA && c.endpoint == base_url => Self {
+                dir: empty.dir,
+                ..c
+            },
             _ => empty,
         }
     }
@@ -190,7 +198,7 @@ impl Models {
 
     /// Best effort. A cache that cannot be written is not a reason to fail the run.
     fn store(&self) {
-        let Some(path) = Self::path(&self.endpoint) else {
+        let Some(path) = self.path() else {
             return;
         };
         let Some(parent) = path.parent() else { return };
@@ -200,24 +208,24 @@ impl Models {
         let Ok(body) = serde_json::to_vec_pretty(self) else {
             return;
         };
-        let _ = crate::config::restrict_to_owner(parent);
+        let _ = crate::fs::restrict_to_owner(parent);
         let tmp = path.with_extension("tmp");
         if std::fs::write(&tmp, body).is_ok() {
             // Tightened before the rename, not after: restricting the destination would leave a
             // window where the file is readable at the default umask.
-            let _ = crate::config::restrict_to_owner(&tmp);
+            let _ = crate::fs::restrict_to_owner(&tmp);
             let _ = std::fs::rename(&tmp, &path);
         }
     }
 
     /// One cache file per endpoint, named by a hash so the path stays filesystem-safe.
-    fn path(base_url: &str) -> Option<PathBuf> {
+    fn path(&self) -> Option<PathBuf> {
         let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-        for b in base_url.as_bytes() {
+        for b in self.endpoint.as_bytes() {
             h ^= u64::from(*b);
             h = h.wrapping_mul(0x1000_0000_01b3);
         }
-        Some(crate::config::config_dir()?.join(format!("models-{h:016x}.json")))
+        Some(self.dir.as_ref()?.join(format!("models-{h:016x}.json")))
     }
 }
 
@@ -280,6 +288,7 @@ mod tests {
             failed_at: 0,
             endpoint: "http://x".into(),
             entries: Vec::new(),
+            dir: None,
         };
         assert!(list.is_stale() && list.retry_due());
         list.failed_at = now();

@@ -5,13 +5,10 @@ use std::path::PathBuf;
 use anyhow::{Context, Result, bail};
 use clap::Parser;
 
-use crate::provider::{Dialect, registry};
+use minima_core::provider::{Dialect, registry};
 
-/// Tool results are truncated to this many bytes before they enter the context.
-pub const TOOL_OUTPUT_CAP: usize = 32 * 1024;
-
-/// Tokens of headroom below the model's context window before the turn is refused.
-pub const CONTEXT_MARGIN: u32 = 2048;
+pub use minima_core::config::{Config, TOOL_OUTPUT_CAP};
+pub use minima_core::fs::restrict_to_owner;
 
 /// What one tool call may reach. Resolved once at startup, so no tool re-reads the flags.
 ///
@@ -208,54 +205,6 @@ impl Cli {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct Config {
-    /// The registry id that was named or autoselected. Carried so the caller can record the
-    /// pairing; resolution itself stays free of disk side effects.
-    pub provider: String,
-    pub base_url: String,
-    pub api_key: String,
-    pub model: String,
-    pub dialect: Dialect,
-    pub context: u32,
-    /// True when no flag or model list gave the window, so `context` is the 128k fallback.
-    pub context_guessed: bool,
-    /// The model's output ceiling, where a model list reports it.
-    pub max_output: Option<u32>,
-    /// The model list says the model takes adaptive thinking; see `anthropic::build_body`.
-    pub adaptive_thinking: bool,
-    pub max_turns: u32,
-    /// Set only when the provider reports no cost; see `price::lookup`.
-    pub pricing: Option<crate::price::Pricing>,
-    /// The listed rates, whether or not the provider reports cost: a family projects each
-    /// request's cost from them before sending it.
-    pub rates: Option<crate::price::Pricing>,
-    /// Send an output cap on every dialect, not only Messages: set in a family, whose budget
-    /// grants each request its output.
-    pub cap_output: bool,
-}
-
-impl Config {
-    #[cfg(test)]
-    pub fn for_test(model: &str) -> Self {
-        Self {
-            provider: "openrouter".into(),
-            base_url: "http://x/v1".into(),
-            api_key: "k".into(),
-            model: model.into(),
-            dialect: Dialect::Chat,
-            context: 128_000,
-            context_guessed: false,
-            max_output: None,
-            adaptive_thinking: false,
-            max_turns: 8,
-            pricing: None,
-            rates: None,
-            cap_output: false,
-        }
-    }
-}
-
 impl Cli {
     /// Resolve into a usable config, consulting the model cache for anything still missing.
     pub async fn resolve(&self) -> Result<Config> {
@@ -274,6 +223,7 @@ impl Cli {
                 pricing: None,
                 rates: None,
                 cap_output: false,
+                cache_dir: None,
             });
         }
 
@@ -327,7 +277,7 @@ impl Cli {
             },
         };
 
-        let mut cache = crate::cache::Models::load(&base_url);
+        let mut cache = minima_core::cache::Models::load(config_dir().as_deref(), &base_url);
         if self.wants_model_list(cache.is_stale())
             && let Err(e) = cache.refresh(&base_url, &api_key, entry.dialect).await
         {
@@ -370,6 +320,7 @@ impl Cli {
             pricing: None,
             rates: None,
             cap_output: false,
+            cache_dir: config_dir(),
         })
     }
 
@@ -382,16 +333,6 @@ impl Cli {
 /// Prompt history. Whatever the user typed goes here verbatim, so it is owner-only.
 pub fn history_path() -> Option<PathBuf> {
     config_dir().map(|d| d.join("history.txt"))
-}
-
-/// Tighten a path minima created to owner-only: 0700 for a directory, 0600 for a file. History and
-/// the model cache both sit under the config directory, and session resume will land there too.
-pub fn restrict_to_owner(path: &std::path::Path) -> std::io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-
-    let metadata = std::fs::metadata(path)?;
-    let mode = if metadata.is_dir() { 0o700 } else { 0o600 };
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
 }
 
 /// `$XDG_CONFIG_HOME/minima`, else `$HOME/.config/minima`. No `dirs` crate for two lines of logic.

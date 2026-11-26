@@ -193,7 +193,7 @@ enum Request {
 /// current model marked.
 async fn list_models(agent: &Agent, filter: &str, frontend: &Repl) -> Result<()> {
     let config = agent.config();
-    let mut models = crate::cache::Models::load(&config.base_url);
+    let mut models = crate::cache::Models::load(config.cache_dir.as_deref(), &config.base_url);
     models
         .refresh(&config.base_url, &config.api_key, config.dialect)
         .await?;
@@ -222,7 +222,10 @@ async fn select_model(agent: &mut Agent, name: &str, frontend: &Repl) -> Result<
         screen.line(Tone::Role(Style::Muted), &printable(&text))?;
         return screen.draw();
     }
-    let models = crate::cache::Models::load(&agent.config().base_url);
+    let models = crate::cache::Models::load(
+        agent.config().cache_dir.as_deref(),
+        &agent.config().base_url,
+    );
     let entry = models.find(name).cloned();
     agent.switch_model(name, entry.as_ref());
     if let Some(listing) = crate::price::lookup(agent.config(), false).await {
