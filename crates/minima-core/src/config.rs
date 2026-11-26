@@ -1,5 +1,4 @@
-//! A resolved run configuration. How it is resolved -- flags, environment, a settings file -- is
-//! the caller's concern.
+//! A resolved run configuration; `resolve` builds one.
 
 use std::path::PathBuf;
 

@@ -5,7 +5,8 @@ use std::path::PathBuf;
 use anyhow::{Context, Result, bail};
 use clap::Parser;
 
-use minima_core::provider::{Dialect, registry};
+use minima_core::ResolveError;
+use minima_core::provider::Dialect;
 
 pub use minima_core::config::{Config, TOOL_OUTPUT_CAP};
 pub use minima_core::fs::restrict_to_owner;
@@ -227,106 +228,40 @@ impl Cli {
             });
         }
 
-        // A key does not say which vendor issued it, so autoselect could send it to another one.
-        if self.api_key.is_some() && self.provider.is_none() {
-            bail!("--api-key needs --provider: a key does not say which provider it belongs to");
-        }
-
-        let entry = match &self.provider {
-            Some(named) => match registry::find(named) {
-                Some(entry) => entry,
-                None => bail!(
-                    "unknown provider {named:?}; known: {}",
-                    registry::ids().join(", ")
-                ),
-            },
-            // No provider named: the last one used if its key is still set, else the first whose
-            // key variable is set. Local servers carry no key and so are never autoselected.
-            None => match registry::autoselect(crate::state::State::load().last_provider(), |var| {
-                std::env::var(var).ok()
-            }) {
-                Some(entry) => entry,
-                None => bail!(
-                    "no provider key found; set one of {}, or pass --provider",
-                    registry::key_vars()
-                        .iter()
-                        .map(|v| format!("${v}"))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ),
-            },
-        };
-
-        let base_url = self
-            .base_url
-            .clone()
-            .unwrap_or_else(|| entry.base_url.to_string())
-            .trim_end_matches('/')
-            .to_string();
-
-        // A local server wants no credential, so an absent key is only an error when the entry
-        // names a variable for one.
-        let api_key = match self.api_key.clone() {
-            Some(key) => key,
-            None => match entry.key_env {
-                Some(var) => match std::env::var(var) {
-                    Ok(key) if !key.is_empty() => key,
-                    _ => bail!("no key for {}: set ${var} or pass --api-key", entry.id),
-                },
-                None => String::new(),
-            },
-        };
-
-        let mut cache = minima_core::cache::Models::load(config_dir().as_deref(), &base_url);
-        if self.wants_model_list(cache.is_stale())
-            && let Err(e) = cache.refresh(&base_url, &api_key, entry.dialect).await
-        {
-            // Plenty of endpoints do not serve /models. That must not stop minima when the user
-            // already named the model.
-            if self.model.is_none() || self.refresh_models {
-                return Err(e);
-            }
-            tracing::warn!("model list unavailable, continuing: {e:#}");
-        }
-
-        // Explicit beats remembered beats a single-model endpoint. The pairing is written by
-        // the caller, not here: resolving config should not touch the disk.
-        let model = match self
-            .model
-            .clone()
-            .or_else(|| crate::state::State::load().last_model(entry.id))
-            .or_else(|| cache.default_model())
-        {
-            Some(m) => m,
-            None => bail!(
-                "no model for {}: pass --model or set MINIMA_MODEL ({} cached)",
-                entry.id,
-                cache.count()
-            ),
-        };
-
-        let context = self.context.or_else(|| cache.context_for(&model));
-        Ok(Config {
-            context: context.unwrap_or(128_000),
-            context_guessed: context.is_none(),
-            max_output: cache.find(&model).and_then(|e| e.max_output),
-            adaptive_thinking: cache.find(&model).is_some_and(|e| e.adaptive_thinking),
-            provider: entry.id.to_string(),
-            base_url,
-            api_key,
-            model,
-            dialect: entry.dialect,
+        // The pairing is remembered by the caller once a turn streams, not here.
+        let state = crate::state::State::load();
+        let request = minima_core::Request {
+            provider: self.provider.clone(),
+            model: self.model.clone(),
+            base_url: self.base_url.clone(),
+            api_key: self.api_key.clone(),
+            context: self.context,
             max_turns: self.max_turns,
-            pricing: None,
-            rates: None,
-            cap_output: false,
+            refresh_models: self.refresh_models,
             cache_dir: config_dir(),
-        })
+            last_provider: state.last_provider().map(String::from),
+        };
+        request
+            .resolve(|var| std::env::var(var).ok(), |p| state.last_model(p))
+            .await
+            .map_err(flagged)
     }
+}
 
-    /// A round-trip before the first prompt is only justified by a field the flags left unset.
-    fn wants_model_list(&self, cache_stale: bool) -> bool {
-        self.refresh_models || ((self.model.is_none() || self.context.is_none()) && cache_stale)
+/// The library's error, naming the flag that fixes it.
+fn flagged(e: ResolveError) -> anyhow::Error {
+    match e {
+        ResolveError::KeyWithoutProvider => anyhow::anyhow!(
+            "--api-key needs --provider: a key does not say which provider it belongs to"
+        ),
+        ResolveError::NoProvider => anyhow::anyhow!("{e}, or pass --provider"),
+        ResolveError::NoKey { provider, var } => {
+            anyhow::anyhow!("no key for {provider}: set ${var} or pass --api-key")
+        }
+        ResolveError::NoModel { provider, cached } => anyhow::anyhow!(
+            "no model for {provider}: pass --model or set MINIMA_MODEL ({cached} cached)"
+        ),
+        e => e.into(),
     }
 }
 
@@ -457,23 +392,6 @@ mod tests {
         assert_eq!(root, std::env::current_dir().unwrap());
     }
 
-    #[test]
-    fn fully_specified_run_skips_the_model_list() {
-        assert!(!cli(Some("m"), Some(64), false).wants_model_list(true));
-    }
-
-    #[test]
-    fn a_missing_field_fetches_only_once_the_cache_is_stale() {
-        assert!(cli(None, Some(64), false).wants_model_list(true));
-        assert!(cli(Some("m"), None, false).wants_model_list(true));
-        assert!(!cli(None, Some(64), false).wants_model_list(false));
-    }
-
-    #[test]
-    fn an_explicit_refresh_ignores_both() {
-        assert!(cli(Some("m"), Some(64), true).wants_model_list(false));
-    }
-
     /// Without the sandbox nothing bounds `bash`, so the flag would grant nothing. Refused rather
     /// than ignored: the user named a path and would otherwise believe it was granted.
     #[test]
@@ -551,6 +469,33 @@ mod tests {
         let resolved = c.resolve().await.expect("resolves");
         assert_eq!(resolved.dialect, Dialect::Messages);
         assert_eq!(resolved.base_url, "https://api.anthropic.com/v1");
+    }
+
+    /// Each library error that a flag fixes names that flag.
+    #[test]
+    fn resolve_errors_name_the_flag_that_fixes_them() {
+        let cases = [
+            (ResolveError::KeyWithoutProvider, "--provider"),
+            (ResolveError::NoProvider, "--provider"),
+            (
+                ResolveError::NoKey {
+                    provider: "openai",
+                    var: "OPENAI_API_KEY",
+                },
+                "--api-key",
+            ),
+            (
+                ResolveError::NoModel {
+                    provider: "openai",
+                    cached: 0,
+                },
+                "--model",
+            ),
+        ];
+        for (e, flag) in cases {
+            let text = flagged(e).to_string();
+            assert!(text.contains(flag), "{text}");
+        }
     }
 
     /// The escape hatch moves the endpoint without changing the shape spoken to it.

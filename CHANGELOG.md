@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.1
+
+### Added
+
+- `minima_core::Request::resolve`: from a provider, model, key and context, any of them unset, to a `Config`, through the registry and the model list. It was `Cli::resolve`, which now wraps it. The caller passes the key lookup and the remembered model, so another host can read keys from its own store rather than the environment. Errors are a `ResolveError` enum, so the CLI keeps naming the flag that fixes each one.
+
 ## 0.7.0
 
 ### Added

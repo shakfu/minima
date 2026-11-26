@@ -1,6 +1,6 @@
 [package]
 name = "minima"
-version = "0.7.0"
+version = "0.7.1"
 edition = "2024"
 rust-version = "1.88"
 license = "MIT"
@@ -24,7 +24,7 @@ members = ["crates/minima-core"]
 
 [dependencies]
 # Both versions move together; publish minima-core first.
-minima-core = { path = "crates/minima-core", version = "=0.7.0" }
+minima-core = { path = "crates/minima-core", version = "=0.7.1" }
 
 # Runtime. `select!` over the response stream and the key-event stream is the cancellation
 # primitive; the rest of the feature list is incidental to that choice.
@@ -75,7 +75,7 @@ rquickjs = { version = "=0.14.0", optional = true }
 codemode = ["dep:rquickjs"]
 
 [dev-dependencies]
-minima-core = { path = "crates/minima-core", version = "=0.7.0", features = ["testing"] }
+minima-core = { path = "crates/minima-core", version = "=0.7.1", features = ["testing"] }
 # Paused time, so tests of retry backoff do not sleep for real.
 tokio = { version = "1.53", features = ["test-util"] }
 

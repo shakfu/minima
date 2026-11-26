@@ -12,6 +12,7 @@ pub mod frontend;
 pub mod fs;
 pub mod price;
 pub mod provider;
+pub mod resolve;
 pub mod tools;
 pub mod turn;
 
@@ -19,3 +20,4 @@ pub use agent::Agent;
 pub use cancel::Cancel;
 pub use config::Config;
 pub use frontend::Frontend;
+pub use resolve::{Request, ResolveError};
