@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- `Request::default()` set `max_turns` to 0, so its agent stopped with `MaxTurns(0)` before calling the model. It now uses `DEFAULT_MAX_TURNS` (100), the `--max-turns` default.
+
+- API keys are trimmed. A key with a trailing newline, as `$(cat keyfile)` gives, passed the blank check but was sent untrimmed. A blank `Request.api_key` counts as none instead of being sent as an empty credential.
+
+### Changed
+
+- `ResolveError::ModelList` exposes the fetch error through `source()` instead of its message, so a host can inspect the cause. `{:#}` output, which the CLI uses, is unchanged.
+
 ## 0.7.1
 
 ### Added

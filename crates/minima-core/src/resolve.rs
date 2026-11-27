@@ -12,14 +12,19 @@ use crate::provider::registry::{self, Entry};
 /// The context window assumed when neither the caller nor a model list gives one.
 pub const FALLBACK_CONTEXT: u32 = 128_000;
 
-#[derive(Debug, Clone, Default)]
+/// Provider round-trips allowed per user turn when the caller sets none.
+pub const DEFAULT_MAX_TURNS: u32 = 100;
+const _: () = assert!(DEFAULT_MAX_TURNS > 0);
+
+#[derive(Debug, Clone)]
 pub struct Request {
     /// A registry id. `None` autoselects; see `registry::autoselect`.
     pub provider: Option<String>,
     pub model: Option<String>,
     /// Moves the endpoint, never the dialect.
     pub base_url: Option<String>,
-    /// Takes precedence over the key the registry entry names. Needs a named provider.
+    /// Takes precedence over the key the registry entry names. Needs a named provider. A blank
+    /// key counts as none.
     pub api_key: Option<String>,
     pub context: Option<u32>,
     pub max_turns: u32,
@@ -52,8 +57,8 @@ pub enum ResolveError {
         provider: &'static str,
         cached: usize,
     },
-    #[error("fetching the model list: {0:#}")]
-    ModelList(anyhow::Error),
+    #[error("fetching the model list")]
+    ModelList(#[source] anyhow::Error),
 }
 
 fn vars(names: Vec<&str>) -> String {
@@ -64,6 +69,27 @@ fn vars(names: Vec<&str>) -> String {
         .join(", ")
 }
 
+impl Default for Request {
+    fn default() -> Self {
+        Self {
+            provider: None,
+            model: None,
+            base_url: None,
+            api_key: None,
+            context: None,
+            max_turns: DEFAULT_MAX_TURNS,
+            refresh_models: false,
+            cache_dir: None,
+            last_provider: None,
+        }
+    }
+}
+
+/// A key with surrounding whitespace removed; a blank one is none.
+fn usable(key: &str) -> Option<String> {
+    Some(key.trim()).filter(|k| !k.is_empty()).map(String::from)
+}
+
 impl Request {
     /// `key` reads a key variable, such as the environment does; `last_model` gives the model
     /// last used with a provider.
@@ -72,7 +98,8 @@ impl Request {
         key: impl Fn(&str) -> Option<String>,
         last_model: impl Fn(&str) -> Option<String>,
     ) -> Result<Config, ResolveError> {
-        if self.api_key.is_some() && self.provider.is_none() {
+        let explicit = self.api_key.as_deref().and_then(usable);
+        if explicit.is_some() && self.provider.is_none() {
             return Err(ResolveError::KeyWithoutProvider);
         }
         let entry: &Entry = match &self.provider {
@@ -93,11 +120,12 @@ impl Request {
 
         // A local server wants no credential, so an absent key is only an error when the entry
         // names a variable for one.
-        let api_key = match (&self.api_key, entry.key_env) {
-            (Some(key), _) => key.clone(),
+        let api_key = match (explicit, entry.key_env) {
+            (Some(key), _) => key,
             (None, Some(var)) => {
                 key(var)
-                    .filter(|k| !k.trim().is_empty())
+                    .as_deref()
+                    .and_then(usable)
                     .ok_or(ResolveError::NoKey {
                         provider: entry.id,
                         var,
@@ -166,7 +194,6 @@ mod tests {
             model: model.map(String::from),
             api_key: Some("k".into()),
             context,
-            max_turns: 32,
             refresh_models: refresh,
             ..Request::default()
         }
@@ -264,6 +291,57 @@ mod tests {
             ),
             "{err}"
         );
+    }
+
+    /// A default request can run turns.
+    #[test]
+    fn the_default_allows_turns() {
+        assert_eq!(Request::default().max_turns, DEFAULT_MAX_TURNS);
+    }
+
+    /// Keys from either source are trimmed, and a blank explicit key falls back to the source.
+    #[tokio::test]
+    async fn keys_are_trimmed_and_a_blank_one_is_none() {
+        let mut r = request(Some("m"), Some(64), false);
+        r.api_key = Some(" sk \n".into());
+        assert_eq!(resolve(&r).await.unwrap().api_key, "sk");
+
+        r.api_key = None;
+        let env = r
+            .resolve(|_| Some("sk\n".into()), none)
+            .await
+            .expect("resolves");
+        assert_eq!(env.api_key, "sk");
+
+        r.api_key = Some("  ".into());
+        let err = resolve(&r).await.expect_err("blank");
+        assert!(matches!(err, ResolveError::NoKey { .. }), "{err}");
+
+        // A blank key is no key, so it does not need a named provider.
+        r.provider = None;
+        let err = resolve(&r).await.expect_err("no provider");
+        assert!(matches!(err, ResolveError::NoProvider), "{err}");
+    }
+
+    /// The fetch failure stays reachable as the error's source.
+    #[test]
+    fn a_model_list_failure_keeps_its_cause() {
+        use std::error::Error;
+        let err = ResolveError::ModelList(anyhow::anyhow!("401"));
+        assert_eq!(err.source().unwrap().to_string(), "401");
+        let shown = format!("{:#}", anyhow::Error::from(err));
+        assert_eq!(shown, "fetching the model list: 401");
+    }
+
+    /// A blank key is no key, so autoselect finds no provider.
+    #[tokio::test]
+    async fn a_blank_environment_key_is_an_error() {
+        let mut r = request(Some("m"), Some(64), false);
+        r.provider = None;
+        r.api_key = None;
+        let blank = |var: &str| (var == "OPENROUTER_API_KEY").then(|| " \n".to_string());
+        let err = r.resolve(blank, none).await.expect_err("blank key");
+        assert!(matches!(err, ResolveError::NoProvider), "{err}");
     }
 
     /// Autoselect tries the last provider first, and a local server needs no key.

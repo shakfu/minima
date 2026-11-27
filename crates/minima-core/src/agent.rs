@@ -229,7 +229,7 @@ impl Agent {
         }
         let c = &mut self.config;
         c.model = model.to_string();
-        c.context = window.unwrap_or(128_000);
+        c.context = window.unwrap_or(crate::resolve::FALLBACK_CONTEXT);
         c.context_guessed = window.is_none();
         c.max_output = entry.and_then(|e| e.max_output);
         c.adaptive_thinking = entry.is_some_and(|e| e.adaptive_thinking);

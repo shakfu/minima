@@ -118,7 +118,7 @@ pub struct Cli {
     pub mock: Option<PathBuf>,
 
     /// Max provider round-trips per user turn.
-    #[arg(long, default_value_t = 100, value_name = "N")]
+    #[arg(long, default_value_t = minima_core::resolve::DEFAULT_MAX_TURNS, value_name = "N")]
     pub max_turns: u32,
 
     /// Re-fetch the model list, ignoring the cache.
@@ -216,7 +216,9 @@ impl Cli {
                 api_key: String::new(),
                 model: self.model.clone().unwrap_or_else(|| "mock".into()),
                 dialect: Dialect::Chat,
-                context: self.context.unwrap_or(128_000),
+                context: self
+                    .context
+                    .unwrap_or(minima_core::resolve::FALLBACK_CONTEXT),
                 context_guessed: false,
                 max_output: None,
                 adaptive_thinking: false,

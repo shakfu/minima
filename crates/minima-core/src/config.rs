@@ -48,7 +48,7 @@ impl Config {
             api_key: "k".into(),
             model: model.into(),
             dialect: Dialect::Chat,
-            context: 128_000,
+            context: crate::resolve::FALLBACK_CONTEXT,
             context_guessed: false,
             max_output: None,
             adaptive_thinking: false,
